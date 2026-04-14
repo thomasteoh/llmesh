@@ -3,6 +3,7 @@ package llamacpp
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -51,7 +52,7 @@ type inferChunk struct {
 
 // Infer sends the request to llama.cpp and calls cb for each chunk.
 // If req.Stream is false, cb is called once with the full content and done=true.
-func (c *Client) Infer(req types.InferenceRequest, cb ChunkCallback) error {
+func (c *Client) Infer(ctx context.Context, req types.InferenceRequest, cb ChunkCallback) error {
 	body := inferRequest{
 		Model:       req.Model,
 		Messages:    req.Messages,
@@ -65,7 +66,7 @@ func (c *Client) Infer(req types.InferenceRequest, cb ChunkCallback) error {
 		return fmt.Errorf("marshal: %w", err)
 	}
 
-	httpReq, err := http.NewRequest(http.MethodPost, c.endpoint+"/v1/chat/completions", bytes.NewReader(data))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint+"/v1/chat/completions", bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("new request: %w", err)
 	}
@@ -89,6 +90,7 @@ func (c *Client) Infer(req types.InferenceRequest, cb ChunkCallback) error {
 
 func (c *Client) readStream(resp *http.Response, cb ChunkCallback) error {
 	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1 MB max line
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
