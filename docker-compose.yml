@@ -1,0 +1,11 @@
+services:
+  llm-router:
+    build:
+      context: .
+      dockerfile: router/Dockerfile
+    image: llm-router
+    ports:
+      - "53002:53002"
+    volumes:
+      - ./router/config.yaml:/config.yaml:ro
+    restart: unless-stopped
