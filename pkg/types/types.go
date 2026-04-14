@@ -12,6 +12,8 @@ const (
 	PriorityLow    Priority = 2
 )
 
+// PriorityFromString parses a priority string ("high", "normal", "low").
+// Any unrecognised value maps to PriorityNormal.
 func PriorityFromString(s string) Priority {
 	switch s {
 	case "high":
