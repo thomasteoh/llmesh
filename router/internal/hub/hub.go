@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -24,6 +25,9 @@ type Client struct {
 	Models        map[string]bool // nil until "register" message received
 	MaxConcurrent int             // 0 until "register" message received
 	inFlight      atomic.Int32
+	Name          string
+	Owner         string
+	Token         string
 }
 
 func (c *Client) InFlight() int {
@@ -40,8 +44,9 @@ func (c *Client) DecrInFlight() {
 
 // Hub manages WebSocket client connections and acts as the client registry.
 type Hub struct {
-	mu      sync.RWMutex
-	clients map[string]*Client
+	mu       sync.RWMutex
+	clients  map[string]*Client
+	lastSeen map[string]time.Time // token → last disconnect time
 
 	// OnChunk is called when a client sends a ChunkMsg.
 	OnChunk func(msg types.ChunkMsg)
@@ -54,13 +59,14 @@ type Hub struct {
 // New creates and returns a new Hub.
 func New() *Hub {
 	return &Hub{
-		clients: make(map[string]*Client),
+		clients:  make(map[string]*Client),
+		lastSeen: make(map[string]time.Time),
 	}
 }
 
 // ServeWS upgrades an HTTP connection to WebSocket and registers the client.
 // The caller should have already validated auth.
-func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
+func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token string) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("hub: ws upgrade error: %v", err)
@@ -68,23 +74,28 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	client := &Client{
-		ID:   uuid.New().String(),
-		conn: conn,
-		send: make(chan []byte, 64),
+		ID:    uuid.New().String(),
+		conn:  conn,
+		send:  make(chan []byte, 64),
+		Name:  name,
+		Owner: owner,
+		Token: token,
 	}
 
 	h.mu.Lock()
 	h.clients[client.ID] = client
 	h.mu.Unlock()
 
-	log.Printf("hub: client connected: %s", client.ID)
+	log.Printf("hub: client connected: %s name=%s owner=%s", client.ID, name, owner)
 
 	go h.writeLoop(client)
 	h.readLoop(client)
 
-	// Cleanup on disconnect
 	h.mu.Lock()
 	delete(h.clients, client.ID)
+	if token != "" {
+		h.lastSeen[token] = time.Now()
+	}
 	h.mu.Unlock()
 	close(client.send)
 	log.Printf("hub: client disconnected: %s", client.ID)
@@ -242,4 +253,62 @@ func (h *Hub) DecrInFlight(clientID string) {
 	if ok {
 		client.DecrInFlight()
 	}
+}
+
+// IsConnected reports whether a client with the given token is currently connected.
+func (h *Hub) IsConnected(token string) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, c := range h.clients {
+		if c.Token == token {
+			return true
+		}
+	}
+	return false
+}
+
+// LastSeenTime returns the last disconnect time for token, or zero if never connected.
+func (h *Hub) LastSeenTime(token string) time.Time {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.lastSeen[token]
+}
+
+// ConnectedModels returns the models advertised by the currently-connected client with token.
+func (h *Hub) ConnectedModels(token string) []string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, c := range h.clients {
+		if c.Token == token {
+			var out []string
+			for m := range c.Models {
+				out = append(out, m)
+			}
+			return out
+		}
+	}
+	return nil
+}
+
+// CloseByToken closes the WebSocket connection for the client with the given token.
+func (h *Hub) CloseByToken(token string) {
+	h.mu.RLock()
+	var target *Client
+	for _, c := range h.clients {
+		if c.Token == token {
+			target = c
+			break
+		}
+	}
+	h.mu.RUnlock()
+	if target != nil {
+		target.conn.Close()
+	}
+}
+
+// ActiveClientCount returns the number of currently connected clients.
+func (h *Hub) ActiveClientCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.clients)
 }
