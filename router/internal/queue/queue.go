@@ -13,6 +13,7 @@ type Queue struct {
 	items []types.InferenceRequest
 }
 
+// New creates and returns an empty Queue.
 func New() *Queue {
 	q := &Queue{}
 	q.cond = sync.NewCond(&q.mu)
@@ -73,7 +74,9 @@ func (q *Queue) Signal() {
 }
 
 // WaitAndPopBest blocks until a request matching availableModels is available, then returns it.
-// The caller must NOT hold q.mu. This is used by the scheduler.
+// Returns nil if stop is closed. The caller must NOT hold q.mu.
+// IMPORTANT: After closing stop, the caller must call Signal() to unblock any goroutine
+// that may be blocked inside cond.Wait, otherwise shutdown will hang.
 func (q *Queue) WaitAndPopBest(availableModels map[string]bool, stop <-chan struct{}) *types.InferenceRequest {
 	q.mu.Lock()
 	defer q.mu.Unlock()
