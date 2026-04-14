@@ -82,7 +82,7 @@ func (c *Conn) connect() error {
 	}); err != nil {
 		return err
 	}
-	log.Printf("ws: registered with router, models=%v", c.cfg.Models)
+	log.Printf("ws: registered with router, models=%v max_concurrent=%d", models, c.cfg.MaxConcurrent)
 
 	// Read loop
 	for {
@@ -119,9 +119,11 @@ func (c *Conn) send(msg any) error {
 	}
 	c.mu.Lock()
 	ws := c.ws
-	c.mu.Unlock()
 	if ws == nil {
+		c.mu.Unlock()
 		return nil
 	}
-	return ws.WriteMessage(websocket.TextMessage, data)
+	err = ws.WriteMessage(websocket.TextMessage, data)
+	c.mu.Unlock()
+	return err
 }
