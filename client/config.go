@@ -28,7 +28,7 @@ func LoadConfig(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
-	if cfg.MaxConcurrent == 0 {
+	if cfg.MaxConcurrent < 1 {
 		cfg.MaxConcurrent = 4
 	}
 	return &cfg, nil
