@@ -1,0 +1,8 @@
+router_url: "wss://llm.teoh.co/ws/client"
+router_token: "change-me-client-secret"
+max_concurrent: 4
+models:
+  - name: "llama3.2:3b"
+    endpoint: "http://host.docker.internal:8080"
+  - name: "mistral-7b"
+    endpoint: "http://host.docker.internal:8081"
