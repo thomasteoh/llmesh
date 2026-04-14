@@ -12,11 +12,12 @@ import (
 
 // Scheduler dispatches queued InferenceRequests to available hub clients.
 type Scheduler struct {
-	queue  *queue.Queue
-	hub    *hub.Hub
-	signal chan struct{}
-	stopCh chan struct{}
-	once   sync.Once
+	queue    *queue.Queue
+	hub      *hub.Hub
+	signal   chan struct{}
+	stopCh   chan struct{}
+	once     sync.Once
+	stopOnce sync.Once
 }
 
 // New creates a Scheduler wired to the given queue and hub.
@@ -47,9 +48,9 @@ func (s *Scheduler) Start() {
 	})
 }
 
-// Stop shuts down the scheduler.
+// Stop shuts down the scheduler. Safe to call multiple times.
 func (s *Scheduler) Stop() {
-	close(s.stopCh)
+	s.stopOnce.Do(func() { close(s.stopCh) })
 }
 
 func (s *Scheduler) loop() {
@@ -84,10 +85,11 @@ func (s *Scheduler) drainQueue() {
 		s.hub.IncrInFlight(clientID)
 		job := types.JobMsg{Type: "job", Request: *req}
 		if !s.hub.SendToClient(clientID, job) {
-			// Client disconnected between FindAvailable and SendToClient; re-queue.
-			// No in-flight undo needed — IncrInFlight is a no-op if client is already gone.
+			// Client gone or send buffer full; undo the in-flight increment and re-queue.
+			// DecrInFlight is a no-op if the client disconnected and was already removed.
+			s.hub.DecrInFlight(clientID)
 			s.queue.Push(*req)
-			log.Printf("scheduler: client %s gone, re-queued %s", clientID, req.ID)
+			log.Printf("scheduler: client %s unavailable, re-queued %s", clientID, req.ID)
 			return
 		}
 		log.Printf("scheduler: dispatched %s (model=%s) to client %s", req.ID, req.Model, clientID)
