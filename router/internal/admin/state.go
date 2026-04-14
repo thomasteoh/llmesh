@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -51,7 +52,7 @@ type State struct {
 func LoadState(path string) (*State, error) {
 	s := &State{path: path}
 	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
+	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
 	}
 	if err != nil {
@@ -94,6 +95,11 @@ func (s *State) LookupUser(username string) (User, bool) {
 func (s *State) AddUser(u User) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for _, existing := range s.data.Users {
+		if existing.Username == u.Username {
+			return fmt.Errorf("username %q already exists", u.Username)
+		}
+	}
 	s.data.Users = append(s.data.Users, u)
 	return s.save()
 }
