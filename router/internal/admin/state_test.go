@@ -129,3 +129,30 @@ func TestGenAPIKeyValue(t *testing.T) {
 	}
 }
 
+func TestUpdateUser(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "state.json")
+	s, _ := LoadState(f)
+	s.AddUser(User{Username: "alice", PasswordHash: "old", Role: "member"})
+	if err := s.UpdateUser("alice", func(u *User) { u.PasswordHash = "new" }); err != nil {
+		t.Fatal(err)
+	}
+	// persists
+	s2, _ := LoadState(f)
+	u, _ := s2.LookupUser("alice")
+	if u.PasswordHash != "new" {
+		t.Fatalf("want 'new', got %q", u.PasswordHash)
+	}
+	// not found returns error
+	if err := s.UpdateUser("nobody", func(u *User) {}); err == nil {
+		t.Fatal("expected error for missing user")
+	}
+}
+
+func TestAddUser_DuplicateRejected(t *testing.T) {
+	s, _ := LoadState(filepath.Join(t.TempDir(), "state.json"))
+	s.AddUser(User{Username: "alice", Role: "admin"})
+	if err := s.AddUser(User{Username: "alice", Role: "member"}); err == nil {
+		t.Fatal("expected error for duplicate username")
+	}
+}
+
