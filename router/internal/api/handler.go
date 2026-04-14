@@ -44,7 +44,10 @@ func (h *Handler) enqueue(
 
 	req, err := inbound(body)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":{"message":"%s"}}`, err.Error()), http.StatusBadRequest)
+		b, _ := json.Marshal(err.Error())
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintf(w, `{"error":{"message":%s}}`+"\n", b)
 		return
 	}
 
@@ -78,15 +81,21 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 	timeout := time.NewTimer(60 * time.Second)
 	defer timeout.Stop()
 
+	flushed := false
+
 	for {
 		select {
 		case chunk, open := <-ch:
 			if !open {
 				return
 			}
-			var line string
 			switch req.SourceFmt {
 			case "anthropic":
+				if chunk.Delta != "" {
+					fmt.Fprintf(w, "%s\n\n", translate.AnthropicSSEChunk(chunk))
+					flushed = true
+					flusher.Flush()
+				}
 				if chunk.Done {
 					for _, l := range translate.AnthropicSSEDone(chunk.FinishReason) {
 						fmt.Fprintf(w, "%s\n\n", l)
@@ -94,26 +103,36 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 					flusher.Flush()
 					return
 				}
-				line = translate.AnthropicSSEChunk(chunk)
 			case "openai-responses":
+				if chunk.Delta != "" {
+					fmt.Fprintf(w, "%s\n\n", translate.OpenAIResponsesSSEChunk(req.ID, chunk))
+					flushed = true
+					flusher.Flush()
+				}
 				if chunk.Done {
 					fmt.Fprintf(w, "%s\n\n", translate.OpenAIResponsesSSEDone())
 					flusher.Flush()
 					return
 				}
-				line = translate.OpenAIResponsesSSEChunk(req.ID, chunk)
 			default: // "openai"
+				if chunk.Delta != "" {
+					fmt.Fprintf(w, "%s\n\n", translate.OpenAISSEChunk(req.ID, chunk))
+					flushed = true
+					flusher.Flush()
+				}
 				if chunk.Done {
 					fmt.Fprintf(w, "%s\n\n", translate.OpenAISSEDone())
 					flusher.Flush()
 					return
 				}
-				line = translate.OpenAISSEChunk(req.ID, chunk)
 			}
-			fmt.Fprintf(w, "%s\n\n", line)
-			flusher.Flush()
 		case <-timeout.C:
-			serviceUnavailable(w, "request timed out waiting for a worker")
+			if !flushed {
+				serviceUnavailable(w, "request timed out waiting for a worker")
+			} else {
+				fmt.Fprintf(w, "data: {\"error\":\"request timed out\"}\n\n")
+				flusher.Flush()
+			}
 			return
 		case <-r.Context().Done():
 			return
