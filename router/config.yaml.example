@@ -1,0 +1,12 @@
+# router/config.yaml.example
+server:
+  port: 53002
+  client_token: "change-me-client-secret"
+
+api_keys:
+  - key: "sk-prod-abc123"
+    label: "prod-agents"
+    priority: high
+  - key: "sk-dev-xyz456"
+    label: "dev"
+    priority: low
