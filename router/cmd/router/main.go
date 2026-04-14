@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strings"
 
 	"llmesh/pkg/types"
 	routerPkg "llmesh/router"
@@ -16,14 +15,6 @@ import (
 	"llmesh/router/internal/scheduler"
 )
 
-func extractBearer(r *http.Request) string {
-	h := r.Header.Get("Authorization")
-	if !strings.HasPrefix(h, "Bearer ") {
-		return ""
-	}
-	return strings.TrimPrefix(h, "Bearer ")
-}
-
 func main() {
 	configPath := flag.String("config", "/config.yaml", "path to config file")
 	flag.Parse()
@@ -31,6 +22,9 @@ func main() {
 	cfg, err := routerPkg.LoadConfig(*configPath)
 	if err != nil {
 		log.Fatalf("config: %v", err)
+	}
+	if cfg.Server.ClientToken == "" {
+		log.Fatal("config: server.client_token must not be empty")
 	}
 
 	q := queue.New()
@@ -65,7 +59,7 @@ func main() {
 	mux.HandleFunc("/v1/messages", handler.Anthropic())
 	mux.HandleFunc("/v1/responses", handler.Responses())
 	mux.HandleFunc("/ws/client", func(w http.ResponseWriter, r *http.Request) {
-		token := extractBearer(r)
+		token := api.ExtractBearer(r)
 		if token != cfg.Server.ClientToken {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
