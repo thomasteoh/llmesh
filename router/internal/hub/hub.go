@@ -231,3 +231,15 @@ func (h *Hub) IncrInFlight(clientID string) {
 		client.IncrInFlight()
 	}
 }
+
+// DecrInFlight decrements the in-flight counter for clientID.
+// No-op if the client is not connected. Used to undo a prior IncrInFlight
+// when a job could not be delivered (e.g. send buffer full).
+func (h *Hub) DecrInFlight(clientID string) {
+	h.mu.RLock()
+	client, ok := h.clients[clientID]
+	h.mu.RUnlock()
+	if ok {
+		client.DecrInFlight()
+	}
+}
