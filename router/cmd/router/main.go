@@ -64,7 +64,7 @@ func main() {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		h.ServeWS(w, r)
+		h.ServeWS(w, r, "", "", token)
 	})
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, `{"status":"ok"}`)
