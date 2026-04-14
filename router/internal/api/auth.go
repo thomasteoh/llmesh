@@ -7,7 +7,9 @@ import (
 	"strings"
 )
 
-func extractBearer(r *http.Request) string {
+// ExtractBearer returns the Bearer token from the Authorization header.
+// Returns "" if missing or malformed.
+func ExtractBearer(r *http.Request) string {
 	h := r.Header.Get("Authorization")
 	if !strings.HasPrefix(h, "Bearer ") {
 		return ""

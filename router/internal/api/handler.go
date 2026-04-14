@@ -30,7 +30,7 @@ func (h *Handler) enqueue(
 	r *http.Request,
 	inbound func([]byte) (*types.InferenceRequest, error),
 ) {
-	key := extractBearer(r)
+	key := ExtractBearer(r)
 	if key == "" || !h.validKey(key) {
 		unauthorised(w)
 		return
