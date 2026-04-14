@@ -1,0 +1,11 @@
+services:
+  llm-client:
+    build:
+      context: .
+      dockerfile: client/Dockerfile
+    image: llm-client
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./client/config.yaml:/config.yaml:ro
+    restart: unless-stopped
