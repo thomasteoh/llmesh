@@ -100,6 +100,7 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 					for _, l := range translate.AnthropicSSEDone(chunk.FinishReason) {
 						fmt.Fprintf(w, "%s\n\n", l)
 					}
+					flushed = true
 					flusher.Flush()
 					return
 				}
@@ -111,6 +112,7 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 				}
 				if chunk.Done {
 					fmt.Fprintf(w, "%s\n\n", translate.OpenAIResponsesSSEDone())
+					flushed = true
 					flusher.Flush()
 					return
 				}
@@ -122,6 +124,7 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 				}
 				if chunk.Done {
 					fmt.Fprintf(w, "%s\n\n", translate.OpenAISSEDone())
+					flushed = true
 					flusher.Flush()
 					return
 				}
