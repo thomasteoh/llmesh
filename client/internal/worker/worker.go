@@ -37,11 +37,15 @@ func Handle(ctx context.Context, job types.JobMsg, cfg *clientPkg.Config, send S
 			FinishReason: finishReason,
 		}
 		if sendErr := send(chunk); sendErr != nil {
-			log.Printf("worker: send error: %v", sendErr)
+			if ctx.Err() == nil {
+				log.Printf("worker: send error: %v", sendErr)
+			}
 		}
 	})
 	if err != nil {
-		log.Printf("worker: infer error for %s: %v", req.ID, err)
+		if ctx.Err() == nil {
+			log.Printf("worker: infer error for %s: %v", req.ID, err)
+		}
 		_ = send(types.ErrorMsg{
 			Type:      "error",
 			RequestID: req.ID,
