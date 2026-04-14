@@ -29,14 +29,19 @@ func (s *Store) Create(requestID string) <-chan types.ChunkMsg {
 }
 
 // Send delivers a chunk to the waiting HTTP handler for the given requestID.
-// Returns false if no handler is registered (request timed out or was cancelled).
-func (s *Store) Send(msg types.ChunkMsg) bool {
+// Returns false if no handler is registered (request timed out, cancelled, or completed).
+func (s *Store) Send(msg types.ChunkMsg) (ok bool) {
 	s.mu.Lock()
-	ch, ok := s.channels[msg.RequestID]
+	ch, found := s.channels[msg.RequestID]
 	s.mu.Unlock()
-	if !ok {
+	if !found {
 		return false
 	}
+	defer func() {
+		if recover() != nil {
+			ok = false // channel was closed (request completed)
+		}
+	}()
 	select {
 	case ch <- msg:
 		return true
@@ -45,9 +50,15 @@ func (s *Store) Send(msg types.ChunkMsg) bool {
 	}
 }
 
-// Delete removes the channel for requestID. Should be called by the HTTP handler on completion or timeout.
+// Delete removes the channel for requestID and closes it to unblock any reader.
+// The HTTP handler's reader loop will receive a zero-value ChunkMsg when the channel closes,
+// but it should check Done:true or use a context timeout as its primary termination signal.
 func (s *Store) Delete(requestID string) {
 	s.mu.Lock()
+	ch, ok := s.channels[requestID]
 	delete(s.channels, requestID)
 	s.mu.Unlock()
+	if ok {
+		close(ch)
+	}
 }
