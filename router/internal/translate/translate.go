@@ -138,6 +138,16 @@ func extractContent(raw json.RawMessage) (string, error) {
 	return result, nil
 }
 
+// mustMarshal marshals v to JSON and panics if it fails.
+// Used for SSE formatters where the payload shape is fixed and marshal failure is a programmer error.
+func mustMarshal(v any) []byte {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(fmt.Sprintf("translate: marshal error: %v", err))
+	}
+	return b
+}
+
 // --- Outbound SSE formatters ---
 
 type openAIChunkPayload struct {
@@ -204,14 +214,18 @@ func AnthropicSSEChunk(chunk types.ChunkMsg) string {
 			"text": chunk.Delta,
 		},
 	}
-	b, _ := json.Marshal(payload)
-	return "data: " + string(b)
+	return "data: " + string(mustMarshal(payload))
 }
 
 // AnthropicSSEDone returns the terminal SSE events for Anthropic streaming.
-func AnthropicSSEDone() []string {
-	stop, _ := json.Marshal(map[string]any{"type": "message_stop"})
-	return []string{"data: " + string(stop)}
+// The Anthropic protocol requires message_delta before message_stop.
+func AnthropicSSEDone(stopReason string) []string {
+	delta := mustMarshal(map[string]any{
+		"type":  "message_delta",
+		"delta": map[string]any{"stop_reason": stopReason, "stop_sequence": nil},
+	})
+	stop := mustMarshal(map[string]any{"type": "message_stop"})
+	return []string{"data: " + string(delta), "data: " + string(stop)}
 }
 
 // AnthropicFullResponse assembles a complete non-streaming Anthropic response.
@@ -234,14 +248,12 @@ func OpenAIResponsesSSEChunk(requestID string, chunk types.ChunkMsg) string {
 		"type":  "response.output_text.delta",
 		"delta": chunk.Delta,
 	}
-	b, _ := json.Marshal(payload)
-	return "data: " + string(b)
+	return "data: " + string(mustMarshal(payload))
 }
 
 // OpenAIResponsesSSEDone returns the terminal SSE event for OpenAI Responses API streaming.
 func OpenAIResponsesSSEDone() string {
-	b, _ := json.Marshal(map[string]any{"type": "response.completed"})
-	return "data: " + string(b)
+	return "data: " + string(mustMarshal(map[string]any{"type": "response.completed"}))
 }
 
 // OpenAIResponsesFullResponse assembles a complete non-streaming Responses API response.
