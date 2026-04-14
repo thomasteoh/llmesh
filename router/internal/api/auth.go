@@ -1,6 +1,8 @@
 package api
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 )
@@ -14,13 +16,20 @@ func extractBearer(r *http.Request) string {
 }
 
 func unauthorised(w http.ResponseWriter) {
-	http.Error(w, `{"error":{"message":"invalid api key","type":"invalid_request_error"}}`, http.StatusUnauthorized)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+	fmt.Fprintln(w, `{"error":{"message":"invalid api key","type":"invalid_request_error"}}`)
 }
 
 func serviceUnavailable(w http.ResponseWriter, msg string) {
-	http.Error(w, `{"error":{"message":"`+msg+`","type":"service_unavailable"}}`, http.StatusServiceUnavailable)
+	b, _ := json.Marshal(msg) // includes quotes and escaping
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	fmt.Fprintf(w, `{"error":{"message":%s,"type":"service_unavailable"}}`+"\n", b)
 }
 
 func internalError(w http.ResponseWriter) {
-	http.Error(w, `{"error":{"message":"internal error","type":"server_error"}}`, http.StatusInternalServerError)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusInternalServerError)
+	fmt.Fprintln(w, `{"error":{"message":"internal error","type":"server_error"}}`)
 }
