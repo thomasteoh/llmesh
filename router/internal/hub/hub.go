@@ -21,8 +21,8 @@ type Client struct {
 	ID            string
 	conn          *websocket.Conn
 	send          chan []byte
-	Models        map[string]bool
-	MaxConcurrent int
+	Models        map[string]bool // nil until "register" message received
+	MaxConcurrent int             // 0 until "register" message received
 	inFlight      atomic.Int32
 }
 
@@ -108,6 +108,7 @@ func (h *Hub) writeLoop(client *Client) {
 	for msg := range client.send {
 		if err := client.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
 			log.Printf("hub: write error to %s: %v", client.ID, err)
+			client.conn.Close() // force readLoop to exit immediately
 			return
 		}
 	}
