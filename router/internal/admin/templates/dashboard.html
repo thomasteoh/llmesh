@@ -1,0 +1,39 @@
+{{define "content"}}
+<div class="stat-grid">
+  <div class="stat-card"><div class="stat-value" id="req-count">{{.TotalRequests}}</div><div class="stat-label">Total Requests</div></div>
+  <div class="stat-card"><div class="stat-value" id="active-clients">{{.ActiveClients}}</div><div class="stat-label">Active Clients</div></div>
+  <div class="stat-card"><div class="stat-value" id="api-key-count">{{.APIKeyCount}}</div><div class="stat-label">API Keys</div></div>
+  <div class="stat-card"><div class="stat-value" id="token-count">{{.TokenCount}}</div><div class="stat-label">Client Tokens</div></div>
+</div>
+<table class="data-table">
+  <thead><tr><th>Name</th><th>Status</th><th>Last seen</th><th>Models</th></tr></thead>
+  <tbody id="client-tbody">
+    {{range .Clients}}
+    <tr>
+      <td>{{.Name}}</td>
+      <td><span class="badge {{.Status}}">{{if eq .Status "connected"}}&#9679; connected{{else if eq .Status "offline"}}&#9675; offline{{else}}&#9675; never connected{{end}}</span></td>
+      <td class="muted">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
+      <td class="muted">{{if .Models}}{{.Models}}{{else}}&mdash;{{end}}</td>
+    </tr>
+    {{else}}
+    <tr><td colspan="4" class="muted" style="padding:16px 10px;">No client tokens registered.</td></tr>
+    {{end}}
+  </tbody>
+</table>
+<script>
+setInterval(function(){
+  fetch('/admin/api/dashboard').then(function(r){return r.json();}).then(function(d){
+    document.getElementById('req-count').textContent = d.total_requests;
+    document.getElementById('active-clients').textContent = d.active_clients;
+    document.getElementById('api-key-count').textContent = d.api_key_count;
+    document.getElementById('token-count').textContent = d.token_count;
+    var rows = d.clients.map(function(c){
+      var cls = c.status==='connected'?'connected':'offline';
+      var lbl = c.status==='connected'?'\u25cf connected':c.status==='offline'?'\u25cb offline':'\u25cb never connected';
+      return '<tr><td>'+c.name+'</td><td><span class="badge '+cls+'">'+lbl+'</span></td><td class="muted">'+(c.last_seen||'&mdash;')+'</td><td class="muted">'+(c.models||'&mdash;')+'</td></tr>';
+    });
+    document.getElementById('client-tbody').innerHTML = rows.length ? rows.join('') : '<tr><td colspan="4" class="muted" style="padding:16px 10px;">No client tokens registered.</td></tr>';
+  }).catch(function(){});
+}, 10000);
+</script>
+{{end}}
