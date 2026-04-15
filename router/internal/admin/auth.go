@@ -24,7 +24,8 @@ const bcryptCost = 12
 type Admin struct {
 	state    *State
 	sessions *sessionStore
-	hub      interface{} // placeholder — replaced in handler.go
+	hub      hubInterface
+	reqCount func() int64
 	tmpl     interface{} // placeholder — replaced in handler.go
 }
 
