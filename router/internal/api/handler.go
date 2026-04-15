@@ -7,22 +7,34 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 	"llmesh/pkg/types"
-	routerPkg "llmesh/router"
 	"llmesh/router/internal/correlation"
 	"llmesh/router/internal/queue"
 	"llmesh/router/internal/scheduler"
 	"llmesh/router/internal/translate"
 )
 
+// APIKeyStore is satisfied by *admin.State (duck typing — no import needed).
+type APIKeyStore interface {
+	ValidAPIKey(key string) bool
+	PriorityFor(key string) types.Priority
+}
+
 type Handler struct {
-	Config      *routerPkg.Config
-	Queue       *queue.Queue
-	Correlation *correlation.Store
-	Scheduler   *scheduler.Scheduler
+	Keys         APIKeyStore
+	Queue        *queue.Queue
+	Correlation  *correlation.Store
+	Scheduler    *scheduler.Scheduler
+	requestCount atomic.Int64
+}
+
+// Count returns the total number of API requests handled since startup.
+func (h *Handler) Count() int64 {
+	return h.requestCount.Load()
 }
 
 func (h *Handler) enqueue(
@@ -31,7 +43,7 @@ func (h *Handler) enqueue(
 	inbound func([]byte) (*types.InferenceRequest, error),
 ) {
 	key := ExtractBearer(r)
-	if key == "" || !h.validKey(key) {
+	if key == "" || !h.Keys.ValidAPIKey(key) {
 		unauthorised(w)
 		return
 	}
@@ -52,7 +64,8 @@ func (h *Handler) enqueue(
 	}
 
 	req.ID = uuid.New().String()
-	req.Priority = h.Config.PriorityFor(key)
+	req.Priority = h.Keys.PriorityFor(key)
+	h.requestCount.Add(1)
 	req.EnqueuedAt = time.Now()
 
 	ch := h.Correlation.Create(req.ID)
@@ -188,15 +201,6 @@ func (h *Handler) writeBatch(w http.ResponseWriter, req *types.InferenceRequest,
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		log.Printf("api: encode response: %v", err)
 	}
-}
-
-func (h *Handler) validKey(key string) bool {
-	for _, k := range h.Config.APIKeys {
-		if k.Key == key {
-			return true
-		}
-	}
-	return false
 }
 
 func (h *Handler) OpenAI() http.HandlerFunc {
