@@ -8,4 +8,5 @@ services:
       - "53002:53002"
     volumes:
       - ./router/config.yaml:/config.yaml:ro
+      - ./router/state.json:/state.json
     restart: unless-stopped

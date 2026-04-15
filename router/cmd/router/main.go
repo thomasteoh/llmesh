@@ -8,6 +8,7 @@ import (
 
 	"llmesh/pkg/types"
 	routerPkg "llmesh/router"
+	"llmesh/router/internal/admin"
 	"llmesh/router/internal/api"
 	"llmesh/router/internal/correlation"
 	"llmesh/router/internal/hub"
@@ -17,14 +18,12 @@ import (
 
 func main() {
 	configPath := flag.String("config", "/config.yaml", "path to config file")
+	statePath := flag.String("state", "/state.json", "path to state.json")
 	flag.Parse()
 
 	cfg, err := routerPkg.LoadConfig(*configPath)
 	if err != nil {
 		log.Fatalf("config: %v", err)
-	}
-	if cfg.Server.ClientToken == "" {
-		log.Fatal("config: server.client_token must not be empty")
 	}
 
 	q := queue.New()
@@ -47,28 +46,44 @@ func main() {
 	sched := scheduler.New(q, h)
 	sched.Start()
 
-	handler := &api.Handler{
-		Config:      cfg,
+	// Wire reqCount after apiHandler is created using a closure that captures the pointer.
+	var apiHandler *api.Handler
+
+	adminHandler, err := admin.New(*statePath, h, func() int64 {
+		if apiHandler == nil {
+			return 0
+		}
+		return apiHandler.Count()
+	})
+	if err != nil {
+		log.Fatalf("admin: %v", err)
+	}
+
+	apiHandler = &api.Handler{
+		Keys:        adminHandler.State(),
 		Queue:       q,
 		Correlation: store,
 		Scheduler:   sched,
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/chat/completions", handler.OpenAI())
-	mux.HandleFunc("/v1/messages", handler.Anthropic())
-	mux.HandleFunc("/v1/responses", handler.Responses())
+	mux.HandleFunc("/v1/chat/completions", apiHandler.OpenAI())
+	mux.HandleFunc("/v1/messages", apiHandler.Anthropic())
+	mux.HandleFunc("/v1/responses", apiHandler.Responses())
 	mux.HandleFunc("/ws/client", func(w http.ResponseWriter, r *http.Request) {
 		token := api.ExtractBearer(r)
-		if token != cfg.Server.ClientToken {
+		ct, ok := adminHandler.State().LookupClientToken(token)
+		if !ok {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		h.ServeWS(w, r, "", "", token)
+		h.ServeWS(w, r, ct.Name, ct.Owner, token)
 	})
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, `{"status":"ok"}`)
 	})
+	mux.Handle("/admin/", adminHandler)
+	mux.Handle("/admin", adminHandler)
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	log.Printf("llm-router listening on %s", addr)
