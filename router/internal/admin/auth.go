@@ -122,8 +122,12 @@ func (a *Admin) handleLogin(w http.ResponseWriter, r *http.Request) {
 	username := r.FormValue("username")
 	password := r.FormValue("password")
 	u, ok := a.state.LookupUser(username)
-	if !ok || u.Disabled {
+	if !ok {
 		a.renderStandalone(w, "login", map[string]string{"Error": "Invalid credentials."})
+		return
+	}
+	if u.Disabled {
+		a.renderStandalone(w, "login", map[string]string{"Error": "Account disabled."})
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)); err != nil {
@@ -143,6 +147,10 @@ func (a *Admin) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Admin) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		a.sessions.delete(c.Value)
 	}
