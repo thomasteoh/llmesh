@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>llmesh &mdash; Sign in</title>
+  <link rel="stylesheet" href="/admin/static/admin.css">
+</head>
+<body class="auth-body">
+<div class="auth-card">
+  <div class="brand">llmesh</div>
+  {{if .Error}}<div class="flash error" style="margin-bottom:14px;border-radius:4px;">{{.Error}}</div>{{end}}
+  <form method="POST" action="/admin/login">
+    <label>Username<input name="username" type="text" autocomplete="username" autofocus></label>
+    <label>Password<input name="password" type="password" autocomplete="current-password"></label>
+    <button type="submit">Sign in</button>
+  </form>
+</div>
+</body>
+</html>

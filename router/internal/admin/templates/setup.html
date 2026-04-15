@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>llmesh &mdash; Setup</title>
+  <link rel="stylesheet" href="/admin/static/admin.css">
+</head>
+<body class="auth-body">
+<div class="auth-card">
+  <div class="brand">llmesh &mdash; First-run setup</div>
+  <p style="font-size:12px;color:var(--text-muted);margin-bottom:18px;">Create the initial admin account.</p>
+  {{if .Error}}<div class="flash error" style="margin-bottom:14px;border-radius:4px;">{{.Error}}</div>{{end}}
+  <form method="POST" action="/admin/setup">
+    <label>Username<input name="username" type="text" autocomplete="username" autofocus></label>
+    <label>Password<input name="password" type="password" autocomplete="new-password"></label>
+    <label>Confirm password<input name="confirm" type="password" autocomplete="new-password"></label>
+    <button type="submit">Create account</button>
+  </form>
+</div>
+</body>
+</html>
