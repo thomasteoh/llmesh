@@ -19,21 +19,6 @@ const sessionCookie = "admin_session"
 const sessionTTL = 24 * time.Hour
 const bcryptCost = 12
 
-// Admin is the admin UI handler. Full definition in handler.go (Task 7).
-// This stub allows auth_test.go to compile before handler.go is created.
-type Admin struct {
-	state    *State
-	sessions *sessionStore
-	hub      hubInterface
-	reqCount func() int64
-	tmpl     interface{} // placeholder — replaced in handler.go
-}
-
-// renderStandalone is a stub until templates are wired in Task 5/7.
-func (a *Admin) renderStandalone(w http.ResponseWriter, name string, data interface{}) {
-	w.WriteHeader(http.StatusOK)
-}
-
 // sessionStore is an in-memory store of active sessions.
 type sessionStore struct {
 	mu      sync.Mutex

@@ -10,22 +10,6 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// hubInterface is satisfied by *hub.Hub. Defined here to avoid import cycle.
-// handler.go will use the concrete *hub.Hub type once it defines the real Admin struct.
-type hubInterface interface {
-	IsConnected(token string) bool
-	LastSeenTime(token string) time.Time
-	ConnectedModels(token string) []string
-	ActiveClientCount() int
-	CloseByToken(token string)
-}
-
-// render is a stub until handler.go defines the real Admin struct and template engine.
-// This allows pages.go to compile before Task 7.
-func (a *Admin) render(w http.ResponseWriter, name string, data interface{}) {
-	w.WriteHeader(http.StatusOK)
-}
-
 // --- Shared page data types ---
 
 type basePage struct {
