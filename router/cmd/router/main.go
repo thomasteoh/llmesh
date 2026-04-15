@@ -72,6 +72,10 @@ func main() {
 	mux.HandleFunc("/v1/responses", apiHandler.Responses())
 	mux.HandleFunc("/ws/client", func(w http.ResponseWriter, r *http.Request) {
 		token := api.ExtractBearer(r)
+		if token == "" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
 		ct, ok := adminHandler.State().LookupClientToken(token)
 		if !ok {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
