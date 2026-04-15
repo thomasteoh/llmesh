@@ -7,6 +7,6 @@ services:
     ports:
       - "53002:53002"
     volumes:
-      - ./router/config.yaml:/config.yaml:ro
-      - ./router/state.json:/state.json
+      - ./router/config.yaml:/config.yaml:ro,z
+      - ./router/state.json:/state.json:z
     restart: unless-stopped
