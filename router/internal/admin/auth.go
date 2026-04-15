@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
@@ -9,6 +10,10 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 )
+
+type contextKey int
+
+const ctxUser contextKey = 1
 
 const sessionCookie = "admin_session"
 const sessionTTL = 24 * time.Hour
@@ -45,7 +50,9 @@ func newSessionStore() *sessionStore {
 
 func (s *sessionStore) create(username string) string {
 	b := make([]byte, 32)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand unavailable: " + err.Error())
+	}
 	id := hex.EncodeToString(b)
 	s.mu.Lock()
 	s.entries[id] = sessionEntry{Username: username, Expiry: time.Now().Add(sessionTTL)}
@@ -93,24 +100,31 @@ func (a *Admin) sessionUser(r *http.Request) (User, bool) {
 // requireAuth wraps a handler, redirecting to /admin/login if no valid session.
 func (a *Admin) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := a.sessionUser(r); !ok {
+		u, ok := a.sessionUser(r)
+		if !ok {
 			http.Redirect(w, r, "/admin/login", http.StatusFound)
 			return
 		}
-		next(w, r)
+		next(w, r.WithContext(context.WithValue(r.Context(), ctxUser, u)))
 	}
 }
 
 // requireAdmin wraps a handler, returning 403 if the session user is not an admin.
 func (a *Admin) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
-		u, _ := a.sessionUser(r)
+		u := r.Context().Value(ctxUser).(User)
 		if u.Role != "admin" {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
 		next(w, r)
 	})
+}
+
+// ctxGetUser retrieves the authenticated User from the request context.
+// Only valid inside a requireAuth-wrapped handler.
+func ctxGetUser(r *http.Request) User {
+	return r.Context().Value(ctxUser).(User)
 }
 
 func (a *Admin) handleLogin(w http.ResponseWriter, r *http.Request) {
