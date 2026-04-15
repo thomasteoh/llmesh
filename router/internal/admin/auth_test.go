@@ -26,14 +26,8 @@ func newTestAdmin(t *testing.T) *Admin {
 }
 
 func TestHandleSetup_GET(t *testing.T) {
+	t.Skip("GET handler render tested in Task 5 when templates are wired")
 	a := newTestAdmin(t)
-	// GET /admin/setup should 200 when no users
-	req := httptest.NewRequest("GET", "/admin/setup", nil)
-	rr := httptest.NewRecorder()
-	// need a minimal template; call the handler directly after wiring templates
-	// For now just verify NeedsSetup is true
-	_ = req
-	_ = rr
 	if !a.state.NeedsSetup() {
 		t.Fatal("expected NeedsSetup")
 	}
@@ -130,5 +124,23 @@ func TestHandleLogout_MethodNotAllowed(t *testing.T) {
 	a.handleLogout(rr, req)
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405, got %d", rr.Code)
+	}
+}
+
+func TestRequireAdmin_Forbidden(t *testing.T) {
+	a := newTestAdmin(t)
+	hash, _ := bcrypt.GenerateFromPassword([]byte("pw"), bcrypt.MinCost)
+	a.state.AddUser(User{Username: "carol", PasswordHash: string(hash), Role: "member"})
+	sid := a.sessions.create("carol")
+
+	protected := a.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	})
+	req := httptest.NewRequest("GET", "/admin/settings", nil)
+	req.AddCookie(&http.Cookie{Name: "admin_session", Value: sid})
+	rr := httptest.NewRecorder()
+	protected(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rr.Code)
 	}
 }
