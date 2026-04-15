@@ -104,3 +104,31 @@ func TestRequireAuth_Passes(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rr.Code)
 	}
 }
+
+func TestHandleLogin_DisabledAccount(t *testing.T) {
+	a := newTestAdmin(t)
+	hash, _ := bcrypt.GenerateFromPassword([]byte("pw"), bcrypt.MinCost)
+	a.state.AddUser(User{Username: "dave", PasswordHash: string(hash), Role: "member", Disabled: true})
+
+	form := url.Values{"username": {"dave"}, "password": {"pw"}}
+	req := httptest.NewRequest("POST", "/admin/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	a.handleLogin(rr, req)
+	// No session cookie should be set
+	for _, c := range rr.Result().Cookies() {
+		if c.Name == sessionCookie {
+			t.Fatal("session cookie should not be set for disabled account")
+		}
+	}
+}
+
+func TestHandleLogout_MethodNotAllowed(t *testing.T) {
+	a := newTestAdmin(t)
+	req := httptest.NewRequest("GET", "/admin/logout", nil)
+	rr := httptest.NewRecorder()
+	a.handleLogout(rr, req)
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", rr.Code)
+	}
+}
