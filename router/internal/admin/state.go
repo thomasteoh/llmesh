@@ -58,6 +58,9 @@ func LoadState(path string) (*State, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read state: %w", err)
 	}
+	if len(data) == 0 {
+		return s, nil // empty file treated as no state yet
+	}
 	if err := json.Unmarshal(data, &s.data); err != nil {
 		return nil, fmt.Errorf("parse state: %w", err)
 	}
