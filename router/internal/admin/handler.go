@@ -2,6 +2,7 @@ package admin
 
 import (
 	"embed"
+	"fmt"
 	"html/template"
 	"log"
 	"net/http"
@@ -25,6 +26,9 @@ type Admin struct {
 
 // New creates an Admin handler. statePath is the path to state.json.
 func New(statePath string, h *hub.Hub, reqCount func() int64) (*Admin, error) {
+	if reqCount == nil {
+		return nil, fmt.Errorf("admin: reqCount must not be nil")
+	}
 	state, err := LoadState(statePath)
 	if err != nil {
 		return nil, err
@@ -85,7 +89,7 @@ func (a *Admin) registerRoutes() {
 	mux := http.NewServeMux()
 
 	// Static assets
-	mux.Handle("/admin/static/", http.FileServer(http.FS(adminFS)))
+	mux.Handle("/admin/static/", http.StripPrefix("/admin", http.FileServer(http.FS(adminFS))))
 
 	// Auth (no session required)
 	mux.HandleFunc("/admin/login", a.handleLogin)
