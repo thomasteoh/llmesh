@@ -1,0 +1,198 @@
+package admin
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"net/http"
+	"sync"
+	"time"
+
+	"golang.org/x/crypto/bcrypt"
+)
+
+const sessionCookie = "admin_session"
+const sessionTTL = 24 * time.Hour
+const bcryptCost = 12
+
+// Admin is the admin UI handler. Full definition in handler.go (Task 7).
+// This stub allows auth_test.go to compile before handler.go is created.
+type Admin struct {
+	state    *State
+	sessions *sessionStore
+	hub      interface{} // placeholder — replaced in handler.go
+	tmpl     interface{} // placeholder — replaced in handler.go
+}
+
+// renderStandalone is a stub until templates are wired in Task 5/7.
+func (a *Admin) renderStandalone(w http.ResponseWriter, name string, data interface{}) {
+	w.WriteHeader(http.StatusOK)
+}
+
+// sessionStore is an in-memory store of active sessions.
+type sessionStore struct {
+	mu      sync.Mutex
+	entries map[string]sessionEntry
+}
+
+type sessionEntry struct {
+	Username string
+	Expiry   time.Time
+}
+
+func newSessionStore() *sessionStore {
+	return &sessionStore{entries: make(map[string]sessionEntry)}
+}
+
+func (s *sessionStore) create(username string) string {
+	b := make([]byte, 32)
+	rand.Read(b)
+	id := hex.EncodeToString(b)
+	s.mu.Lock()
+	s.entries[id] = sessionEntry{Username: username, Expiry: time.Now().Add(sessionTTL)}
+	s.mu.Unlock()
+	return id
+}
+
+func (s *sessionStore) lookup(id string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.entries[id]
+	if !ok {
+		return "", false
+	}
+	if time.Now().After(e.Expiry) {
+		delete(s.entries, id)
+		return "", false
+	}
+	return e.Username, true
+}
+
+func (s *sessionStore) delete(id string) {
+	s.mu.Lock()
+	delete(s.entries, id)
+	s.mu.Unlock()
+}
+
+// sessionUser returns the authenticated User for this request, or User{} if not authenticated.
+func (a *Admin) sessionUser(r *http.Request) (User, bool) {
+	c, err := r.Cookie(sessionCookie)
+	if err != nil {
+		return User{}, false
+	}
+	username, ok := a.sessions.lookup(c.Value)
+	if !ok {
+		return User{}, false
+	}
+	u, found := a.state.LookupUser(username)
+	if !found || u.Disabled {
+		return User{}, false
+	}
+	return u, true
+}
+
+// requireAuth wraps a handler, redirecting to /admin/login if no valid session.
+func (a *Admin) requireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := a.sessionUser(r); !ok {
+			http.Redirect(w, r, "/admin/login", http.StatusFound)
+			return
+		}
+		next(w, r)
+	}
+}
+
+// requireAdmin wraps a handler, returning 403 if the session user is not an admin.
+func (a *Admin) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
+	return a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		u, _ := a.sessionUser(r)
+		if u.Role != "admin" {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		next(w, r)
+	})
+}
+
+func (a *Admin) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		a.renderStandalone(w, "login", map[string]string{"Error": ""})
+		return
+	}
+	r.ParseForm()
+	username := r.FormValue("username")
+	password := r.FormValue("password")
+	u, ok := a.state.LookupUser(username)
+	if !ok || u.Disabled {
+		a.renderStandalone(w, "login", map[string]string{"Error": "Invalid credentials."})
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)); err != nil {
+		a.renderStandalone(w, "login", map[string]string{"Error": "Invalid credentials."})
+		return
+	}
+	sid := a.sessions.create(username)
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookie,
+		Value:    sid,
+		Path:     "/admin",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int(sessionTTL.Seconds()),
+	})
+	http.Redirect(w, r, "/admin/", http.StatusFound)
+}
+
+func (a *Admin) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if c, err := r.Cookie(sessionCookie); err == nil {
+		a.sessions.delete(c.Value)
+	}
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Path: "/admin", MaxAge: -1})
+	http.Redirect(w, r, "/admin/login", http.StatusFound)
+}
+
+func (a *Admin) handleSetup(w http.ResponseWriter, r *http.Request) {
+	if !a.state.NeedsSetup() {
+		http.Redirect(w, r, "/admin/login", http.StatusFound)
+		return
+	}
+	if r.Method == http.MethodGet {
+		a.renderStandalone(w, "setup", map[string]string{"Error": ""})
+		return
+	}
+	a.handleSetupPost(w, r)
+}
+
+func (a *Admin) handleSetupPost(w http.ResponseWriter, r *http.Request) {
+	r.ParseForm()
+	username := r.FormValue("username")
+	password := r.FormValue("password")
+	confirm := r.FormValue("confirm")
+	if username == "" || password == "" {
+		a.renderStandalone(w, "setup", map[string]string{"Error": "Username and password are required."})
+		return
+	}
+	if password != confirm {
+		a.renderStandalone(w, "setup", map[string]string{"Error": "Passwords do not match."})
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcryptCost)
+	if err != nil {
+		a.renderStandalone(w, "setup", map[string]string{"Error": "Internal error."})
+		return
+	}
+	if err := a.state.AddUser(User{
+		Username:     username,
+		PasswordHash: string(hash),
+		Role:         "admin",
+	}); err != nil {
+		a.renderStandalone(w, "setup", map[string]string{"Error": err.Error()})
+		return
+	}
+	http.Redirect(w, r, "/admin/login", http.StatusFound)
+}
+
+// HashPassword hashes a plaintext password using bcrypt.
+func HashPassword(password string) (string, error) {
+	b, err := bcrypt.GenerateFromPassword([]byte(password), bcryptCost)
+	return string(b), err
+}
