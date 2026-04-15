@@ -137,7 +137,10 @@ func (a *Admin) renderAPIKeys(w http.ResponseWriter, u User, newKey, formErr str
 
 func (a *Admin) handleAPIKeyCreate(w http.ResponseWriter, r *http.Request) {
 	u := ctxGetUser(r)
-	r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
 	label := strings.TrimSpace(r.FormValue("label"))
 	priority := r.FormValue("priority")
 	if priority == "" {
@@ -168,7 +171,10 @@ func (a *Admin) handleAPIKeyCreate(w http.ResponseWriter, r *http.Request) {
 
 func (a *Admin) handleAPIKeyRevoke(w http.ResponseWriter, r *http.Request) {
 	u := ctxGetUser(r)
-	r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
 	key := r.FormValue("key")
 	a.state.RevokeAPIKey(u.Username, key, u.Role == "admin")
 	http.Redirect(w, r, "/admin/api-keys", http.StatusFound)
@@ -206,7 +212,10 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, u User, newToken, form
 
 func (a *Admin) handleClientTokenCreate(w http.ResponseWriter, r *http.Request) {
 	u := ctxGetUser(r)
-	r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
 	name := strings.TrimSpace(r.FormValue("name"))
 	if name == "" {
 		a.renderClientTokens(w, u, "", "Name is required.")
@@ -232,7 +241,10 @@ func (a *Admin) handleClientTokenCreate(w http.ResponseWriter, r *http.Request) 
 
 func (a *Admin) handleClientTokenRevoke(w http.ResponseWriter, r *http.Request) {
 	u := ctxGetUser(r)
-	r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
 	token := r.FormValue("token")
 	a.state.RevokeClientToken(u.Username, token, u.Role == "admin")
 	a.hub.CloseByToken(token)
@@ -267,7 +279,10 @@ func (a *Admin) renderSettings(w http.ResponseWriter, u User, flash, errMsg stri
 
 func (a *Admin) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	u := ctxGetUser(r)
-	r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
 	current := r.FormValue("current")
 	newPw := r.FormValue("new")
 	confirm := r.FormValue("confirm")
@@ -275,7 +290,13 @@ func (a *Admin) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		a.renderSettings(w, u, "", "New passwords do not match.")
 		return
 	}
-	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(current)); err != nil {
+	// Re-fetch from store to get current hash (context copy may be stale after a prior change).
+	fresh, ok := a.state.LookupUser(u.Username)
+	if !ok {
+		a.renderSettings(w, u, "", "Internal error.")
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(fresh.PasswordHash), []byte(current)); err != nil {
 		a.renderSettings(w, u, "", "Current password is incorrect.")
 		return
 	}
@@ -290,7 +311,10 @@ func (a *Admin) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 
 func (a *Admin) handleAddUser(w http.ResponseWriter, r *http.Request) {
 	u := ctxGetUser(r)
-	r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
 	username := strings.TrimSpace(r.FormValue("username"))
 	password := r.FormValue("password")
 	if username == "" || password == "" {
@@ -312,7 +336,10 @@ func (a *Admin) handleAddUser(w http.ResponseWriter, r *http.Request) {
 
 func (a *Admin) handleUserDisable(w http.ResponseWriter, r *http.Request) {
 	u := ctxGetUser(r)
-	r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
 	target := r.FormValue("username")
 	if target == u.Username {
 		a.renderSettings(w, u, "", "Cannot disable yourself.")
@@ -323,14 +350,20 @@ func (a *Admin) handleUserDisable(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Admin) handleUserEnable(w http.ResponseWriter, r *http.Request) {
-	r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
 	target := r.FormValue("username")
 	a.state.UpdateUser(target, func(user *User) { user.Disabled = false })
 	http.Redirect(w, r, "/admin/settings", http.StatusFound)
 }
 
 func (a *Admin) handleUserPromote(w http.ResponseWriter, r *http.Request) {
-	r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
 	target := r.FormValue("username")
 	a.state.UpdateUser(target, func(user *User) { user.Role = "admin" })
 	http.Redirect(w, r, "/admin/settings", http.StatusFound)
@@ -338,17 +371,15 @@ func (a *Admin) handleUserPromote(w http.ResponseWriter, r *http.Request) {
 
 func (a *Admin) handleUserDemote(w http.ResponseWriter, r *http.Request) {
 	u := ctxGetUser(r)
-	r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
 	target := r.FormValue("username")
-	if target == u.Username {
-		a.renderSettings(w, u, "", "Cannot demote yourself.")
+	if err := a.state.DemoteUser(u.Username, target); err != nil {
+		a.renderSettings(w, u, "", err.Error())
 		return
 	}
-	if a.state.ActiveAdminCount() <= 1 {
-		a.renderSettings(w, u, "", "Cannot demote: at least one active admin must remain.")
-		return
-	}
-	a.state.UpdateUser(target, func(user *User) { user.Role = "member" })
 	http.Redirect(w, r, "/admin/settings", http.StatusFound)
 }
 

@@ -137,6 +137,33 @@ func (s *State) ActiveAdminCount() int {
 	return n
 }
 
+// DemoteUser demotes the named user to member, returning an error if the operation
+// would violate the at-least-one-active-admin invariant or if the user is the actor.
+func (s *State) DemoteUser(actor, target string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if actor == target {
+		return fmt.Errorf("cannot demote yourself")
+	}
+	// Count active admins before applying the change.
+	count := 0
+	for _, u := range s.data.Users {
+		if u.Role == "admin" && !u.Disabled {
+			count++
+		}
+	}
+	if count <= 1 {
+		return fmt.Errorf("cannot demote: at least one active admin must remain")
+	}
+	for i := range s.data.Users {
+		if s.data.Users[i].Username == target {
+			s.data.Users[i].Role = "member"
+			break
+		}
+	}
+	return s.save()
+}
+
 // --- API Keys ---
 
 func (s *State) LookupAPIKey(key string) (APIKey, bool) {
