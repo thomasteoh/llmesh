@@ -79,3 +79,33 @@ func TestActiveClientCount(t *testing.T) {
 		t.Fatalf("expected 1, got %d", h.ActiveClientCount())
 	}
 }
+
+func TestConnectedModels(t *testing.T) {
+	h := New()
+	conn := dialHub(t, h, "mac", "alice", "ct-alice-models")
+	defer conn.Close()
+	time.Sleep(20 * time.Millisecond)
+
+	// Before register: no models advertised.
+	if got := h.ConnectedModels("ct-alice-models"); len(got) != 0 {
+		t.Fatalf("expected no models before register, got %v", got)
+	}
+
+	// Send register message with two models.
+	msg := `{"type":"register","models":[{"name":"llama3.2:3b"},{"name":"mistral-7b"}],"max_concurrent":2}`
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(msg)); err != nil {
+		t.Fatalf("write register: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	models := h.ConnectedModels("ct-alice-models")
+	if len(models) != 2 {
+		t.Fatalf("expected 2 models, got %v", models)
+	}
+	want := map[string]bool{"llama3.2:3b": true, "mistral-7b": true}
+	for _, m := range models {
+		if !want[m] {
+			t.Errorf("unexpected model %q", m)
+		}
+	}
+}
