@@ -36,9 +36,43 @@ type ClientToken struct {
 }
 
 type stateData struct {
-	Users        []User        `json:"users"`
-	APIKeys      []APIKey      `json:"api_keys"`
-	ClientTokens []ClientToken `json:"client_tokens"`
+	Users        []User               `json:"users"`
+	APIKeys      []APIKey             `json:"api_keys"`
+	ClientTokens []ClientToken        `json:"client_tokens"`
+	ModelAliases map[string][]string  `json:"model_aliases,omitempty"` // alias → list of target model names
+}
+
+// UnmarshalJSON handles migration from the old map[string]string format.
+func (sd *stateData) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Users        []User          `json:"users"`
+		APIKeys      []APIKey        `json:"api_keys"`
+		ClientTokens []ClientToken   `json:"client_tokens"`
+		ModelAliases json.RawMessage `json:"model_aliases,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	sd.Users = raw.Users
+	sd.APIKeys = raw.APIKeys
+	sd.ClientTokens = raw.ClientTokens
+	if len(raw.ModelAliases) > 0 {
+		// Try new format first: map[string][]string
+		var newFmt map[string][]string
+		if err := json.Unmarshal(raw.ModelAliases, &newFmt); err == nil {
+			sd.ModelAliases = newFmt
+			return nil
+		}
+		// Fall back to old format: map[string]string → migrate
+		var oldFmt map[string]string
+		if err := json.Unmarshal(raw.ModelAliases, &oldFmt); err == nil {
+			sd.ModelAliases = make(map[string][]string, len(oldFmt))
+			for alias, model := range oldFmt {
+				sd.ModelAliases[alias] = []string{model}
+			}
+		}
+	}
+	return nil
 }
 
 // State is the mutable runtime state, persisted to state.json.
@@ -205,6 +239,24 @@ func (s *State) AddAPIKey(k APIKey) error {
 	return s.save()
 }
 
+// UpdateAPIKeyPriority changes the priority of the given key. Admin-only operation.
+func (s *State) UpdateAPIKeyPriority(key, priority string) error {
+	switch priority {
+	case "high", "normal", "low":
+	default:
+		return fmt.Errorf("invalid priority %q", priority)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.data.APIKeys {
+		if s.data.APIKeys[i].Key == key {
+			s.data.APIKeys[i].Priority = priority
+			return s.save()
+		}
+	}
+	return fmt.Errorf("key not found")
+}
+
 // RevokeAPIKey removes the key. Non-admins can only revoke their own keys.
 func (s *State) RevokeAPIKey(owner, key string, isAdmin bool) error {
 	s.mu.Lock()
@@ -239,7 +291,15 @@ func (s *State) PriorityFor(key string) types.Priority {
 	return types.PriorityFromString(k.Priority)
 }
 
-// --- Client Tokens ---
+func (s *State) OwnerFor(key string) string {
+	k, ok := s.LookupAPIKey(key)
+	if !ok {
+		return ""
+	}
+	return k.Owner
+}
+
+// --- Clients ---
 
 func (s *State) LookupClientToken(token string) (ClientToken, bool) {
 	s.mu.RLock()
@@ -322,4 +382,79 @@ func GenClientTokenValue(owner string) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("ct-%s-%s", owner, r), nil
+}
+
+// --- Model Aliases ---
+
+// AliasMap returns a copy of the current alias→[]models map.
+func (s *State) AliasMap() map[string][]string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string][]string, len(s.data.ModelAliases))
+	for k, v := range s.data.ModelAliases {
+		cp := make([]string, len(v))
+		copy(cp, v)
+		out[k] = cp
+	}
+	return out
+}
+
+// AddAlias appends model to the target list for alias.
+// Returns an error if alias or model is blank, or if the pair already exists.
+func (s *State) AddAlias(alias, model string) error {
+	if alias == "" || model == "" {
+		return fmt.Errorf("alias and model must not be blank")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.data.ModelAliases == nil {
+		s.data.ModelAliases = make(map[string][]string)
+	}
+	for _, existing := range s.data.ModelAliases[alias] {
+		if existing == model {
+			return fmt.Errorf("alias %q → %q already exists", alias, model)
+		}
+	}
+	s.data.ModelAliases[alias] = append(s.data.ModelAliases[alias], model)
+	return s.save()
+}
+
+// DeleteAlias removes a specific model from the alias's target list.
+// If the list becomes empty, the alias key is removed entirely.
+func (s *State) DeleteAlias(alias, model string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	targets, exists := s.data.ModelAliases[alias]
+	if !exists {
+		return fmt.Errorf("alias %q not found", alias)
+	}
+	newTargets := targets[:0]
+	found := false
+	for _, t := range targets {
+		if t == model {
+			found = true
+			continue
+		}
+		newTargets = append(newTargets, t)
+	}
+	if !found {
+		return fmt.Errorf("alias %q → %q not found", alias, model)
+	}
+	if len(newTargets) == 0 {
+		delete(s.data.ModelAliases, alias)
+	} else {
+		s.data.ModelAliases[alias] = newTargets
+	}
+	return s.save()
+}
+
+// DeleteAliasGroup removes an entire alias entry regardless of how many targets it has.
+func (s *State) DeleteAliasGroup(alias string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.data.ModelAliases[alias]; !exists {
+		return fmt.Errorf("alias %q not found", alias)
+	}
+	delete(s.data.ModelAliases, alias)
+	return s.save()
 }

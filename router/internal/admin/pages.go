@@ -8,16 +8,28 @@ import (
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
+	"llmesh/router/internal/stats"
 )
 
 // --- Shared page data types ---
 
 type basePage struct {
-	Page     string
-	Username string
-	IsAdmin  bool
-	Flash    string
-	Error    string
+	Page          string
+	Username      string
+	IsAdmin       bool
+	Flash         string
+	Error         string
+	RouterVersion string
+	Name          string
+	Host          string
+}
+
+// StatRow is a named row in the token usage panel.
+type StatRow struct {
+	Name             string
+	Requests         int64
+	PromptTokens     int64
+	CompletionTokens int64
 }
 
 type DashboardPage struct {
@@ -26,7 +38,12 @@ type DashboardPage struct {
 	ActiveClients int
 	APIKeyCount   int
 	TokenCount    int
+	ActiveModels  []string
+	ActiveAliases map[string][]string // alias → []target models
+	ModelAliases  map[string][]string // model → []aliases pointing to it (inverted, for per-model UI)
 	Clients       []ClientRow
+	StatsByModel  []StatRow
+	StatsByUser   []StatRow
 }
 
 type ClientRow struct {
@@ -35,6 +52,7 @@ type ClientRow struct {
 	Status   string // "connected" | "offline" | "never_connected"
 	LastSeen string
 	Models   string
+	Version  string
 }
 
 type APIKeysPage struct {
@@ -51,10 +69,25 @@ type ClientTokensPage struct {
 	FormError string
 }
 
+type ConnectedClientRow struct {
+	Name   string
+	Version string
+	Models string
+	InFlight int
+	MaxConcurrent int
+}
+
 type ClientTokenRow struct {
 	ClientToken
-	Status   string
-	LastSeen string
+	Status       string
+	LastSeen     string
+	Models       []ModelWithAliases
+	Connections  []ConnectedClientRow
+}
+
+type ModelWithAliases struct {
+	Name    string
+	Aliases []string
 }
 
 type SettingsPage struct {
@@ -65,6 +98,17 @@ type SettingsPage struct {
 type UserRow struct {
 	User
 	IsSelf bool
+}
+
+func (a *Admin) newBasePage(page string, u User) basePage {
+	return basePage{
+		Page:          page,
+		Username:      u.Username,
+		IsAdmin:       u.Role == "admin",
+		RouterVersion: a.routerVersion,
+		Name:          a.name,
+		Host:          a.host,
+	}
 }
 
 // --- Dashboard ---
@@ -78,11 +122,17 @@ func (a *Admin) handleDashboard(w http.ResponseWriter, r *http.Request) {
 			Name:  t.Owner + "/" + t.Name,
 			Token: t.Token,
 		}
-		if a.hub.IsConnected(t.Token) {
-			row.Status = "connected"
+		connCount := a.hub.ConnectedCountByToken(t.Token)
+		if connCount > 0 {
+			if connCount == 1 {
+				row.Status = "connected"
+			} else {
+				row.Status = fmt.Sprintf("%d connected", connCount)
+			}
 			mods := a.hub.ConnectedModels(t.Token)
 			sort.Strings(mods)
 			row.Models = strings.Join(mods, ", ")
+			row.Version = a.hub.ConnectedVersion(t.Token)
 		} else if ls := a.hub.LastSeenTime(t.Token); !ls.IsZero() {
 			row.Status = "offline"
 			row.LastSeen = humanTime(ls)
@@ -91,13 +141,31 @@ func (a *Admin) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 		clients = append(clients, row)
 	}
+	activeModels := a.hub.ActiveModels()
+	sort.Strings(activeModels)
+	activeAliases := a.state.AliasMap()
+	// Build inverted map: model → []aliases pointing to it
+	modelAliases := make(map[string][]string)
+	for alias, targets := range activeAliases {
+		for _, t := range targets {
+			modelAliases[t] = append(modelAliases[t], alias)
+		}
+	}
+	for m := range modelAliases {
+		sort.Strings(modelAliases[m])
+	}
 	data := DashboardPage{
-		basePage:      basePage{Page: "dashboard", Username: u.Username, IsAdmin: u.Role == "admin"},
+		basePage:      a.newBasePage("dashboard", u),
 		TotalRequests: a.reqCount(),
 		ActiveClients: a.hub.ActiveClientCount(),
 		APIKeyCount:   a.state.APIKeyCount(),
 		TokenCount:    a.state.ClientTokenCount(),
+		ActiveModels:  activeModels,
+		ActiveAliases: activeAliases,
+		ModelAliases:  modelAliases,
 		Clients:       clients,
+		StatsByModel:  statsRows(a.stats, true),
+		StatsByUser:   statsRows(a.stats, false),
 	}
 	a.render(w, "dashboard", data)
 }
@@ -112,7 +180,7 @@ func (a *Admin) handleAPIKeys(w http.ResponseWriter, r *http.Request) {
 func (a *Admin) renderAPIKeys(w http.ResponseWriter, u User, newKey, formErr string) {
 	keys := a.state.APIKeysFor(u.Username, u.Role == "admin")
 	a.render(w, "api-keys", APIKeysPage{
-		basePage:  basePage{Page: "api-keys", Username: u.Username, IsAdmin: u.Role == "admin"},
+		basePage:  a.newBasePage("api-keys", u),
 		Keys:      keys,
 		NewKey:    newKey,
 		FormError: formErr,
@@ -164,7 +232,7 @@ func (a *Admin) handleAPIKeyRevoke(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin/api-keys", http.StatusFound)
 }
 
-// --- Client Tokens ---
+// --- Clients ---
 
 func (a *Admin) handleClientTokens(w http.ResponseWriter, r *http.Request) {
 	u := ctxGetUser(r)
@@ -173,11 +241,46 @@ func (a *Admin) handleClientTokens(w http.ResponseWriter, r *http.Request) {
 
 func (a *Admin) renderClientTokens(w http.ResponseWriter, u User, newToken, formErr string) {
 	rawTokens := a.state.ClientTokensFor(u.Username, u.Role == "admin")
+
+	// Build inverted alias map: model name → []aliases
+	aliasMap := a.state.AliasMap()
+	modelAliases := make(map[string][]string)
+	for alias, targets := range aliasMap {
+		for _, model := range targets {
+			modelAliases[model] = append(modelAliases[model], alias)
+		}
+	}
+	for m := range modelAliases {
+		sort.Strings(modelAliases[m])
+	}
+
 	rows := make([]ClientTokenRow, 0, len(rawTokens))
 	for _, t := range rawTokens {
 		row := ClientTokenRow{ClientToken: t}
-		if a.hub.IsConnected(t.Token) {
-			row.Status = "connected"
+		connInfos := a.hub.ConnectedClientsByToken(t.Token)
+		if len(connInfos) > 0 {
+			if len(connInfos) == 1 {
+				row.Status = "connected"
+			} else {
+				row.Status = fmt.Sprintf("%d connected", len(connInfos))
+			}
+			mods := a.hub.ConnectedModels(t.Token)
+			sort.Strings(mods)
+			for _, m := range mods {
+				row.Models = append(row.Models, ModelWithAliases{
+					Name:    m,
+					Aliases: modelAliases[m],
+				})
+			}
+			for _, ci := range connInfos {
+				row.Connections = append(row.Connections, ConnectedClientRow{
+					Name:          ci.Name,
+					Version:       ci.Version,
+					Models:        strings.Join(ci.Models, ", "),
+					InFlight:      ci.InFlight,
+					MaxConcurrent: ci.MaxConcurrent,
+				})
+			}
 		} else if ls := a.hub.LastSeenTime(t.Token); !ls.IsZero() {
 			row.Status = "offline"
 			row.LastSeen = humanTime(ls)
@@ -186,8 +289,8 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, u User, newToken, form
 		}
 		rows = append(rows, row)
 	}
-	a.render(w, "client-tokens", ClientTokensPage{
-		basePage:  basePage{Page: "client-tokens", Username: u.Username, IsAdmin: u.Role == "admin"},
+	a.render(w, "clients", ClientTokensPage{
+		basePage:  a.newBasePage("clients", u),
 		Tokens:    rows,
 		NewToken:  newToken,
 		FormError: formErr,
@@ -232,14 +335,80 @@ func (a *Admin) handleClientTokenRevoke(w http.ResponseWriter, r *http.Request) 
 	token := r.FormValue("token")
 	a.state.RevokeClientToken(u.Username, token, u.Role == "admin")
 	a.hub.CloseByToken(token)
-	http.Redirect(w, r, "/admin/client-tokens", http.StatusFound)
+	http.Redirect(w, r, "/admin/clients", http.StatusFound)
 }
 
-// --- Docs ---
-
-func (a *Admin) handleDocs(w http.ResponseWriter, r *http.Request) {
+// handleClientTokenConfig serves a pre-filled config.yaml for the given token.
+func (a *Admin) handleClientTokenConfig(w http.ResponseWriter, r *http.Request) {
 	u := ctxGetUser(r)
-	a.render(w, "docs", basePage{Page: "docs", Username: u.Username, IsAdmin: u.Role == "admin"})
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		http.Error(w, "token required", http.StatusBadRequest)
+		return
+	}
+	ct, ok := a.state.LookupClientToken(token)
+	if !ok {
+		http.Error(w, "token not found", http.StatusNotFound)
+		return
+	}
+	if ct.Owner != u.Username && u.Role != "admin" {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	host := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
+			r == '.' || r == '-' || r == ':' || r == '[' || r == ']' {
+			return r
+		}
+		return -1
+	}, r.Host)
+	yaml := fmt.Sprintf("router_url: \"wss://%s/ws/client\"\nrouter_token: \"%s\"\nmax_concurrent: 4\nmodels:\n  - name: \"llama3.2:3b\"\n    endpoint: \"http://localhost:8080\"\n", host, token)
+	w.Header().Set("Content-Type", "application/x-yaml")
+	w.Header().Set("Content-Disposition", `attachment; filename="config.yaml"`)
+	fmt.Fprint(w, yaml)
+}
+
+// --- Model Aliases ---
+
+func (a *Admin) handleModelAliasCreate(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	alias := strings.TrimSpace(r.FormValue("alias"))
+	model := strings.TrimSpace(r.FormValue("model"))
+	if alias != "" && model != "" {
+		a.state.AddAlias(alias, model) // duplicate errors silently ignored
+	}
+	http.Redirect(w, r, "/admin/", http.StatusFound)
+}
+
+func (a *Admin) handleModelAliasDelete(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	alias := r.FormValue("alias")
+	model := r.FormValue("model")
+	if model != "" {
+		a.state.DeleteAlias(alias, model)
+	} else {
+		a.state.DeleteAliasGroup(alias)
+	}
+	// Redirect back to the originating page (dashboard or clients)
+	ref := r.FormValue("ref")
+	if ref == "clients" {
+		http.Redirect(w, r, "/admin/clients", http.StatusFound)
+		return
+	}
+	http.Redirect(w, r, "/admin/", http.StatusFound)
+}
+
+// --- Help ---
+
+func (a *Admin) handleHelp(w http.ResponseWriter, r *http.Request) {
+	u := ctxGetUser(r)
+	a.render(w, "help", a.newBasePage("help", u))
 }
 
 // --- Settings ---
@@ -255,8 +424,11 @@ func (a *Admin) renderSettings(w http.ResponseWriter, u User, flash, errMsg stri
 	for _, usr := range users {
 		rows = append(rows, UserRow{User: usr, IsSelf: usr.Username == u.Username})
 	}
+	bp := a.newBasePage("settings", u)
+	bp.Flash = flash
+	bp.Error = errMsg
 	a.render(w, "settings", SettingsPage{
-		basePage: basePage{Page: "settings", Username: u.Username, IsAdmin: u.Role == "admin", Flash: flash, Error: errMsg},
+		basePage: bp,
 		Users:    rows,
 	})
 }
@@ -314,7 +486,10 @@ func (a *Admin) handleAddUser(w http.ResponseWriter, r *http.Request) {
 		a.renderSettings(w, u, "", "Internal error.")
 		return
 	}
-	a.state.AddUser(User{Username: username, PasswordHash: hash, Role: "member"})
+	if err := a.state.AddUser(User{Username: username, PasswordHash: hash, Role: "member"}); err != nil {
+		a.renderSettings(w, u, "", err.Error())
+		return
+	}
 	a.renderSettings(w, u, fmt.Sprintf("User %q created.", username), "")
 }
 
@@ -329,27 +504,38 @@ func (a *Admin) handleUserDisable(w http.ResponseWriter, r *http.Request) {
 		a.renderSettings(w, u, "", "Cannot disable yourself.")
 		return
 	}
-	a.state.UpdateUser(target, func(user *User) { user.Disabled = true })
+	if err := a.state.UpdateUser(target, func(user *User) { user.Disabled = true }); err != nil {
+		a.renderSettings(w, u, "", err.Error())
+		return
+	}
 	http.Redirect(w, r, "/admin/settings", http.StatusFound)
 }
 
 func (a *Admin) handleUserEnable(w http.ResponseWriter, r *http.Request) {
+	u := ctxGetUser(r)
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 	target := r.FormValue("username")
-	a.state.UpdateUser(target, func(user *User) { user.Disabled = false })
+	if err := a.state.UpdateUser(target, func(user *User) { user.Disabled = false }); err != nil {
+		a.renderSettings(w, u, "", err.Error())
+		return
+	}
 	http.Redirect(w, r, "/admin/settings", http.StatusFound)
 }
 
 func (a *Admin) handleUserPromote(w http.ResponseWriter, r *http.Request) {
+	u := ctxGetUser(r)
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 	target := r.FormValue("username")
-	a.state.UpdateUser(target, func(user *User) { user.Role = "admin" })
+	if err := a.state.UpdateUser(target, func(user *User) { user.Role = "admin" }); err != nil {
+		a.renderSettings(w, u, "", err.Error())
+		return
+	}
 	http.Redirect(w, r, "/admin/settings", http.StatusFound)
 }
 
@@ -365,6 +551,48 @@ func (a *Admin) handleUserDemote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/admin/settings", http.StatusFound)
+}
+
+// statsRows converts stats.Stats rows to StatRow slices sorted by total tokens desc.
+// byModel=true returns per-model rows; false returns per-user rows.
+func statsRows(s *stats.Stats, byModel bool) []StatRow {
+	if s == nil {
+		return nil
+	}
+	var rows []stats.Row
+	if byModel {
+		rows = s.ByModel()
+	} else {
+		rows = s.ByUser()
+	}
+	out := make([]StatRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, StatRow{
+			Name:             r.Name,
+			Requests:         r.Requests,
+			PromptTokens:     r.PromptTokens,
+			CompletionTokens: r.CompletionTokens,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		ti := out[i].PromptTokens + out[i].CompletionTokens
+		tj := out[j].PromptTokens + out[j].CompletionTokens
+		return ti > tj
+	})
+	return out
+}
+
+// --- API Key priority ---
+
+func (a *Admin) handleAPIKeyPriority(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	key := r.FormValue("key")
+	priority := r.FormValue("priority")
+	a.state.UpdateAPIKeyPriority(key, priority) // errors silently ignored; bad input just doesn't save
+	http.Redirect(w, r, "/admin/api-keys", http.StatusFound)
 }
 
 // humanTime formats a time as a human-readable relative string.

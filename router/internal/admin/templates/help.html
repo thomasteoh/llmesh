@@ -1,0 +1,448 @@
+{{define "content"}}
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  window.__mermaidReady = new Promise(function(resolve) {
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'dark',
+      themeVariables: {
+        primaryColor: '#4a6fa5',
+        primaryTextColor: '#e2e8f0',
+        primaryBorderColor: '#7a9dd6',
+        lineColor: '#7a9dd6',
+        secondaryColor: '#2a4a7f',
+        tertiaryColor: '#1e3a5f',
+        clusterBkg: '#162032',
+        clusterBorder: '#2a4a7f',
+        nodeBkg: '#1e3a5f',
+        nodeBorder: '#4a6fa5',
+        edgeLabelBackground: '#0f1923',
+        tertiaryBorderColor: '#2a4a7f',
+        fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, monospace)',
+      },
+      flowchart: { curve: 'basis', padding: 16, nodeSpacing: 50, rankSpacing: 60 },
+      sequence: { diagramPadding: 8, actorMargin: 60, width: 180, height: 65 },
+    });
+    resolve();
+  });
+  // Lazy-render diagrams in visible sections
+  window.__renderDiagrams = function() {
+    window.__mermaidReady.then(function() {
+      const visible = document.querySelector('.docs-section.active .mermaid');
+      if (visible && !visible.getAttribute('data-processed')) {
+        mermaid.run({ nodes: [visible] }).catch(function(e) { console.warn('Mermaid render failed', e); });
+      }
+    });
+  };
+  // Auto-render on load
+  setTimeout(window.__renderDiagrams, 200);
+</script>
+<div class="docs-layout">
+  <div class="docs-nav">
+    <div class="docs-nav-header" onclick="toggleDocsNav()">
+      Navigation <span id="docs-nav-chevron">&#9662;</span>
+    </div>
+    <div class="docs-nav-items" id="docs-nav-items">
+      <div class="docs-nav-section">Endpoints</div>
+      <a class="docs-link active" onclick="showDoc('openai',this)">OpenAI compatible</a>
+      <a class="docs-link" onclick="showDoc('anthropic',this)">Anthropic compatible</a>
+      <a class="docs-link" onclick="showDoc('responses',this)">Responses API</a>
+      <div class="docs-nav-section">Setup</div>
+      <a class="docs-link" onclick="showDoc('client-setup',this)">Client config</a>
+      <a class="docs-link" onclick="showDoc('priority-tiers',this)">Priority tiers</a>
+      <div class="docs-nav-section">Features</div>
+      <a class="docs-link" onclick="showDoc('model-aliases',this)">Model aliases</a>
+      <a class="docs-link" onclick="showDoc('tool-calling',this)">Tool calling</a>
+      <a class="docs-link" onclick="showDoc('chat-templates',this)">Chat templates</a>
+      <div class="docs-nav-section">Internals</div>
+      <a class="docs-link" onclick="showDoc('message-flow',this)">Message flow</a>
+    </div>
+  </div>
+  <div class="docs-content">
+
+    {{/* ── OpenAI ─────────────────────────────────────────────── */}}
+    <div class="docs-section active" id="openai">
+      <div class="docs-title">OpenAI-compatible endpoint</div>
+      <div class="docs-subtitle">Drop-in replacement for <code>api.openai.com</code></div>
+      <div class="docs-code">POST /v1/chat/completions</div>
+      <div class="docs-label">Authentication</div>
+      <div class="docs-code">Authorization: Bearer sk-yourkey</div>
+      <div class="docs-label">Example (streaming)</div>
+      <div class="docs-code">curl https://{{.Host}}/v1/chat/completions \
+  -H "Authorization: Bearer sk-yourkey" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"llama3.2:3b","messages":[{"role":"user","content":"hi"}],"stream":true}'</div>
+      <div class="docs-label">Python SDK</div>
+      <div class="docs-code">from openai import OpenAI
+client = OpenAI(base_url="https://{{.Host}}/v1", api_key="sk-yourkey")</div>
+      <div class="docs-label">Model not found — error response</div>
+      <p class="docs-p">If the requested model or alias is not served by any connected client, the router returns HTTP 400 with a list of what is currently available:</p>
+      <div class="docs-code">{"error":{"message":"model \"xyz\" not found","available_models":["llama3.2:3b"],"available_aliases":{"small":"llama3.2:3b"}}}</div>
+    </div>
+
+    {{/* ── Anthropic ──────────────────────────────────────────── */}}
+    <div class="docs-section" id="anthropic">
+      <div class="docs-title">Anthropic-compatible endpoint</div>
+      <div class="docs-subtitle">Drop-in replacement for <code>api.anthropic.com</code></div>
+      <div class="docs-code">POST /v1/messages</div>
+      <div class="docs-label">Authentication</div>
+      <div class="docs-code">x-api-key: sk-yourkey</div>
+      <div class="docs-label">Python SDK</div>
+      <div class="docs-code">import anthropic
+client = anthropic.Anthropic(base_url="https://{{.Host}}", api_key="sk-yourkey")</div>
+    </div>
+
+    {{/* ── Responses API ──────────────────────────────────────── */}}
+    <div class="docs-section" id="responses">
+      <div class="docs-title">Responses API endpoint</div>
+      <div class="docs-subtitle">OpenAI Responses API format</div>
+      <div class="docs-code">POST /v1/responses</div>
+      <div class="docs-label">Authentication</div>
+      <div class="docs-code">Authorization: Bearer sk-yourkey</div>
+    </div>
+
+    {{/* ── Client config ──────────────────────────────────────── */}}
+    <div class="docs-section" id="client-setup">
+      <div class="docs-title">Client config reference</div>
+      <div class="docs-subtitle">All fields for <code>config.yaml</code></div>
+      <div class="docs-label">Full example</div>
+      <div class="docs-code">router_url: "wss://{{.Host}}/ws/client"
+router_token: "ct-yourname-yourtoken"
+max_concurrent: 4
+models:
+  - name: "llama3.2:3b"
+    endpoint: "http://localhost:8080"
+  - name: "unsloth/qwen3-30b-a3b"
+    endpoint: "http://localhost:8081"
+    chat_template: "qwen2.5"   # optional template override</div>
+      <div class="docs-label">Fields</div>
+      <div class="table-scroll" style="margin-bottom:16px;">
+        <table class="data-table">
+          <thead><tr><th>Field</th><th>Required</th><th>Default</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><mono>router_url</mono></td><td>yes</td><td>&mdash;</td><td>WebSocket URL of the router. Use <code>wss://</code> for TLS.</td></tr>
+            <tr><td><mono>router_token</mono></td><td>yes</td><td>&mdash;</td><td>Client token from the <a onclick="showDoc('client-setup',null)" style="cursor:pointer;color:var(--text-muted);text-decoration:underline;">Clients</a> page. Begins with <code>ct-</code>.</td></tr>
+            <tr><td><mono>max_concurrent</mono></td><td>no</td><td>4</td><td>Max parallel jobs. Match to your hardware&rsquo;s capacity.</td></tr>
+            <tr><td><mono>models[].name</mono></td><td>yes</td><td>&mdash;</td><td>Full model name as registered with the router. Aliases are managed server-side &mdash; see <a onclick="showDoc('model-aliases',null)" style="cursor:pointer;color:var(--text-muted);text-decoration:underline;">Model aliases</a>.</td></tr>
+            <tr><td><mono>models[].endpoint</mono></td><td>yes</td><td>&mdash;</td><td>llama.cpp base URL. Client appends <code>/v1/chat/completions</code>.</td></tr>
+            <tr><td><mono>models[].chat_template</mono></td><td>no</td><td>&mdash;</td><td>Override the model&rsquo;s built-in Jinja2 chat template. llama.cpp applies it server-side. See <a onclick="showDoc('chat-templates',null)" style="cursor:pointer;color:var(--text-muted);text-decoration:underline;">Chat templates</a>.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="docs-label">Notes</div>
+      <p class="docs-p">The client reconnects automatically on disconnect using exponential back-off (1 s &rarr; 2 s &rarr; 4 s &rarr; &hellip; &rarr; 60 s max).</p>
+      <p class="docs-p">Inside Docker, use <code>http://host.docker.internal:8080</code> as the endpoint to reach llama.cpp running on the host. The provided <code>docker-compose.client.yml</code> sets the <code>host.docker.internal</code> alias automatically.</p>
+    </div>
+
+    {{/* ── Priority tiers ─────────────────────────────────────── */}}
+    <div class="docs-section" id="priority-tiers">
+      <div class="docs-title">Priority tiers</div>
+      <div class="docs-subtitle">Requests ordered by API key priority, then FIFO within each tier</div>
+      <div class="mermaid-label">Priority ordering</div>
+      <div class="mermaid-diagram">
+<pre class="mermaid">
+sequenceDiagram
+    participant Caller
+    participant Router
+    participant Queue
+    participant Client
+
+    Caller-&gt;&gt;Router: POST /v1/... (priority: high/normal/low)
+    Router->>Router: read priority from API key
+    Router->>Queue: enqueue (tier bucket)
+
+    alt Client available
+        Router->>Client: dispatch (respect tier order)
+        Client-->>Router: token delta (SSE)
+        Router-->>Caller: stream
+    else Queue empty
+        Router-->>Caller: 400 no available model
+    end
+</pre>
+      </div>
+      <div class="mermaid-label">Affinity scheduling</div>
+      <div class="mermaid-diagram">
+<pre class="mermaid">
+flowchart TD
+    A[Client free] --> B{Owner has<br/>queued requests?}
+    B -- yes --> C[Pick owner's<br/>best request]
+    B -- no --> D[Pick best<br/>available request<br/>by tier]
+    C --> E[Dispatch to client]
+    D --> E
+</pre>
+      </div>
+      <div class="docs-code">high   &#8594; processed first  (0)
+normal &#8594; default          (1)
+low    &#8594; processed last   (2)</div>
+      <p class="docs-p">Set priority per API key on the API Keys page. Admins can update priority at any time.</p>
+      <p class="docs-p">Affinity scheduling: when a client is free it prefers to pick up its owner&rsquo;s requests first. Affinity overrides priority tier &mdash; an owner&rsquo;s normal-priority request beats another user&rsquo;s high-priority request for that client. If the owner has no queued requests, any eligible request is used as fallback.</p>
+    </div>
+
+    {{/* ── Model aliases ──────────────────────────────────────── */}}
+    <div class="docs-section" id="model-aliases">
+      <div class="docs-title">Model aliases</div>
+      <div class="docs-subtitle">Server-managed short names that route to any available matching model</div>
+      <p class="docs-p">Aliases are managed inline on the <strong>Clients</strong> page, not in client config files. Clients register their full model names only. The router resolves aliases at dispatch time.</p>
+      <div class="docs-label">Example</div>
+      <div class="docs-code"># On the Clients page, each connected model shows its aliases:
+# unsloth/Qwen3.6-35B-A3B   aliases: [qwen ×] [large-moe ×] [+ add alias]
+# llama3.2:3b               aliases: [small ×] [+ add alias]</div>
+      <div class="docs-label">Example call</div>
+      <div class="docs-code"># These all route to the same model:
+curl ... -d '{"model":"unsloth/Qwen3.6-35B-A3B",...}'
+curl ... -d '{"model":"qwen",...}'
+curl ... -d '{"model":"large-moe",...}'</div>
+      <div class="mermaid-label">Alias resolution</div>
+      <div class="mermaid-diagram">
+<pre class="mermaid">
+flowchart LR
+    subgraph Callers
+        A1[caller: "qwen"]
+        A2[caller: "large-moe"]
+    end
+
+    A1 --> B
+    A2 --> B
+    B{router<br/>scheduler}
+    B -->|alias lookup| C[state.json<br/>alias map]
+    C -->|qwen →<br/>unsloth/qwen-35b| D[dispatch<br/>to matching client]
+    D -->|large-moe →<br/>unsloth/qwen-35b| D
+
+    D --> E1[client A:<br/>unsloth/qwen-35b]
+    D --> E2[client B:<br/>unsloth/qwen-35b]
+</pre>
+      </div>
+      <div class="docs-label">Shared aliases</div>
+      <p class="docs-p">Multiple clients can serve models with the same alias. A caller requesting <mono>"qwen"</mono> will be routed to whichever matching client has spare capacity first &mdash; load-balancing and affinity rules apply as normal. The alias is resolved to the canonical model name at dispatch time.</p>
+    </div>
+
+    {{/* ── Tool calling ───────────────────────────────────────── */}}
+    <div class="docs-section" id="tool-calling">
+      <div class="docs-title">Tool calling</div>
+      <div class="docs-subtitle">Function/tool calls passed through to llama.cpp</div>
+      <p class="docs-p">Tool definitions, tool calls, and tool results are passed through the full request pipeline without modification. The router preserves the raw JSON structure of <mono>tools</mono>, <mono>tool_calls</mono>, and <mono>tool_result</mono> content blocks at every stage.</p>
+      <div class="docs-label">OpenAI format</div>
+      <div class="docs-code">curl https://{{.Host}}/v1/chat/completions \
+  -H "Authorization: Bearer sk-yourkey" \
+  -d '{
+    "model": "llama3.2:3b",
+    "tools": [{"type":"function","function":{"name":"get_weather","parameters":{...}}}],
+    "messages": [{"role":"user","content":"What is the weather in Paris?"}]
+  }'</div>
+      <div class="docs-label">Anthropic format</div>
+      <div class="docs-code">curl https://{{.Host}}/v1/messages \
+  -H "x-api-key: sk-yourkey" \
+  -d '{
+    "model": "llama3.2:3b",
+    "tools": [{"name":"get_weather","description":"...","input_schema":{...}}],
+    "messages": [{"role":"user","content":"What is the weather in Paris?"}]
+  }'</div>
+      <div class="mermaid-label">Multi-turn tool use (OpenAI format)</div>
+      <div class="mermaid-diagram">
+<pre class="mermaid">
+sequenceDiagram
+    participant Caller
+    participant Router
+    participant Client
+    participant Llama as llama.cpp
+
+    Caller-&gt;&gt;Router: 1. user: "What's weather in Paris?" + tools
+    activate Router
+    Router-&gt;&gt;Client: dispatch
+    Client-&gt;&gt;Llama: POST with tools in messages
+    Llama-->>Client: tool_use response
+    Client-->>Router: tool_call delta
+    Router-->>Caller: SSE chunk: tool_use
+    deactivate Router
+
+    Caller-&gt;&gt;Router: 2. same request + tool_result appended
+    activate Router
+    Router-&gt;&gt;Client: dispatch (full history)
+    Client-&gt;&gt;Llama: POST with tool_result in messages
+    Llama-->>Client: final text response
+    Client-->>Router: token deltas
+    Router-->>Caller: SSE chunks (text)
+    deactivate Router
+</pre>
+      </div>
+
+      <div class="mermaid-label">Router passthrough behavior</div>
+      <div class="mermaid-diagram">
+<pre class="mermaid">
+flowchart LR
+    subgraph Incoming
+        A1[OpenAI<br/>tool_calls / tool role]
+        A2[Anthropic<br/>tool_use / tool_result]
+    end
+
+    A1 --> B{llmesh router}
+    A2 --> B
+
+    B -->|preserves raw JSON| C[InferenceRequest<br/>json.RawMessage]
+    C --> D[queue + dispatch]
+    D --> E[Client → llama.cpp]
+
+    E -->|llama.cpp uses OpenAI format| F[tool_calls / tool role]
+
+    F --> G[Client → Hub<br/>ChunkMsg]
+    G --> H{translate.go<br/>format adapter}
+    H -->|Anthropic endpoint| I[tool_use / tool_result]
+    H -->|OpenAI endpoint| J[tool_calls / tool role]
+    I --> K[Caller]
+    J --> K
+
+    classDef in fill:#1e3a5f,stroke:#4a6fa5,color:#e2e8f0;
+    classDef core fill:#243148,stroke:#7a9dd6,color:#e2e8f0;
+    classDef out fill:#162032,stroke:#334155,color:#94a3b8;
+    class A1,A2 in;
+    class B,C,D,E core;
+    class F,G,H,I,J,K out;
+</pre>
+      </div>
+
+      <div class="docs-label">Multi-turn tool use</div>
+      <p class="docs-p">Conversations with <mono>tool_use</mono> / <mono>tool_result</mono> content blocks (Anthropic) or <mono>tool_calls</mono> / <mono>tool</mono> role messages (OpenAI) are forwarded intact. The full message history including tool call results must be included in each request &mdash; the router is stateless.</p>
+      <div class="docs-label">Note on format translation</div>
+      <p class="docs-p">llama.cpp speaks OpenAI format. When using the Anthropic endpoint with tools, the model must support OpenAI-style tool calling. Anthropic&harr;OpenAI tool format translation is not currently performed by the router.</p>
+    </div>
+
+    {{/* ── Chat templates ─────────────────────────────────────── */}}
+    <div class="docs-section" id="chat-templates">
+      <div class="docs-title">Chat templates</div>
+      <div class="docs-subtitle">Override the model&rsquo;s built-in Jinja2 prompt format</div>
+      <p class="docs-p">llama.cpp applies a Jinja2 chat template to format the message list into a prompt before feeding it to the model. By default it uses the template embedded in the GGUF file. If the embedded template is wrong, missing, or you want to experiment with a different format, set <mono>chat_template</mono> per model in <mono>config.yaml</mono>.</p>
+      <div class="docs-label">Example</div>
+      <div class="docs-code">models:
+  - name: "unsloth/qwen3-30b-a3b"
+    endpoint: "http://localhost:8081"
+    chat_template: "qwen2.5"  # use llama.cpp built-in template by name</div>
+      <p class="docs-p">The value is passed to llama.cpp as the <mono>chat_template</mono> field in the request body. llama.cpp accepts either a built-in template name (e.g. <mono>llama3</mono>, <mono>qwen2.5</mono>, <mono>mistral</mono>) or a raw Jinja2 template string.</p>
+      <p class="docs-p">This is a client-side setting &mdash; different clients can use different templates for the same model name. Callers do not need to know or specify the template.</p>
+    </div>
+
+    {{/* ── Message flow ───────────────────────────────────────── */}}
+    <div class="docs-section" id="message-flow">
+      <div class="docs-title">Message flow</div>
+      <div class="docs-subtitle">End-to-end path of a request through the system</div>
+
+      <div class="mermaid-label">End-to-end pipeline</div>
+      <div class="mermaid-diagram">
+<pre class="mermaid">
+sequenceDiagram
+    participant Caller as Caller<br/>(OpenAI/Anthropic)
+    participant Router as Router<br/>(api/handler.go)
+    participant Queue as Inbound<br/>Queue
+    participant Scheduler as Scheduler<br/>(scheduler.go)
+    participant Client as Client<br/>(ws/conn.go)
+    participant Llama as llama.cpp
+    participant Hub as Hub<br/>(hub.go)
+    participant Corr as Correlation<br/>store
+
+    Caller-&gt;&gt;Router: POST /v1/...
+    activate Router
+    Router-&gt;&gt;Router: 1. auth + body read (1 MB cap)
+    Router-&gt;&gt;Router: 2. translate → InferenceRequest
+    Router-&gt;&gt;Router: 3. validate model/alias
+    Router-&gt;&gt;Queue: 4. enqueue + create channel
+    Router-&gt;&gt;Corr: 5. register correlation
+    Router-->>Caller: block (waiting for response)
+
+    Scheduler-&gt;&gt;Scheduler: 6. affinity dispatch
+    Scheduler-&gt;&gt;Scheduler: 7. PeekBestForClient
+    Scheduler-&gt;&gt;Scheduler: 8. resolve alias → canonical
+    Scheduler-&gt;&gt;Client: 9. SendToClient (JobMsg)
+    deactivate Router
+
+    Client-&gt;&gt;Client: 10. acquire semaphore slot
+    Client-&gt;&gt;Llama: 11. POST /v1/chat/completions
+    activate Llama
+    Llama-->>Client: stream token/tool deltas
+    deactivate Llama
+    Client-&gt;&gt;Hub: 12. forward ChunkMsg
+
+    Hub-&gt;&gt;Corr: 13. correlation.Send (non-blocking)
+    activate Corr
+    Corr-->>Router: drain channel → SSE
+    Router-->>Caller: stream chunks
+    deactivate Corr
+</pre>
+      </div>
+
+      <div class="mermaid-label">Scheduler dispatch logic</div>
+      <div class="mermaid-diagram">
+<pre class="mermaid">
+flowchart TD
+    A[Queue has<br/>pending requests] --> B[Scheduler tick]
+    B --> C[For each available client]
+    C --> D[PeekBestForClient]
+    D --> E{Model matches<br/>client names<br/>or alias map?}
+    E -- no --> F[Skip this client]
+    E -- yes --> G{Owner's<br/>queued requests?}
+    G -- yes --> H[Pick owner's<br/>best request]
+    G -- no --> I[Pick best<br/>request by tier]
+    H --> J[PopByID<br/>atomic commit]
+    I --> J
+    F --> C
+    J --> K[Resolve alias<br/>→ canonical model]
+    K --> L[SendToClient<br/>JobMsg over WS]
+    L --> C
+</pre>
+      </div>
+
+      <div class="docs-label">1 &mdash; Auth and body</div>
+      <p class="flow-prose">The HTTP goroutine extracts the bearer key and validates it against the API key store (linear scan of <mono>state.json</mono> keys). The request body is read fully into memory with a hard cap of 1 MB.</p>
+
+      <div class="docs-label">2 &mdash; Inbound translation</div>
+      <p class="flow-prose">The raw JSON is normalised into a format-agnostic <mono>InferenceRequest</mono>. Message content is stored as raw JSON (<mono>json.RawMessage</mono>), preserving tool_use/tool_result blocks, tool_calls arrays, and multi-part content without modification. Tools and tool_choice are forwarded as-is. The original wire format (<mono>openai</mono> / <mono>anthropic</mono> / <mono>openai-responses</mono>) is stored as <mono>SourceFmt</mono> for the outbound formatter.</p>
+
+      <div class="docs-label">Fields not forwarded</div>
+      <div class="table-scroll" style="margin-bottom:16px;">
+        <table class="data-table">
+          <thead><tr><th>Field</th><th>Reason</th></tr></thead>
+          <tbody>
+            <tr><td>Image content</td><td>Multi-part content arrays are forwarded raw; binary image data in <mono>image_url</mono> parts depends on llama.cpp support</td></tr>
+            <tr><td><mono>n</mono>, logprobs, seed</td><td>Not modelled; llama.cpp always returns one choice</td></tr>
+            <tr><td>Stop sequences, penalties</td><td>Not forwarded to llama.cpp</td></tr>
+            <tr><td>Anthropic <mono>temperature</mono> / <mono>top_p</mono></td><td>Not parsed by <mono>AnthropicInbound</mono></td></tr>
+            <tr><td>Responses API <mono>system</mono></td><td>Not parsed by <mono>ResponsesInbound</mono></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="docs-label">3 &mdash; Model / alias validation</div>
+      <p class="flow-prose">The requested model is checked against connected clients (model names) and the server-side alias map (from <mono>state.json</mono>). If the name is an alias, the target model must be served by a connected client. On failure the request is rejected immediately with HTTP 400 and a list of available models and aliases. The original model string (possibly an alias) is kept in the request for the scheduler.</p>
+
+      <div class="docs-label">4&ndash;5 &mdash; Queue and correlation</div>
+      <p class="flow-prose">A UUID is assigned, priority is read from the API key, owner is set from the API key, and a buffered channel (cap 32) is created in the correlation store. The scheduler is woken via a coalescing signal channel (cap 1).</p>
+
+      <div class="docs-label">6&ndash;9 &mdash; Scheduler dispatch</div>
+      <p class="flow-prose">Client-centric affinity scheduling: for each available client, <mono>PeekBestForClient</mono> finds the best queued request whose model matches the client&rsquo;s model names or the server-side alias map, preferring the client owner&rsquo;s requests. The globally best (client, request) pair wins. <mono>PopByID</mono> atomically commits the choice. If <mono>req.Model</mono> is an alias, it is rewritten to the canonical model name using the server-side alias map before the job is sent.</p>
+
+      <div class="docs-label">10&ndash;12 &mdash; Client processing</div>
+      <p class="flow-prose">The client dispatches each <mono>JobMsg</mono> to a goroutine after acquiring a semaphore slot. The full conversation history (including any tool calls and results) is re-POSTed to llama.cpp on every call &mdash; no cross-request KV cache management at the llmesh layer. Token deltas and tool-call deltas are forwarded back as <mono>ChunkMsg</mono>.</p>
+
+      <div class="docs-label">13 &mdash; Correlation and response</div>
+      <p class="flow-prose"><mono>correlation.Send</mono> is non-blocking: if the 32-slot channel is full the chunk is silently dropped. The HTTP goroutine drains the channel and writes SSE events, flushing after each token or tool-call delta.</p>
+
+      <div class="docs-label">Data lifetime</div>
+      <div class="table-scroll" style="margin-bottom:16px;">
+        <table class="data-table">
+          <thead><tr><th>Data</th><th>Lives in</th><th>Persisted?</th></tr></thead>
+          <tbody>
+            <tr><td>Request body bytes</td><td>HTTP goroutine stack</td><td>No &mdash; freed on return</td></tr>
+            <tr><td><mono>InferenceRequest</mono> (full messages)</td><td>Queue slice, then JobMsg</td><td>No &mdash; lost on restart</td></tr>
+            <tr><td>Correlation channel (&le; 32 chunks)</td><td>In-memory map</td><td>No</td></tr>
+            <tr><td>Client send buffer (&le; 64 messages)</td><td>Per-client channel</td><td>No</td></tr>
+            <tr><td>Request counter</td><td>Atomic int64 in process</td><td>No &mdash; resets on restart</td></tr>
+            <tr><td>Token usage stats</td><td>In-memory maps</td><td>No &mdash; resets on restart</td></tr>
+            <tr><td>Client last-seen timestamps</td><td>Hub map</td><td>No</td></tr>
+            <tr><td>API keys, users, tokens</td><td><mono>state.json</mono></td><td><strong>Yes</strong></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="flow-prose">No message content, prompt text, or response text is ever written to disk.</p>
+    </div>
+
+  </div>
+</div>
+{{end}}

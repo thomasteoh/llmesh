@@ -12,6 +12,8 @@ type Config struct {
 	Server struct {
 		Port int `yaml:"port"`
 	} `yaml:"server"`
+	Name string `yaml:"name"` // brand name shown on landing page
+	Host   string `yaml:"host"`   // hostname clients use to connect
 }
 
 // LoadConfig reads a YAML config file at path.
@@ -26,6 +28,12 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.Server.Port == 0 {
 		cfg.Server.Port = 53002
+	}
+	if cfg.Name == "" {
+		cfg.Name = "llmesh"
+	}
+	if cfg.Host == "" {
+		cfg.Host = "llmesh.example.com"
 	}
 	return &cfg, nil
 }

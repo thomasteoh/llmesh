@@ -4,28 +4,36 @@ import (
 	"embed"
 	"fmt"
 	"html/template"
-	"log"
+	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 
 	"llmesh/router/internal/hub"
+	"llmesh/router/internal/stats"
 )
+
+var log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 //go:embed templates static
 var adminFS embed.FS
 
 // Admin is the management console HTTP handler.
 type Admin struct {
-	state    *State
-	hub      *hub.Hub
-	reqCount func() int64
-	sessions *sessionStore
-	tmpls    map[string]*template.Template
-	mux      *http.ServeMux
+	state         *State
+	hub           *hub.Hub
+	reqCount      func() int64
+	stats         *stats.Stats
+	routerVersion string
+	name          string
+	host          string
+	sessions      *sessionStore
+	tmpls         map[string]*template.Template
+	mux           *http.ServeMux
 }
 
 // New creates an Admin handler. statePath is the path to state.json.
-func New(statePath string, h *hub.Hub, reqCount func() int64) (*Admin, error) {
+func New(statePath string, h *hub.Hub, reqCount func() int64, s *stats.Stats, routerVersion, name, host string) (*Admin, error) {
 	if reqCount == nil {
 		return nil, fmt.Errorf("admin: reqCount must not be nil")
 	}
@@ -34,10 +42,14 @@ func New(statePath string, h *hub.Hub, reqCount func() int64) (*Admin, error) {
 		return nil, err
 	}
 	a := &Admin{
-		state:    state,
-		hub:      h,
-		reqCount: reqCount,
-		sessions: newSessionStore(),
+		state:         state,
+		hub:           h,
+		reqCount:      reqCount,
+		stats:         s,
+		routerVersion: routerVersion,
+		name:          name,
+		host:          host,
+		sessions:      newSessionStore(),
 	}
 	if err := a.parseTemplates(); err != nil {
 		return nil, err
@@ -62,7 +74,7 @@ func (a *Admin) parseTemplates() error {
 		"not": func(b bool) bool { return !b },
 	}
 
-	layoutPages := []string{"dashboard", "api-keys", "client-tokens", "docs", "settings"}
+	layoutPages := []string{"dashboard", "api-keys", "clients", "settings", "help"}
 	a.tmpls = make(map[string]*template.Template)
 	for _, name := range layoutPages {
 		t, err := template.New("layout.html").Funcs(funcMap).ParseFS(
@@ -124,23 +136,53 @@ func (a *Admin) registerRoutes() {
 		}
 		a.handleAPIKeyRevoke(w, r)
 	}))
+	mux.HandleFunc("/admin/api-keys/priority", a.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		a.handleAPIKeyPriority(w, r)
+	}))
 
-	mux.HandleFunc("/admin/client-tokens", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/admin/clients", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			a.handleClientTokenCreate(w, r)
 		} else {
 			a.handleClientTokens(w, r)
 		}
 	}))
-	mux.HandleFunc("/admin/client-tokens/revoke", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/admin/clients/revoke", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		a.handleClientTokenRevoke(w, r)
 	}))
+	mux.HandleFunc("/admin/clients/config", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		a.handleClientTokenConfig(w, r)
+	}))
 
-	mux.HandleFunc("/admin/docs", a.requireAuth(a.handleDocs))
+	mux.HandleFunc("/admin/model-aliases", a.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Redirect(w, r, "/admin/clients", http.StatusFound)
+			return
+		}
+		a.handleModelAliasCreate(w, r)
+	}))
+	mux.HandleFunc("/admin/model-aliases/delete", a.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		a.handleModelAliasDelete(w, r)
+	}))
+
+	// Help page.
+	mux.HandleFunc("/admin/help", a.requireAuth(a.handleHelp))
 
 	mux.HandleFunc("/admin/settings", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
@@ -222,7 +264,7 @@ func (a *Admin) render(w http.ResponseWriter, name string, data any) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := t.Execute(w, data); err != nil {
-		log.Printf("admin: render %s: %v", name, err)
+		log.Error("admin: render", "template", name, "error", err)
 	}
 }
 

@@ -8,8 +8,9 @@ import (
 )
 
 type ModelConfig struct {
-	Name     string `yaml:"name"`
-	Endpoint string `yaml:"endpoint"`
+	Name         string `yaml:"name"`
+	Endpoint     string `yaml:"endpoint"`
+	ChatTemplate string `yaml:"chat_template,omitempty"` // overrides model's built-in Jinja template
 }
 
 type Config struct {
@@ -40,6 +41,17 @@ func (c *Config) EndpointFor(model string) string {
 	for _, m := range c.Models {
 		if m.Name == model {
 			return m.Endpoint
+		}
+	}
+	return ""
+}
+
+// ChatTemplateFor returns the configured chat template override for the given model.
+// Returns "" if none is set (llama.cpp will use the model's built-in template).
+func (c *Config) ChatTemplateFor(model string) string {
+	for _, m := range c.Models {
+		if m.Name == model {
+			return m.ChatTemplate
 		}
 	}
 	return ""

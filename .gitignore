@@ -3,3 +3,6 @@
 router/router
 client/client
 router/state.json
+
+vendor/
+.superpowers/

@@ -140,6 +140,7 @@ func (a *Admin) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Value:    sid,
 		Path:     "/admin",
 		HttpOnly: true,
+		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(sessionTTL.Seconds()),
 	})

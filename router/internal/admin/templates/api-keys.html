@@ -3,11 +3,14 @@
 <div class="new-key-banner">
   <p>&#10003; Key created. Copy it now &mdash; it will not be shown again.</p>
   <code id="new-key-val">{{.NewKey}}</code>
-  <button class="btn-secondary" style="margin-top:8px;" onclick="navigator.clipboard.writeText(document.getElementById('new-key-val').textContent)">Copy</button>
+  <div class="new-key-actions">
+    <button class="btn-secondary" data-copy-from="new-key-val">Copy</button>
+  </div>
 </div>
 {{end}}
 <div class="card">
   <div class="card-title">Add API key</div>
+  <p class="docs-p" style="margin-bottom:14px;">An API key authenticates callers (e.g. AI agents, scripts) to the router. Include it in your request header so the router knows who is making the call and applies the correct priority tier.</p>
   <form method="POST" action="/admin/api-keys">
     <div class="form-row">
       <div class="form-group" style="flex:2;">
@@ -20,29 +23,44 @@
       </div>
       <button type="submit" class="btn">Generate key</button>
     </div>
-    {{if .FormError}}<p style="font-size:11px;color:var(--danger);margin-top:8px;">{{.FormError}}</p>{{end}}
+    {{if .FormError}}<p class="form-error">{{.FormError}}</p>{{end}}
   </form>
 </div>
-<table class="data-table">
-  <thead><tr><th>Label</th><th>Key</th><th>Priority</th><th>Created</th><th></th></tr></thead>
-  <tbody>
-    {{range .Keys}}
-    <tr>
-      <td><span class="muted">{{.Owner}}/</span>{{.Label}}</td>
-      <td class="muted" style="font-family:monospace;font-size:11px;">{{truncate .Key 20}}&hellip; <span style="cursor:pointer;" onclick="navigator.clipboard.writeText('{{.Key}}')">&#10697;</span></td>
-      <td><span class="badge {{.Priority}}">{{.Priority}}</span></td>
-      <td class="muted">{{.CreatedAt.Format "2006-01-02"}}</td>
-      <td style="text-align:right;">
-        <form method="POST" action="/admin/api-keys/revoke" style="display:inline;">
-          <input type="hidden" name="key" value="{{.Key}}">
-          <button type="submit" class="btn-danger">Revoke</button>
-        </form>
-      </td>
-    </tr>
-    {{else}}
-    <tr><td colspan="5" class="muted" style="padding:16px 10px;">No API keys yet.</td></tr>
-    {{end}}
-  </tbody>
-</table>
-<p class="table-hint">Keys shown truncated. Click &#10697; to copy full value. Keys cannot be recovered after leaving this page.</p>
+<div class="table-scroll">
+  <table class="data-table">
+    <thead><tr><th>Label</th><th>Key</th><th>Priority</th><th>Created</th><th></th></tr></thead>
+    <tbody>
+      {{range .Keys}}
+      <tr>
+        <td><span class="muted">{{.Owner}}/</span>{{.Label}}</td>
+        <td class="muted" style="font-family:monospace;font-size:11px;">{{truncate .Key 20}}&hellip; <button class="btn-copy" data-copy="{{.Key}}" title="Copy full key">&#10697;</button></td>
+        <td>
+          {{if $.IsAdmin}}
+          <form method="POST" action="/admin/api-keys/priority" style="display:inline;">
+            <input type="hidden" name="key" value="{{.Key}}">
+            <select name="priority" class="priority-inline priority-{{.Priority}}" onchange="this.form.submit()" title="Change priority">
+              <option value="high"{{if eq .Priority "high"}} selected{{end}}>high</option>
+              <option value="normal"{{if eq .Priority "normal"}} selected{{end}}>normal</option>
+              <option value="low"{{if eq .Priority "low"}} selected{{end}}>low</option>
+            </select>
+          </form>
+          {{else}}
+          <span class="badge {{.Priority}}">{{.Priority}}</span>
+          {{end}}
+        </td>
+        <td class="muted">{{.CreatedAt.Format "2006-01-02"}}</td>
+        <td style="text-align:right;">
+          <form method="POST" action="/admin/api-keys/revoke" style="display:inline;">
+            <input type="hidden" name="key" value="{{.Key}}">
+            <button type="submit" class="btn-danger">Revoke</button>
+          </form>
+        </td>
+      </tr>
+      {{else}}
+      <tr><td colspan="5" class="muted" style="padding:16px 10px;">No API keys yet.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+<p class="table-hint">Keys shown truncated. Click &#10697; to copy full value. Keys cannot be recovered after leaving this page.{{if .IsAdmin}} Admins can change priority inline.{{end}}</p>
 {{end}}

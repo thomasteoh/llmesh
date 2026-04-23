@@ -2,12 +2,16 @@ package worker
 
 import (
 	"context"
-	"log"
+	"encoding/json"
+	"log/slog"
+	"os"
 
 	clientPkg "llmesh/client"
 	"llmesh/client/internal/llamacpp"
 	"llmesh/pkg/types"
 )
+
+var log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 // SendFn sends a JSON-encodable message back to the router over WebSocket.
 type SendFn func(msg any) error
@@ -18,7 +22,7 @@ func Handle(ctx context.Context, job types.JobMsg, cfg *clientPkg.Config, send S
 	req := job.Request
 	endpoint := cfg.EndpointFor(req.Model)
 	if endpoint == "" {
-		log.Printf("worker: no endpoint for model %s", req.Model)
+		log.Warn("worker: no endpoint", "model", req.Model)
 		_ = send(types.ErrorMsg{
 			Type:      "error",
 			RequestID: req.ID,
@@ -28,23 +32,26 @@ func Handle(ctx context.Context, job types.JobMsg, cfg *clientPkg.Config, send S
 	}
 
 	llmClient := llamacpp.New(endpoint)
-	err := llmClient.Infer(ctx, req, func(delta string, done bool, finishReason string) {
+	chatTemplate := cfg.ChatTemplateFor(req.Model)
+	err := llmClient.Infer(ctx, req, chatTemplate, func(delta string, toolCallsDelta json.RawMessage, done bool, finishReason string, usage *types.UsageInfo) {
 		chunk := types.ChunkMsg{
-			Type:         "chunk",
-			RequestID:    req.ID,
-			Delta:        delta,
-			Done:         done,
-			FinishReason: finishReason,
+			Type:           "chunk",
+			RequestID:      req.ID,
+			Delta:          delta,
+			ToolCallsDelta: toolCallsDelta,
+			Done:           done,
+			FinishReason:   finishReason,
+			Usage:          usage,
 		}
 		if sendErr := send(chunk); sendErr != nil {
 			if ctx.Err() == nil {
-				log.Printf("worker: send error: %v", sendErr)
+				log.Error("worker: send error", "error", sendErr)
 			}
 		}
 	})
 	if err != nil {
 		if ctx.Err() == nil {
-			log.Printf("worker: infer error for %s: %v", req.ID, err)
+			log.Error("worker: infer error", "request_id", req.ID, "error", err)
 		}
 		_ = send(types.ErrorMsg{
 			Type:      "error",
