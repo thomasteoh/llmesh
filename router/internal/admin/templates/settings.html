@@ -1,5 +1,5 @@
 {{define "content"}}
-<div style="max-width:480px;">
+<div class="settings-narrow">
   <div class="card">
     <div class="card-title">Change password</div>
     <form method="POST" action="/admin/settings/password">
@@ -13,39 +13,41 @@
 
 {{if .IsAdmin}}
 <div style="margin-top:8px;">
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-    <div style="font-size:13px;font-weight:600;">Users</div>
-    <form method="POST" action="/admin/settings/users" style="display:flex;gap:8px;align-items:center;">
-      <input name="username" placeholder="username" style="background:var(--surface-1);border:1px solid var(--border);border-radius:4px;padding:6px 10px;color:var(--text);font-size:12px;width:130px;">
-      <input name="password" type="password" placeholder="password" style="background:var(--surface-1);border:1px solid var(--border);border-radius:4px;padding:6px 10px;color:var(--text);font-size:12px;width:130px;">
+  <div class="section-header">
+    <div class="section-title">Users</div>
+    <form method="POST" action="/admin/settings/users" class="inline-form">
+      <input name="username" placeholder="username" class="inline-input">
+      <input name="password" type="password" placeholder="password" class="inline-input">
       <button type="submit" class="btn">Add user</button>
     </form>
   </div>
-  <table class="data-table">
-    <thead><tr><th>Username</th><th>Role</th><th>Status</th><th></th></tr></thead>
-    <tbody>
-      {{range .Users}}
-      <tr{{if .Disabled}} style="opacity:0.6;"{{end}}>
-        <td>{{.Username}}{{if .IsSelf}} <span class="muted">(you)</span>{{end}}</td>
-        <td><span class="badge {{.Role}}">{{.Role}}</span></td>
-        <td><span class="badge {{if .Disabled}}disabled{{else}}active{{end}}">{{if .Disabled}}disabled{{else}}active{{end}}</span></td>
-        <td style="text-align:right;">
-          {{if not .IsSelf}}
-          <div style="display:flex;gap:6px;justify-content:flex-end;">
-            {{if .Disabled}}
-              <form method="POST" action="/admin/settings/users/enable" style="display:inline;"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-success">Enable</button></form>
-            {{else}}
-              {{if eq .Role "admin"}}<form method="POST" action="/admin/settings/users/demote" style="display:inline;"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-secondary">Demote</button></form>{{end}}
-              {{if eq .Role "member"}}<form method="POST" action="/admin/settings/users/promote" style="display:inline;"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-secondary">Promote</button></form>{{end}}
-              <form method="POST" action="/admin/settings/users/disable" style="display:inline;"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-danger">Disable</button></form>
+  <div class="table-scroll">
+    <table class="data-table">
+      <thead><tr><th>Username</th><th>Role</th><th>Status</th><th></th></tr></thead>
+      <tbody>
+        {{range .Users}}
+        <tr{{if .Disabled}} style="opacity:0.6;"{{end}}>
+          <td>{{.Username}}{{if .IsSelf}} <span class="muted">(you)</span>{{end}}</td>
+          <td><span class="badge {{.Role}}">{{.Role}}</span></td>
+          <td><span class="badge {{if .Disabled}}disabled{{else}}active{{end}}">{{if .Disabled}}disabled{{else}}active{{end}}</span></td>
+          <td style="text-align:right;">
+            {{if not .IsSelf}}
+            <div style="display:flex;gap:6px;justify-content:flex-end;">
+              {{if .Disabled}}
+                <form method="POST" action="/admin/settings/users/enable" style="display:inline;"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-success">Enable</button></form>
+              {{else}}
+                {{if eq .Role "admin"}}<form method="POST" action="/admin/settings/users/demote" style="display:inline;"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-secondary">Demote</button></form>{{end}}
+                {{if eq .Role "member"}}<form method="POST" action="/admin/settings/users/promote" style="display:inline;"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-secondary">Promote</button></form>{{end}}
+                <form method="POST" action="/admin/settings/users/disable" style="display:inline;"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-danger">Disable</button></form>
+              {{end}}
+            </div>
             {{end}}
-          </div>
-          {{end}}
-        </td>
-      </tr>
-      {{end}}
-    </tbody>
-  </table>
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
   <p class="table-hint">Cannot disable or demote yourself. At least one active admin must remain.</p>
 </div>
 {{end}}

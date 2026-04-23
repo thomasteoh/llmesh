@@ -8,6 +8,14 @@ import (
 
 // --- Inbound translators ---
 
+type openAIMessage struct {
+	Role       string          `json:"role"`
+	Content    json.RawMessage `json:"content,omitempty"`
+	ToolCalls  json.RawMessage `json:"tool_calls,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+	Name       string          `json:"name,omitempty"`
+}
+
 type openAIRequest struct {
 	Model       string          `json:"model"`
 	Messages    []openAIMessage `json:"messages"`
@@ -15,11 +23,8 @@ type openAIRequest struct {
 	Temperature float64         `json:"temperature"`
 	TopP        float64         `json:"top_p"`
 	Stream      bool            `json:"stream"`
-}
-
-type openAIMessage struct {
-	Role    string          `json:"role"`
-	Content json.RawMessage `json:"content"` // string or array
+	Tools       json.RawMessage `json:"tools,omitempty"`
+	ToolChoice  json.RawMessage `json:"tool_choice,omitempty"`
 }
 
 // OpenAIInbound converts an OpenAI chat completions body to an InferenceRequest.
@@ -35,28 +40,34 @@ func OpenAIInbound(body []byte) (*types.InferenceRequest, error) {
 		TopP:        r.TopP,
 		Stream:      r.Stream,
 		SourceFmt:   "openai",
+		Tools:       r.Tools,
+		ToolChoice:  r.ToolChoice,
 	}
 	for _, m := range r.Messages {
-		content, err := extractContent(m.Content)
-		if err != nil {
-			return nil, err
-		}
-		req.Messages = append(req.Messages, types.Message{Role: m.Role, Content: content})
+		req.Messages = append(req.Messages, types.Message{
+			Role:       m.Role,
+			Content:    m.Content,
+			ToolCalls:  m.ToolCalls,
+			ToolCallID: m.ToolCallID,
+			Name:       m.Name,
+		})
 	}
 	return req, nil
 }
 
-type anthropicRequest struct {
-	Model     string             `json:"model"`
-	System    string             `json:"system"`
-	Messages  []anthropicMessage `json:"messages"`
-	MaxTokens int                `json:"max_tokens"`
-	Stream    bool               `json:"stream"`
+type anthropicMessage struct {
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
 }
 
-type anthropicMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+type anthropicRequest struct {
+	Model      string             `json:"model"`
+	System     json.RawMessage    `json:"system,omitempty"`
+	Messages   []anthropicMessage `json:"messages"`
+	MaxTokens  int                `json:"max_tokens"`
+	Stream     bool               `json:"stream"`
+	Tools      json.RawMessage    `json:"tools,omitempty"`
+	ToolChoice json.RawMessage    `json:"tool_choice,omitempty"`
 }
 
 // AnthropicInbound converts an Anthropic messages body to an InferenceRequest.
@@ -66,12 +77,14 @@ func AnthropicInbound(body []byte) (*types.InferenceRequest, error) {
 		return nil, fmt.Errorf("anthropic parse: %w", err)
 	}
 	req := &types.InferenceRequest{
-		Model:     r.Model,
-		MaxTokens: r.MaxTokens,
-		Stream:    r.Stream,
-		SourceFmt: "anthropic",
+		Model:      r.Model,
+		MaxTokens:  r.MaxTokens,
+		Stream:     r.Stream,
+		SourceFmt:  "anthropic",
+		Tools:      r.Tools,
+		ToolChoice: r.ToolChoice,
 	}
-	if r.System != "" {
+	if len(r.System) > 0 && string(r.System) != "null" {
 		req.Messages = append(req.Messages, types.Message{Role: "system", Content: r.System})
 	}
 	for _, m := range r.Messages {
@@ -99,13 +112,15 @@ func ResponsesInbound(body []byte) (*types.InferenceRequest, error) {
 		Stream:    r.Stream,
 		SourceFmt: "openai-responses",
 	}
+	// Input is either a plain string or an array of message objects.
 	var inputStr string
 	if err := json.Unmarshal(r.Input, &inputStr); err == nil {
-		req.Messages = []types.Message{{Role: "user", Content: inputStr}}
+		// r.Input is already a JSON string literal — use directly as content.
+		req.Messages = []types.Message{{Role: "user", Content: r.Input}}
 	} else {
 		var msgs []struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
 		}
 		if err := json.Unmarshal(r.Input, &msgs); err != nil {
 			return nil, fmt.Errorf("responses input parse: %w", err)
@@ -115,27 +130,6 @@ func ResponsesInbound(body []byte) (*types.InferenceRequest, error) {
 		}
 	}
 	return req, nil
-}
-
-func extractContent(raw json.RawMessage) (string, error) {
-	var s string
-	if err := json.Unmarshal(raw, &s); err == nil {
-		return s, nil
-	}
-	var parts []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal(raw, &parts); err != nil {
-		return "", fmt.Errorf("content parse: %w", err)
-	}
-	result := ""
-	for _, p := range parts {
-		if p.Type == "text" {
-			result += p.Text
-		}
-	}
-	return result, nil
 }
 
 // mustMarshal marshals v to JSON and panics if it fails.
@@ -150,12 +144,6 @@ func mustMarshal(v any) []byte {
 
 // --- Outbound SSE formatters ---
 
-type openAIChunkPayload struct {
-	ID      string              `json:"id"`
-	Object  string              `json:"object"`
-	Choices []openAIChunkChoice `json:"choices"`
-}
-
 type openAIChunkChoice struct {
 	Index        int         `json:"index"`
 	Delta        openAIDelta `json:"delta"`
@@ -163,7 +151,8 @@ type openAIChunkChoice struct {
 }
 
 type openAIDelta struct {
-	Content string `json:"content"`
+	Content   string          `json:"content,omitempty"`
+	ToolCalls json.RawMessage `json:"tool_calls,omitempty"`
 }
 
 // OpenAISSEChunk formats a ChunkMsg as an OpenAI SSE line (without trailing newlines).
@@ -172,14 +161,21 @@ func OpenAISSEChunk(requestID string, chunk types.ChunkMsg) string {
 	if chunk.Done && chunk.FinishReason != "" {
 		finishReason = &chunk.FinishReason
 	}
-	payload := openAIChunkPayload{
-		ID:     requestID,
-		Object: "chat.completion.chunk",
-		Choices: []openAIChunkChoice{{
+	delta := openAIDelta{Content: chunk.Delta}
+	if len(chunk.ToolCallsDelta) > 0 {
+		delta.ToolCalls = chunk.ToolCallsDelta
+	}
+	payload := map[string]any{
+		"id":     requestID,
+		"object": "chat.completion.chunk",
+		"choices": []openAIChunkChoice{{
 			Index:        0,
-			Delta:        openAIDelta{Content: chunk.Delta},
+			Delta:        delta,
 			FinishReason: finishReason,
 		}},
+	}
+	if chunk.Usage != nil {
+		payload["usage"] = chunk.Usage
 	}
 	b, _ := json.Marshal(payload)
 	return "data: " + string(b)
@@ -191,18 +187,26 @@ func OpenAISSEDone() string {
 }
 
 // OpenAIFullResponse assembles a complete (non-streaming) OpenAI chat response.
-func OpenAIFullResponse(requestID string, content string, finishReason string) map[string]any {
-	return map[string]any{
+func OpenAIFullResponse(requestID string, content string, finishReason string, toolCalls json.RawMessage, usage *types.UsageInfo) map[string]any {
+	message := map[string]any{"role": "assistant", "content": content}
+	if len(toolCalls) > 0 {
+		message["tool_calls"] = toolCalls
+	}
+	resp := map[string]any{
 		"id":     requestID,
 		"object": "chat.completion",
 		"choices": []map[string]any{
 			{
 				"index":         0,
-				"message":       map[string]any{"role": "assistant", "content": content},
+				"message":       message,
 				"finish_reason": finishReason,
 			},
 		},
 	}
+	if usage != nil {
+		resp["usage"] = usage
+	}
+	return resp
 }
 
 // AnthropicSSEChunk formats a ChunkMsg as an Anthropic SSE line.

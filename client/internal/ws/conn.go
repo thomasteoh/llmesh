@@ -3,28 +3,42 @@ package ws
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
 	clientPkg "llmesh/client"
+	"llmesh/client/internal/llamacpp"
 	"llmesh/client/internal/worker"
 	"llmesh/pkg/types"
 )
 
+const (
+	pingInterval = 30 * time.Second
+	pongWait     = 60 * time.Second
+)
+
+var log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
 // Conn manages the WebSocket connection from client to router with reconnection.
 type Conn struct {
-	cfg *clientPkg.Config
-	sem chan struct{} // limits concurrent jobs
-	mu  sync.Mutex
-	ws  *websocket.Conn
+	cfg       *clientPkg.Config
+	version   string
+	sem       chan struct{} // limits concurrent jobs
+	mu        sync.Mutex
+	ws        *websocket.Conn
+	cancelsMu sync.Mutex
+	cancels   map[string]context.CancelFunc // requestID → cancel for in-flight jobs
 }
 
-func New(cfg *clientPkg.Config) *Conn {
+func New(cfg *clientPkg.Config, version string) *Conn {
 	return &Conn{
-		cfg: cfg,
-		sem: make(chan struct{}, cfg.MaxConcurrent),
+		cfg:     cfg,
+		version: version,
+		sem:     make(chan struct{}, cfg.MaxConcurrent),
+		cancels: make(map[string]context.CancelFunc),
 	}
 }
 
@@ -34,7 +48,7 @@ func (c *Conn) Run() {
 	for {
 		err := c.connect()
 		if err != nil {
-			log.Printf("ws: connect error: %v — retrying in %s", err, backoff)
+			log.Error("ws: connect error", "error", err, "backoff", backoff.String())
 			time.Sleep(backoff)
 			if backoff < 60*time.Second {
 				backoff *= 2
@@ -42,7 +56,7 @@ func (c *Conn) Run() {
 			continue
 		}
 		backoff = time.Second
-		log.Printf("ws: disconnected — reconnecting")
+		log.Info("ws: disconnected — reconnecting")
 	}
 }
 
@@ -70,19 +84,54 @@ func (c *Conn) connect() error {
 		c.mu.Unlock()
 	}()
 
-	// Register with router
+	// Keepalive: refresh read deadline on every pong
+	conn.SetReadDeadline(time.Now().Add(pongWait))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
+
+	// Ping goroutine
+	go func() {
+		ticker := time.NewTicker(pingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				c.mu.Lock()
+				ws := c.ws
+				c.mu.Unlock()
+				if ws == nil {
+					return
+				}
+				if err := ws.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	// Register with router — probe context size for each model first.
 	models := make([]types.ModelInfo, 0, len(c.cfg.Models))
 	for _, m := range c.cfg.Models {
-		models = append(models, types.ModelInfo{Name: m.Name})
+		lc := llamacpp.New(c.cfg.EndpointFor(m.Name))
+		ctxSize := lc.ProbeContextSize(ctx)
+		models = append(models, types.ModelInfo{Name: m.Name, ContextSize: ctxSize})
+		if ctxSize > 0 {
+			log.Info("ws: model context_size", "model", m.Name, "context_size", ctxSize)
+		}
 	}
 	if err := c.send(types.RegisterMsg{
 		Type:          "register",
 		Models:        models,
 		MaxConcurrent: c.cfg.MaxConcurrent,
+		Version:       c.version,
 	}); err != nil {
 		return err
 	}
-	log.Printf("ws: registered with router, models=%v max_concurrent=%d", models, c.cfg.MaxConcurrent)
+	log.Info("ws: registered with router", "models", models, "max_concurrent", c.cfg.MaxConcurrent)
 
 	// Read loop
 	for {
@@ -90,25 +139,48 @@ func (c *Conn) connect() error {
 		if err != nil {
 			return err
 		}
+		conn.SetReadDeadline(time.Now().Add(pongWait))
 		var env struct {
 			Type string `json:"type"`
 		}
 		if err := json.Unmarshal(data, &env); err != nil {
 			continue
 		}
-		if env.Type != "job" {
-			continue
+		switch env.Type {
+		case "job":
+			var job types.JobMsg
+			if err := json.Unmarshal(data, &job); err != nil {
+				log.Warn("ws: bad job message", "error", err)
+				continue
+			}
+			c.sem <- struct{}{} // acquire slot
+			jobCtx, jobCancel := context.WithCancel(ctx)
+			c.cancelsMu.Lock()
+			c.cancels[job.Request.ID] = jobCancel
+			c.cancelsMu.Unlock()
+			go func(j types.JobMsg, jCtx context.Context, jCancel context.CancelFunc) {
+				defer func() {
+					<-c.sem
+					c.cancelsMu.Lock()
+					delete(c.cancels, j.Request.ID)
+					c.cancelsMu.Unlock()
+					jCancel()
+				}()
+				worker.Handle(jCtx, j, c.cfg, c.send)
+			}(job, jobCtx, jobCancel)
+		case "cancel":
+			var msg types.CancelMsg
+			if err := json.Unmarshal(data, &msg); err != nil {
+				continue
+			}
+			c.cancelsMu.Lock()
+			if cancel, ok := c.cancels[msg.RequestID]; ok {
+				log.Info("ws: cancelling job", "request_id", msg.RequestID)
+				cancel()
+				delete(c.cancels, msg.RequestID)
+			}
+			c.cancelsMu.Unlock()
 		}
-		var job types.JobMsg
-		if err := json.Unmarshal(data, &job); err != nil {
-			log.Printf("ws: bad job message: %v", err)
-			continue
-		}
-		c.sem <- struct{}{} // acquire slot
-		go func(j types.JobMsg) {
-			defer func() { <-c.sem }()
-			worker.Handle(ctx, j, c.cfg, c.send)
-		}(job)
 	}
 }
 

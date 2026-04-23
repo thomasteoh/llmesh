@@ -2,7 +2,8 @@
 package scheduler
 
 import (
-	"log"
+	"log/slog"
+	"os"
 	"sync"
 
 	"llmesh/pkg/types"
@@ -10,24 +11,33 @@ import (
 	"llmesh/router/internal/queue"
 )
 
+var log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+// AliasProvider supplies the current alias→[]models map. Satisfied by *admin.State.
+type AliasProvider interface {
+	AliasMap() map[string][]string
+}
+
 // Scheduler dispatches queued InferenceRequests to available hub clients.
 type Scheduler struct {
 	queue    *queue.Queue
 	hub      *hub.Hub
+	aliases  AliasProvider
 	signal   chan struct{}
 	stopCh   chan struct{}
 	once     sync.Once
 	stopOnce sync.Once
 }
 
-// New creates a Scheduler wired to the given queue and hub.
+// New creates a Scheduler wired to the given queue, hub, and alias provider.
 // It registers itself as the hub's OnAvailable callback.
-func New(q *queue.Queue, h *hub.Hub) *Scheduler {
+func New(q *queue.Queue, h *hub.Hub, aliases AliasProvider) *Scheduler {
 	s := &Scheduler{
-		queue:  q,
-		hub:    h,
-		signal: make(chan struct{}, 1),
-		stopCh: make(chan struct{}),
+		queue:   q,
+		hub:     h,
+		aliases: aliases,
+		signal:  make(chan struct{}, 1),
+		stopCh:  make(chan struct{}),
 	}
 	h.OnAvailable = func() { s.Wake() }
 	return s
@@ -64,34 +74,86 @@ func (s *Scheduler) loop() {
 	}
 }
 
-// drainQueue dispatches all currently dispatchable requests.
+// drainQueue dispatches all currently dispatchable requests using client-centric
+// affinity scheduling: for each available client, find the best request for that
+// client (affinity > priority > FIFO), then pick the globally best (client, request)
+// pair and dispatch.
+// req.Model may be an alias; it is rewritten to the canonical model name before
+// the job is sent to the client.
 func (s *Scheduler) drainQueue() {
 	for {
-		available := s.hub.AvailableModels()
-		if len(available) == 0 {
+		clients := s.hub.AvailableClientList()
+		if len(clients) == 0 {
 			return
 		}
-		req := s.queue.PopBest(available)
+
+		aliases := s.aliases.AliasMap()
+
+		type candidate struct {
+			clientID     string
+			clientOwner  string
+			clientModels map[string]bool
+			req          types.InferenceRequest
+		}
+
+		var best *candidate
+		for _, c := range clients {
+			req := s.queue.PeekBestForClient(c.Models, aliases, c.Owner)
+			if req == nil {
+				continue
+			}
+			cand := &candidate{
+				clientID:     c.ID,
+				clientOwner:  c.Owner,
+				clientModels: c.Models,
+				req:          *req,
+			}
+			if best == nil || betterPair(cand.clientOwner, cand.req, best.clientOwner, best.req) {
+				best = cand
+			}
+		}
+		if best == nil {
+			return // no dispatchable request
+		}
+
+		req := s.queue.PopByID(best.req.ID)
 		if req == nil {
-			return
+			return // race: request already consumed; scheduler will be re-woken
 		}
-		clientID := s.hub.FindAvailable(req.Model)
-		if clientID == "" {
-			// Race: model became unavailable between AvailableModels and FindAvailable.
-			// Re-queue and stop; scheduler will be woken when a client is free again.
-			s.queue.Push(*req)
-			return
+
+		// Rewrite alias → the specific model name the selected client serves.
+		if targets, ok := aliases[req.Model]; ok {
+			for _, t := range targets {
+				if best.clientModels[t] {
+					req.Model = t
+					break
+				}
+			}
 		}
-		s.hub.IncrInFlight(clientID)
+
+		s.hub.IncrInFlight(best.clientID)
 		job := types.JobMsg{Type: "job", Request: *req}
-		if !s.hub.SendToClient(clientID, job) {
-			// Client gone or send buffer full; undo the in-flight increment and re-queue.
-			// DecrInFlight is a no-op if the client disconnected and was already removed.
-			s.hub.DecrInFlight(clientID)
+		if !s.hub.SendToClient(best.clientID, job) {
+			s.hub.DecrInFlight(best.clientID)
 			s.queue.Push(*req)
-			log.Printf("scheduler: client %s unavailable, re-queued %s", clientID, req.ID)
+			log.Warn("scheduler: client unavailable, re-queued", "client_id", best.clientID, "request_id", req.ID)
 			return
 		}
-		log.Printf("scheduler: dispatched %s (model=%s) to client %s", req.ID, req.Model, clientID)
+		log.Info("scheduler: dispatched", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "client_id", best.clientID, "client_owner", best.clientOwner)
 	}
+}
+
+// betterPair reports whether (ownerA, reqA) is a better dispatch pair than (ownerB, reqB).
+// A pair with affinity (request owner matches client owner) beats a non-affinity pair.
+// Among equal affinity: lower priority tier wins, then earlier enqueue time.
+func betterPair(ownerA string, reqA types.InferenceRequest, ownerB string, reqB types.InferenceRequest) bool {
+	aAffinity := ownerA != "" && reqA.Owner == ownerA
+	bAffinity := ownerB != "" && reqB.Owner == ownerB
+	if aAffinity != bAffinity {
+		return aAffinity
+	}
+	if reqA.Priority != reqB.Priority {
+		return reqA.Priority < reqB.Priority
+	}
+	return reqA.EnqueuedAt.Before(reqB.EnqueuedAt)
 }

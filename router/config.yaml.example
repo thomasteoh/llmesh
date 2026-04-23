@@ -1,2 +1,3 @@
+name: "llmesh"        # brand name shown on landing page
 server:
   port: 53002

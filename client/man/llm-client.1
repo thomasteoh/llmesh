@@ -1,0 +1,167 @@
+.TH LLM\-CLIENT 1 "April 2026" "llmesh" "llmesh Manual"
+.SH NAME
+llm\-client \- connect a local llama.cpp server to the llmesh router
+.SH SYNOPSIS
+.B llm\-client
+[\fB\-config\fR\ \fIpath\fR]
+[\fB\-version\fR]
+.SH DESCRIPTION
+.B llm\-client
+is the worker component of the llmesh system.
+It establishes a persistent WebSocket connection to an llmesh router,
+advertises the models the local
+.B llama.cpp
+server supports,
+and processes inference jobs dispatched by the router.
+.PP
+Streaming token deltas are forwarded back to the router in real time,
+which proxies them to the waiting HTTP caller.
+.PP
+On disconnect the client reconnects automatically using exponential back\-off:
+1\ s, 2\ s, 4\ s, 8\ s, 16\ s, 32\ s, 60\ s maximum.
+.SH OPTIONS
+.TP
+.BI \-config " path"
+Path to the YAML configuration file.
+Defaults to
+.IR /config.yaml .
+.TP
+.B \-version
+Print version information and exit.
+.SH CONFIGURATION
+The configuration file is a YAML document.
+A minimal example:
+.PP
+.RS 4
+.nf
+router_url: "wss://llm.example.com/ws/client"
+router_token: "ct-alice-a1b2c3d4e5f6g7h8"
+max_concurrent: 4
+models:
+  - name: "llama3.2:3b"
+    endpoint: "http://localhost:8080"
+.fi
+.RE
+.SS Fields
+.TP
+.B router_url
+WebSocket URL of the llmesh router.
+Use
+.B wss://
+for TLS-encrypted connections (recommended in production) or
+.B ws://
+for unencrypted local connections.
+The path component must be
+.IR /ws/client .
+.TP
+.B router_token
+Client token created via the router admin UI (Client Tokens page).
+Tokens begin with
+.IR ct\- .
+This value authenticates this client instance to the router.
+Keep it secret; it grants the ability to receive and process jobs.
+.TP
+.B max_concurrent
+Maximum number of inference requests this client processes simultaneously.
+Must be a positive integer; defaults to
+.B 4
+if unset or set to zero.
+Set this to the number of parallel requests your hardware can sustain
+without degrading response latency.
+.TP
+.B models
+List of model definitions.
+Each entry maps a model name to the llama.cpp endpoint serving it.
+.RS
+.TP
+.B name
+Model identifier as sent by API callers in the
+.I model
+field of their request (e.g.\~\fIllama3.2:3b\fR).
+The router matches this name exactly when selecting a client for a job.
+.TP
+.B endpoint
+Base URL of the
+.B llama.cpp
+HTTP server for this model (e.g.\~\fIhttp://localhost:8080\fR).
+The client appends
+.I /v1/chat/completions
+when forwarding jobs.
+.RE
+.SH EXAMPLES
+.SS Run with a custom config file
+.nf
+llm\-client \-config /etc/llmesh/client.yaml
+.fi
+.SS Run inside Docker (recommended)
+Download
+.I docker-compose.client.yml
+and
+.I config.yaml.example
+from the router admin UI (Docs \(-> Client files), rename the example to
+.IR config.yaml ,
+fill in your token, then:
+.nf
+docker compose \-f docker\-compose.client.yml up \-d
+.fi
+.SS Run directly on the host
+Start llama.cpp on port 8080:
+.nf
+llama\-server \-m ./models/llama3.2\-3b.gguf \-\-port 8080
+.fi
+Start the client:
+.nf
+llm\-client \-config ./config.yaml
+.fi
+.SS Multiple models on one host
+Run a separate llama.cpp instance on a distinct port for each model:
+.nf
+# Terminal 1
+llama\-server \-m llama3.2\-3b.gguf \-\-port 8080
+# Terminal 2
+llama\-server \-m mistral\-7b.gguf \-\-port 8081
+.fi
+Configure both in
+.IR config.yaml :
+.nf
+models:
+  - name: "llama3.2:3b"
+    endpoint: "http://localhost:8080"
+  - name: "mistral\-7b"
+    endpoint: "http://localhost:8081"
+.fi
+.SH FILES
+.TP
+.I /config.yaml
+Default configuration file path (inside the Docker container).
+On the host, pass an explicit path with
+.BR \-config .
+.SH DIAGNOSTICS
+The client logs to standard output in the following format:
+.PP
+.RS 4
+.nf
+2026/04/16 12:00:00 llm\-client starting, router=wss://... models=2 max_concurrent=4
+2026/04/16 12:00:01 ws: connected
+2026/04/16 12:00:01 ws: registered 2 model(s)
+.fi
+.RE
+.PP
+A persistent
+.I "dial failed"
+message indicates a network or authentication problem \(em verify the router URL
+and token, and check that the router is reachable from this host.
+.SH EXIT STATUS
+.TP
+.B 0
+Clean shutdown (SIGINT / SIGTERM).
+.TP
+.B 1
+Fatal error: bad configuration, missing required fields, or unrecoverable startup failure.
+.SH SEE ALSO
+.B llama\-server(1)
+.PP
+llama.cpp project:
+.I https://github.com/ggml-org/llama.cpp
+.SH BUGS
+Report issues at the project repository.

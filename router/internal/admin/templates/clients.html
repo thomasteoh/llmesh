@@ -1,0 +1,124 @@
+{{define "content"}}
+{{if .NewToken}}
+<div class="new-key-banner">
+  <p>&#10003; Token created. Copy it now &mdash; it will not be shown again.</p>
+  <code id="new-tok-val">{{.NewToken}}</code>
+  <div class="new-key-actions">
+    <button class="btn-secondary" data-copy-from="new-tok-val">Copy token</button>
+    <a class="btn-secondary" href="/admin/clients/config?token={{.NewToken}}" download="config.yaml">Download config.yaml</a>
+  </div>
+</div>
+{{end}}
+<div class="card">
+  <div class="card-title">Add client</div>
+  <p class="docs-p" style="margin-bottom:14px;">A client token authenticates a llama.cpp instance (a machine or container running a model) to the router. Use it in the client's config file so the router knows this client is allowed to serve requests.</p>
+  <form method="POST" action="/admin/clients">
+    <div class="form-row">
+      <div class="form-group" style="flex:2;">
+        <label>Name</label>
+        <div class="prefix-wrap"><span class="prefix">{{.Username}}/</span><input name="name" placeholder="macbook-pro"></div>
+      </div>
+      <button type="submit" class="btn">Generate token</button>
+    </div>
+    {{if .FormError}}<p class="form-error">{{.FormError}}</p>{{end}}
+  </form>
+</div>
+<div class="table-scroll">
+  <table class="data-table">
+    <thead><tr><th>Name</th><th>Status</th><th>Last seen</th><th></th></tr></thead>
+    <tbody>
+      {{range .Tokens}}
+      <tr>
+        <td><span class="muted">{{.Owner}}/</span>{{.Name}} <button class="btn-copy" data-copy="{{.Token}}" title="Copy token">&#10697;</button></td>
+        <td><span class="badge {{if and (eq .Status "connected") (gt (len .Connections) 1)}}multi_connected{{else}}{{.Status}}{{end}}">{{if and (eq .Status "connected") (gt (len .Connections) 1)}}&#9679; {{len .Connections}} connected{{else if eq .Status "connected"}}&#9679; connected{{else if eq .Status "offline"}}&#9675; offline{{else}}&#9675; never connected{{end}}</span></td>
+        <td class="muted">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
+        <td style="text-align:right;">
+          <form method="POST" action="/admin/clients/revoke" style="display:inline;">
+            <input type="hidden" name="token" value="{{.Token}}">
+            <button type="submit" class="btn-danger" title="Revoke">&#x2715;</button>
+          </form>
+        </td>
+      </tr>
+      {{if .Connections}}
+      <tr>
+        <td colspan="4" style="padding:0;">
+          <div class="client-connections">
+            {{range .Connections}}
+            <div class="conn-row">
+              <span class="conn-name">{{.Name}}</span>
+              {{if .Version}}<span class="conn-version">{{.Version}}</span>{{end}}
+              <span class="conn-models" title="{{.Models}}">{{.Models}}</span>
+              <span class="conn-capacity">{{.InFlight}} / {{.MaxConcurrent}}</span>
+            </div>
+            {{end}}
+          </div>
+        </td>
+      </tr>
+      {{end}}
+      {{else}}
+      <tr><td colspan="4" class="muted" style="padding:16px 10px;">No client tokens yet.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div class="card" style="margin-top:24px;">
+  <div class="card-title">Downloads</div>
+  <div class="docs-subtitle" style="margin-top:4px;margin-bottom:16px;">Pre-built binaries for llm-client</div>
+
+  <div id="os-tab-group">
+    <div class="os-tabs">
+      <div class="os-tab active" data-tab="os-linux-amd64" onclick="showOsTab('os-tab-group','os-linux-amd64')">linux / amd64</div>
+      <div class="os-tab" data-tab="os-linux-arm64" onclick="showOsTab('os-tab-group','os-linux-arm64')">linux / arm64</div>
+      <div class="os-tab" data-tab="os-darwin-amd64" onclick="showOsTab('os-tab-group','os-darwin-amd64')">macOS / Intel</div>
+      <div class="os-tab" data-tab="os-darwin-arm64" onclick="showOsTab('os-tab-group','os-darwin-arm64')">macOS / Apple Silicon</div>
+    </div>
+    <div class="os-tab-content">
+      <div class="os-tab-panel active" id="os-linux-amd64">
+        <p class="docs-p">Linux x86-64. Most servers, WSL2.</p>
+        <a class="btn-download" href="/downloads/llm-client-linux-amd64" download="llm-client">Download</a>
+      </div>
+      <div class="os-tab-panel" id="os-linux-arm64">
+        <p class="docs-p">Raspberry Pi 4/5, Graviton.</p>
+        <a class="btn-download" href="/downloads/llm-client-linux-arm64" download="llm-client">Download</a>
+      </div>
+      <div class="os-tab-panel" id="os-darwin-amd64">
+        <p class="docs-p">Intel Mac.</p>
+        <a class="btn-download" href="/downloads/llm-client-darwin-amd64" download="llm-client">Download</a>
+      </div>
+      <div class="os-tab-panel" id="os-darwin-arm64">
+        <p class="docs-p">Apple Silicon (M1–M4).</p>
+        <a class="btn-download" href="/downloads/llm-client-darwin-arm64" download="llm-client">Download</a>
+      </div>
+    </div>
+  </div>
+
+  <details style="margin-top:20px;">
+    <summary style="cursor:pointer;font-size:12px;font-weight:600;color:var(--text-muted);user-select:none;">Show config &amp; run instructions</summary>
+    <div style="margin-top:14px;">
+      <div class="docs-label">Run</div>
+      <div class="docs-code">chmod +x llm-client
+./llm-client -config ./config.yaml</div>
+      <p class="docs-p" style="margin-top:12px;">macOS: remove quarantine before first run</p>
+      <div class="docs-code">xattr -cr llm-client</div>
+      <div class="docs-label" style="margin-top:16px;">Config file</div>
+      <p class="docs-p">Create a <mono>config.yaml</mono> alongside the binary. A pre-filled file with your token is available above after generating a token.</p>
+      <div class="docs-code">router_url: "wss://{{.Host}}/ws/client"
+router_token: "ct-yourname-yourtoken"   # from Clients page
+max_concurrent: 4                        # parallel jobs this machine handles
+models:
+  - name: "llama3.2:3b"
+    endpoint: "http://localhost:8080"    # llama-server base URL
+  - name: "unsloth/qwen3-30b-a3b"
+    endpoint: "http://localhost:8081"
+    chat_template: "qwen2.5"            # optional template override
+# Aliases are managed server-side in the admin UI &mdash; Clients page.</div>
+      <p class="docs-p" style="margin-top:12px;">
+        Man page: <a href="/downloads/llm-client.1" download style="color:var(--text-muted);">llm-client.1</a>
+        &nbsp;&mdash;&nbsp;
+        install with <mono>sudo install -m644 llm-client.1 /usr/local/share/man/man1/</mono>
+      </p>
+    </div>
+  </details>
+</div>
+{{end}}

@@ -1,25 +1,33 @@
 {{- /* layout.html — base template for all authenticated pages */ -}}
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>llmesh</title>
+  <title>{{.Name}}</title>
   <link rel="stylesheet" href="/admin/static/admin.css">
+  <script>(function(){var t;try{t=localStorage.getItem('llmesh-theme');}catch(e){}if(!t&&window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches)t='light';if(t)document.documentElement.setAttribute('data-theme',t);})();</script>
 </head>
 <body>
 <nav class="topnav">
-  <span class="brand">llmesh</span>
-  <a href="/admin/" class="navlink{{if eq .Page "dashboard"}} active{{end}}">Dashboard</a>
-  <a href="/admin/api-keys" class="navlink{{if eq .Page "api-keys"}} active{{end}}">API Keys</a>
-  <a href="/admin/client-tokens" class="navlink{{if eq .Page "client-tokens"}} active{{end}}">Client Tokens</a>
-  <a href="/admin/docs" class="navlink{{if eq .Page "docs"}} active{{end}}">Docs</a>
-  <a href="/admin/settings" class="navlink{{if eq .Page "settings"}} active{{end}}">Settings</a>
-  <span class="navright">{{.Username}} &middot; <a href="#" onclick="document.getElementById('lf').submit();return false">Sign out</a></span>
+  <div class="nav-links" id="nav-links">
+    <a href="/admin/" class="navlink{{if eq .Page "dashboard"}} active{{end}}">Dashboard</a>
+    <a href="/admin/api-keys" class="navlink{{if eq .Page "api-keys"}} active{{end}}">API Keys</a>
+    <a href="/admin/clients" class="navlink{{if eq .Page "clients"}} active{{end}}">Clients</a>
+    <a href="/admin/settings" class="navlink{{if eq .Page "settings"}} active{{end}}">Settings</a>
+  </div>
+  <div class="nav-end">
+    <a href="/admin/help" class="navlink nav-help{{if eq .Page "help"}} active{{end}}">Help</a>
+    <span class="navright">{{.Username}} &middot; <a href="#" onclick="document.getElementById('logout-form').submit();return false">Sign out</a></span>
+    <button class="nav-icon-btn" id="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark mode">&#9728;</button>
+    <button class="nav-icon-btn hamburger" id="nav-toggle" onclick="toggleNav()" aria-label="Open navigation">&#9776;</button>
+  </div>
 </nav>
-<form id="lf" method="POST" action="/admin/logout" style="display:none"></form>
+<form id="logout-form" method="POST" action="/admin/logout" style="display:none"></form>
 {{if .Flash}}<div class="flash success">{{.Flash}}</div>{{end}}
 {{if .Error}}<div class="flash error">{{.Error}}</div>{{end}}
 <main>{{block "content" .}}{{end}}</main>
+<footer class="site-footer">llmesh {{.RouterVersion}}</footer>
+<script src="/admin/static/admin.js"></script>
 </body>
 </html>

@@ -2,8 +2,10 @@ package hub
 
 import (
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
+	"os"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,21 +15,32 @@ import (
 	"llmesh/pkg/types"
 )
 
+var log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
 // Client represents a connected llm-client node.
 type Client struct {
-	ID            string
-	conn          *websocket.Conn
-	send          chan []byte
-	Models        map[string]bool // nil until "register" message received
-	MaxConcurrent int             // 0 until "register" message received
-	inFlight      atomic.Int32
-	Name          string
-	Owner         string
-	Token         string
+	ID                string
+	conn              *websocket.Conn
+	send              chan []byte
+	Models            map[string]bool // nil until "register" message received
+	ModelContextSizes map[string]int  // model name → context size in tokens (0 = unknown)
+	MaxConcurrent     int             // 0 until "register" message received
+	inFlight          atomic.Int32
+	Name              string
+	Owner             string
+	Token             string
+	Version           string // client version from register message
+}
+
+// ClientSummary is a snapshot of an available client used by the scheduler.
+type ClientSummary struct {
+	ID     string
+	Owner  string
+	Models map[string]bool
 }
 
 func (c *Client) InFlight() int {
@@ -69,7 +82,7 @@ func New() *Hub {
 func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token string) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("hub: ws upgrade error: %v", err)
+		log.Error("hub: ws upgrade error", "error", err)
 		return
 	}
 
@@ -86,7 +99,7 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token
 	h.clients[client.ID] = client
 	h.mu.Unlock()
 
-	log.Printf("hub: client connected: %s name=%s owner=%s", client.ID, name, owner)
+	log.Info("hub: client connected", "id", client.ID, "name", name, "owner", owner)
 
 	go h.writeLoop(client)
 	h.readLoop(client)
@@ -98,7 +111,7 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token
 	}
 	h.mu.Unlock()
 	close(client.send)
-	log.Printf("hub: client disconnected: %s", client.ID)
+	log.Info("hub: client disconnected", "id", client.ID)
 	if h.OnAvailable != nil {
 		h.OnAvailable()
 	}
@@ -118,7 +131,7 @@ func (h *Hub) readLoop(client *Client) {
 func (h *Hub) writeLoop(client *Client) {
 	for msg := range client.send {
 		if err := client.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
-			log.Printf("hub: write error to %s: %v", client.ID, err)
+			log.Error("hub: write error", "id", client.ID, "error", err)
 			client.conn.Close() // force readLoop to exit immediately
 			return
 		}
@@ -130,7 +143,7 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 		Type string `json:"type"`
 	}
 	if err := json.Unmarshal(data, &envelope); err != nil {
-		log.Printf("hub: bad message from %s: %v", client.ID, err)
+		log.Warn("hub: bad message", "id", client.ID, "error", err)
 		return
 	}
 
@@ -142,12 +155,17 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 		}
 		h.mu.Lock()
 		client.Models = make(map[string]bool)
+		client.ModelContextSizes = make(map[string]int)
 		for _, m := range msg.Models {
 			client.Models[m.Name] = true
+			if m.ContextSize > 0 {
+				client.ModelContextSizes[m.Name] = m.ContextSize
+			}
 		}
 		client.MaxConcurrent = msg.MaxConcurrent
+		client.Version = msg.Version
 		h.mu.Unlock()
-		log.Printf("hub: client %s registered models=%v cap=%d", client.ID, msg.Models, msg.MaxConcurrent)
+		log.Info("hub: client registered", "id", client.ID, "models", msg.Models, "max_concurrent", msg.MaxConcurrent, "version", msg.Version)
 		if h.OnAvailable != nil {
 			h.OnAvailable()
 		}
@@ -199,7 +217,7 @@ func (h *Hub) SendToClient(clientID string, msg any) bool {
 	case client.send <- data:
 		return true
 	default:
-		log.Printf("hub: send buffer full for client %s", clientID)
+		log.Warn("hub: send buffer full", "client_id", clientID)
 		return false
 	}
 }
@@ -232,6 +250,62 @@ func (h *Hub) AvailableModels() map[string]bool {
 	return models
 }
 
+// AvailableClientList returns a snapshot of clients that have spare capacity.
+// The returned Models map is safe to read without holding the hub lock.
+func (h *Hub) AvailableClientList() []ClientSummary {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	var out []ClientSummary
+	for _, c := range h.clients {
+		if c.Models == nil || c.InFlight() >= c.MaxConcurrent {
+			continue
+		}
+		models := make(map[string]bool, len(c.Models))
+		for k, v := range c.Models {
+			models[k] = v
+		}
+		out = append(out, ClientSummary{ID: c.ID, Owner: c.Owner, Models: models})
+	}
+	return out
+}
+
+// ActiveModels returns all model names currently advertised by connected clients.
+func (h *Hub) ActiveModels() []string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	seen := make(map[string]bool)
+	for _, c := range h.clients {
+		for m := range c.Models {
+			seen[m] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for m := range seen {
+		out = append(out, m)
+	}
+	return out
+}
+
+// ActiveModelInfos returns ModelInfo for all models advertised by connected clients.
+// When multiple clients serve the same model, the largest reported context size wins.
+func (h *Hub) ActiveModelInfos() []types.ModelInfo {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	seen := make(map[string]int) // model → best context size
+	for _, c := range h.clients {
+		for m := range c.Models {
+			if existing, ok := seen[m]; !ok || c.ModelContextSizes[m] > existing {
+				seen[m] = c.ModelContextSizes[m]
+			}
+		}
+	}
+	out := make([]types.ModelInfo, 0, len(seen))
+	for m, ctxSize := range seen {
+		out = append(out, types.ModelInfo{Name: m, ContextSize: ctxSize})
+	}
+	return out
+}
+
 // IncrInFlight increments the in-flight counter for clientID.
 // No-op if the client is not connected.
 func (h *Hub) IncrInFlight(clientID string) {
@@ -255,6 +329,24 @@ func (h *Hub) DecrInFlight(clientID string) {
 	}
 }
 
+// CancelRequest broadcasts a cancel message to all connected clients for the given requestID.
+// Clients not currently processing that request silently ignore it.
+func (h *Hub) CancelRequest(requestID string) {
+	msg := types.CancelMsg{Type: "cancel", RequestID: requestID}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
+	h.mu.RLock()
+	for _, c := range h.clients {
+		select {
+		case c.send <- data:
+		default:
+		}
+	}
+	h.mu.RUnlock()
+}
+
 // IsConnected reports whether a client with the given token is currently connected.
 func (h *Hub) IsConnected(token string) bool {
 	h.mu.RLock()
@@ -274,35 +366,58 @@ func (h *Hub) LastSeenTime(token string) time.Time {
 	return h.lastSeen[token]
 }
 
-// ConnectedModels returns the models advertised by the currently-connected client with token.
+// ConnectedModels returns the union of models advertised by all connected clients with token.
 func (h *Hub) ConnectedModels(token string) []string {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
+	seen := make(map[string]bool)
 	for _, c := range h.clients {
 		if c.Token == token {
-			var out []string
 			for m := range c.Models {
-				out = append(out, m)
+				seen[m] = true
 			}
-			return out
 		}
 	}
-	return nil
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for m := range seen {
+		out = append(out, m)
+	}
+	return out
 }
 
-// CloseByToken closes the WebSocket connection for the client with the given token.
-func (h *Hub) CloseByToken(token string) {
+// ConnectedVersion returns the version string from any connected client with token.
+// If multiple clients report different versions, returns "mixed".
+func (h *Hub) ConnectedVersion(token string) string {
 	h.mu.RLock()
-	var target *Client
+	defer h.mu.RUnlock()
+	var version string
 	for _, c := range h.clients {
 		if c.Token == token {
-			target = c
-			break
+			if version == "" {
+				version = c.Version
+			} else if version != c.Version {
+				return "mixed"
+			}
+		}
+	}
+	return version
+}
+
+// CloseByToken closes ALL WebSocket connections for clients with the given token.
+func (h *Hub) CloseByToken(token string) {
+	h.mu.RLock()
+	var targets []*Client
+	for _, c := range h.clients {
+		if c.Token == token {
+			targets = append(targets, c)
 		}
 	}
 	h.mu.RUnlock()
-	if target != nil {
-		target.conn.Close()
+	for _, c := range targets {
+		c.conn.Close()
 	}
 }
 
@@ -311,4 +426,55 @@ func (h *Hub) ActiveClientCount() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return len(h.clients)
+}
+
+// ConnectedCountByToken returns the number of currently connected clients with the given token.
+func (h *Hub) ConnectedCountByToken(token string) int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	count := 0
+	for _, c := range h.clients {
+		if c.Token == token {
+			count++
+		}
+	}
+	return count
+}
+
+// ConnectedClientInfo holds a snapshot of a connected client for display.
+type ConnectedClientInfo struct {
+	ID              string
+	Name            string
+	Version         string
+	Models          []string
+	ModelContextSizes map[string]int
+	MaxConcurrent   int
+	InFlight        int
+}
+
+// ConnectedClientsByToken returns a snapshot of all currently connected clients
+// that authenticated with the given token.
+func (h *Hub) ConnectedClientsByToken(token string) []ConnectedClientInfo {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	var out []ConnectedClientInfo
+	for _, c := range h.clients {
+		if c.Token == token {
+			var models []string
+			for m := range c.Models {
+				models = append(models, m)
+			}
+			sort.Strings(models)
+			out = append(out, ConnectedClientInfo{
+				ID:                c.ID,
+				Name:              c.Name,
+				Version:           c.Version,
+				Models:            models,
+				ModelContextSizes: c.ModelContextSizes,
+				MaxConcurrent:     c.MaxConcurrent,
+				InFlight:          c.InFlight(),
+			})
+		}
+	}
+	return out
 }
