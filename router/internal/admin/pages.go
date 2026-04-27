@@ -50,12 +50,14 @@ type DashboardPage struct {
 }
 
 type ClientRow struct {
-	Name     string
-	Token    string
-	Status   string // "connected" | "offline" | "never_connected"
-	LastSeen string
-	Models   string
-	Version  string
+	Name        string
+	Token       string
+	Status      string // "connected" | "offline" | "never_connected"
+	StatusClass string // CSS badge class
+	StatusLabel string // display label with symbol
+	LastSeen    string
+	Models      string
+	Version     string
 }
 
 type APIKeysPage struct {
@@ -113,10 +115,13 @@ type QueuedJobRow struct {
 
 type ClientTokenRow struct {
 	ClientToken
-	Status       string
-	LastSeen     string
-	Models       []ModelWithAliases
-	Connections  []ConnectedClientRow
+	Status      string
+	StatusClass string // CSS badge class
+	StatusLabel string // display label with symbol
+	LastSeen    string
+	Models      []ModelWithAliases
+	Connections []ConnectedClientRow
+	CSRFToken   string // for use in named sub-templates
 }
 
 type ModelWithAliases struct {
@@ -166,8 +171,12 @@ func (a *Admin) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		if connCount > 0 {
 			if connCount == 1 {
 				row.Status = "connected"
+				row.StatusClass = "connected"
+				row.StatusLabel = "\u25cf connected"
 			} else {
 				row.Status = fmt.Sprintf("%d connected", connCount)
+				row.StatusClass = "multi_connected"
+				row.StatusLabel = fmt.Sprintf("\u25cf %d connected", connCount)
 			}
 			mods := a.hub.ConnectedModels(t.Token)
 			sort.Strings(mods)
@@ -175,9 +184,13 @@ func (a *Admin) handleDashboard(w http.ResponseWriter, r *http.Request) {
 			row.Version = a.hub.ConnectedVersion(t.Token)
 		} else if ls := a.hub.LastSeenTime(t.Token); !ls.IsZero() {
 			row.Status = "offline"
+			row.StatusClass = "offline"
+			row.StatusLabel = "\u25cb offline"
 			row.LastSeen = humanTime(ls)
 		} else {
 			row.Status = "never_connected"
+			row.StatusClass = "never_connected"
+			row.StatusLabel = "\u25cb never connected"
 		}
 		clients = append(clients, row)
 	}
@@ -298,6 +311,8 @@ func (a *Admin) handleClientTokens(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Admin) renderClientTokens(w http.ResponseWriter, u User, newToken, formErr string) {
+	bp := a.newBasePage("clients", u)
+
 	rawTokens := a.state.ClientTokensFor(u.Username, u.Role == "admin")
 
 	// Build inverted alias map: model name → []aliases
@@ -314,13 +329,17 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, u User, newToken, form
 
 	rows := make([]ClientTokenRow, 0, len(rawTokens))
 	for _, t := range rawTokens {
-		row := ClientTokenRow{ClientToken: t}
+		row := ClientTokenRow{ClientToken: t, CSRFToken: bp.CSRFToken}
 		connInfos := a.hub.ConnectedClientsByToken(t.Token)
 		if len(connInfos) > 0 {
 			if len(connInfos) == 1 {
 				row.Status = "connected"
+				row.StatusClass = "connected"
+				row.StatusLabel = "\u25cf connected"
 			} else {
 				row.Status = fmt.Sprintf("%d connected", len(connInfos))
+				row.StatusClass = "multi_connected"
+				row.StatusLabel = fmt.Sprintf("\u25cf %d connected", len(connInfos))
 			}
 			mods := a.hub.ConnectedModels(t.Token)
 			sort.Strings(mods)
@@ -356,14 +375,18 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, u User, newToken, form
 			}
 		} else if ls := a.hub.LastSeenTime(t.Token); !ls.IsZero() {
 			row.Status = "offline"
+			row.StatusClass = "offline"
+			row.StatusLabel = "\u25cb offline"
 			row.LastSeen = humanTime(ls)
 		} else {
 			row.Status = "never_connected"
+			row.StatusClass = "never_connected"
+			row.StatusLabel = "\u25cb never connected"
 		}
 		rows = append(rows, row)
 	}
 	page := ClientTokensPage{
-		basePage:  a.newBasePage("clients", u),
+		basePage:  bp,
 		NewToken:  newToken,
 		FormError: formErr,
 	}
