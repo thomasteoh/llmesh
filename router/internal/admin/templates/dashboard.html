@@ -5,6 +5,7 @@
   <div class="stat-card"><div class="stat-value" id="api-key-count">{{.APIKeyCount}}</div><div class="stat-label">API Keys</div></div>
   <div class="stat-card"><div class="stat-value" id="token-count">{{.TokenCount}}</div><div class="stat-label">Clients</div></div>
 </div>
+<div class="last-updated" id="last-updated"></div>
 
 {{if .ActiveModels}}
 <div class="card">
@@ -19,7 +20,7 @@
         <span class="alias-badge">
           {{.}}
           {{if $.IsAdmin}}
-          <form method="POST" action="/admin/model-aliases/delete" style="display:contents;">
+          <form method="POST" action="/admin/model-aliases/delete" style="display:contents;" onsubmit="return confirm('Remove alias \u201c{{.}}\u201d?')">
             <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
             <input type="hidden" name="alias" value="{{.}}">
             <input type="hidden" name="model" value="{{$model}}">
@@ -57,7 +58,7 @@
           <td class="muted">{{.CompletionTokens}}</td>
         </tr>
         {{else}}
-        <tr><td colspan="4" class="muted" style="padding:8px 4px;font-style:italic;">No data yet.</td></tr>
+        <tr class="empty-row"><td colspan="4">No data yet.</td></tr>
         {{end}}
       </tbody>
     </table>
@@ -75,7 +76,7 @@
           <td class="muted">{{.CompletionTokens}}</td>
         </tr>
         {{else}}
-        <tr><td colspan="4" class="muted" style="padding:8px 4px;font-style:italic;">No data yet.</td></tr>
+        <tr class="empty-row"><td colspan="4">No data yet.</td></tr>
         {{end}}
       </tbody>
     </table>
@@ -88,14 +89,14 @@
     <tbody id="client-tbody">
       {{range .Clients}}
       <tr>
-        <td>{{.Name}}</td>
-        <td><span class="badge {{.Status}}">{{if eq .Status "connected"}}&#9679; connected{{else if eq .Status "offline"}}&#9675; offline{{else}}&#9675; never connected{{end}}</span></td>
-        <td class="muted">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
-        <td class="muted">{{if .Models}}{{.Models}}{{else}}&mdash;{{end}}</td>
-        <td class="muted">{{if .Version}}{{.Version}}{{else}}&mdash;{{end}}</td>
+        <td data-label="Client">{{.Name}}</td>
+        <td data-label="Status"><span class="badge {{.Status}}">{{if eq .Status "connected"}}&#9679; connected{{else if eq .Status "offline"}}&#9675; offline{{else}}&#9675; never connected{{end}}</span></td>
+        <td data-label="Last seen" class="muted">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
+        <td data-label="Models" class="muted">{{if .Models}}{{.Models}}{{else}}&mdash;{{end}}</td>
+        <td data-label="Version" class="muted">{{if .Version}}{{.Version}}{{else}}&mdash;{{end}}</td>
       </tr>
       {{else}}
-      <tr><td colspan="5" class="muted" style="padding:16px 10px;">No client tokens registered.</td></tr>
+      <tr class="empty-row"><td colspan="5">No client tokens registered.</td></tr>
       {{end}}
     </tbody>
   </table>

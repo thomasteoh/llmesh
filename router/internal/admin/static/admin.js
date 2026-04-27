@@ -5,12 +5,21 @@ function getCSRFToken() {
   return input ? input.value : '';
 }
 
+/* ─── Confirm helper ────────────────────────────────────────── */
+
+function confirmAction(msg) {
+  return window.confirm(msg);
+}
+
 /* ─── Theme ─────────────────────────────────────────────────── */
 
 function applyTheme(theme) {
   document.documentElement.setAttribute('data-theme', theme);
   var btn = document.getElementById('theme-toggle');
-  if (btn) btn.textContent = theme === 'dark' ? '\u2600' : '\u263e'; // ☀ / ☾
+  if (btn) {
+    btn.textContent = theme === 'dark' ? '\u2600' : '\u263e'; // ☀ / ☾
+    btn.setAttribute('aria-label', theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
+  }
 }
 
 function toggleTheme() {
@@ -24,7 +33,10 @@ function toggleTheme() {
 (function() {
   var theme = document.documentElement.getAttribute('data-theme') || 'dark';
   var btn = document.getElementById('theme-toggle');
-  if (btn) btn.textContent = theme === 'dark' ? '\u2600' : '\u263e';
+  if (btn) {
+    btn.textContent = theme === 'dark' ? '\u2600' : '\u263e';
+    btn.setAttribute('aria-label', theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
+  }
 })();
 
 /* ─── Mobile nav ────────────────────────────────────────────── */
@@ -32,6 +44,19 @@ function toggleTheme() {
 function toggleNav() {
   var links = document.getElementById('nav-links');
   if (links) links.classList.toggle('open');
+}
+
+/* ─── Collapsible sections ──────────────────────────────────── */
+
+function toggleSection(id) {
+  var body = document.getElementById(id);
+  var header = document.querySelector('[data-toggle="' + id + '"]');
+  if (!body) return;
+  var open = body.classList.toggle('open');
+  if (header) {
+    var arrow = header.querySelector('.toggle-arrow');
+    if (arrow) arrow.textContent = open ? '\u25b4' : '\u25be'; // ▴ / ▾
+  }
 }
 
 /* ─── Docs nav ──────────────────────────────────────────────── */
@@ -51,6 +76,8 @@ function showDoc(id, el) {
   if (items) items.classList.remove('open');
   var chevron = document.getElementById('docs-nav-chevron');
   if (chevron) chevron.textContent = '\u25be'; // ▾
+  // Persist section in URL hash
+  try { history.replaceState(null, '', '#' + id); } catch(e) {}
   // Render mermaid diagrams in newly visible section
   if (window.__renderDiagrams) window.__renderDiagrams();
 }
@@ -64,6 +91,8 @@ function showOsTab(groupId, tabId) {
   if (tab) tab.classList.add('active');
   var panel = document.getElementById(tabId);
   if (panel) panel.classList.add('active');
+  // Persist OS tab choice
+  try { localStorage.setItem('llmesh-os-tab-' + groupId, tabId); } catch(e) {}
 }
 
 function toggleDocsNav() {
@@ -84,6 +113,7 @@ function initDashboard() {
     var tr = document.createElement('tr');
 
     var tdName = document.createElement('td');
+    tdName.setAttribute('data-label', 'Client');
     tdName.textContent = c.name || '';
     tr.appendChild(tdName);
 
@@ -94,6 +124,7 @@ function initDashboard() {
             : c.status === 'offline'       ? '\u25cb offline'
             : '\u25cb never connected';
     var tdStatus = document.createElement('td');
+    tdStatus.setAttribute('data-label', 'Status');
     var span = document.createElement('span');
     span.className = 'badge ' + cls;
     span.textContent = lbl;
@@ -102,16 +133,19 @@ function initDashboard() {
 
     var tdLast = document.createElement('td');
     tdLast.className = 'muted';
+    tdLast.setAttribute('data-label', 'Last seen');
     tdLast.textContent = c.last_seen || '\u2014';
     tr.appendChild(tdLast);
 
     var tdModels = document.createElement('td');
     tdModels.className = 'muted';
+    tdModels.setAttribute('data-label', 'Models');
     tdModels.textContent = c.models || '\u2014';
     tr.appendChild(tdModels);
 
     var tdVersion = document.createElement('td');
     tdVersion.className = 'muted';
+    tdVersion.setAttribute('data-label', 'Version');
     tdVersion.textContent = c.version || '\u2014';
     tr.appendChild(tdVersion);
 
@@ -120,10 +154,9 @@ function initDashboard() {
 
   function emptyRow() {
     var tr = document.createElement('tr');
+    tr.className = 'empty-row';
     var td = document.createElement('td');
     td.colSpan = 5;
-    td.className = 'muted';
-    td.style.padding = '16px 10px';
     td.textContent = 'No client tokens registered.';
     tr.appendChild(td);
     return tr;
@@ -143,9 +176,9 @@ function initDashboard() {
 
   function emptyStatsRow() {
     var tr = document.createElement('tr');
+    tr.className = 'empty-row';
     var td = document.createElement('td');
-    td.colSpan = 4; td.className = 'muted';
-    td.style.cssText = 'padding:8px 4px;font-style:italic;';
+    td.colSpan = 4;
     td.textContent = 'No data yet.';
     tr.appendChild(td);
     return tr;
@@ -178,7 +211,7 @@ function initDashboard() {
       return r.json();
     }).then(function(d) {
       var el;
-      el = document.getElementById('req-count');    if (el) el.textContent = d.total_requests;
+      el = document.getElementById('req-count');      if (el) el.textContent = d.total_requests;
       el = document.getElementById('active-clients'); if (el) el.textContent = d.active_clients;
       el = document.getElementById('api-key-count'); if (el) el.textContent = d.api_key_count;
       el = document.getElementById('token-count');   if (el) el.textContent = d.token_count;
@@ -191,6 +224,9 @@ function initDashboard() {
       }
 
       refreshStats(d);
+
+      var lu = document.getElementById('last-updated');
+      if (lu) lu.textContent = 'Updated ' + new Date().toLocaleTimeString();
     }).catch(function() {});
   }
 
@@ -218,6 +254,7 @@ document.addEventListener('click', function(e) {
     } else {
       fallbackCopy(text);
     }
+    copyFeedback(copyBtn);
     return;
   }
 
@@ -232,9 +269,33 @@ document.addEventListener('click', function(e) {
       } else {
         fallbackCopy(val);
       }
+      copyFeedback(copyFromBtn);
+    }
+    return;
+  }
+
+  // Copy code block via data-copy-code attribute
+  var codeBtn = e.target.closest('[data-copy-code]');
+  if (codeBtn) {
+    var codeEl = document.getElementById(codeBtn.getAttribute('data-copy-code'));
+    if (codeEl) {
+      var codeText = codeEl.textContent || '';
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(codeText).catch(function() { fallbackCopy(codeText); });
+      } else {
+        fallbackCopy(codeText);
+      }
+      copyFeedback(codeBtn);
     }
   }
 });
+
+function copyFeedback(btn) {
+  var orig = btn.textContent;
+  if (orig === '\u2713') return; // already showing ✓
+  btn.textContent = '\u2713';
+  setTimeout(function() { btn.textContent = orig; }, 1200);
+}
 
 function fallbackCopy(text) {
   var ta = document.createElement('textarea');
@@ -251,4 +312,39 @@ function fallbackCopy(text) {
 
 document.addEventListener('DOMContentLoaded', function() {
   initDashboard();
+
+  // Restore docs section from URL hash
+  var hash = window.location.hash.slice(1);
+  if (hash) {
+    var hashSection = document.getElementById(hash);
+    if (hashSection && hashSection.classList.contains('docs-section')) {
+      var hashLink = document.querySelector('.docs-link[onclick*="\'' + hash + '\'"]');
+      showDoc(hash, hashLink);
+    }
+  }
+
+  // Restore OS tab selection from localStorage
+  document.querySelectorAll('[id]').forEach(function(group) {
+    if (!group.id.endsWith('-tab-group')) return;
+    try {
+      var saved = localStorage.getItem('llmesh-os-tab-' + group.id);
+      if (saved && document.getElementById(saved)) showOsTab(group.id, saved);
+    } catch(e) {}
+  });
+
+  // Auto-inject copy buttons into all .docs-code blocks
+  document.querySelectorAll('.docs-code').forEach(function(el, i) {
+    var id = 'code-block-' + i;
+    el.id = id;
+    var wrap = document.createElement('div');
+    wrap.className = 'docs-code-wrap';
+    el.parentNode.insertBefore(wrap, el);
+    wrap.appendChild(el);
+    var btn = document.createElement('button');
+    btn.className = 'btn-code-copy';
+    btn.setAttribute('data-copy-code', id);
+    btn.textContent = '\u2398'; // ⎘
+    btn.title = 'Copy';
+    wrap.appendChild(btn);
+  });
 });
