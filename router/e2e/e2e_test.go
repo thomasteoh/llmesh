@@ -21,6 +21,7 @@ import (
 	"llmesh/router/internal/api"
 	"llmesh/router/internal/correlation"
 	"llmesh/router/internal/hub"
+	"llmesh/router/internal/logring"
 	"llmesh/router/internal/queue"
 	"llmesh/router/internal/scheduler"
 	"llmesh/router/internal/stats"
@@ -88,7 +89,8 @@ func setupTestRouter(t *testing.T) (routerURL, apiKey, clientToken string, clean
 	// Wire components (same as main.go)
 	q := queue.New()
 	store := correlation.New()
-	h := hub.New()
+	testSink := logring.New(logring.DefaultCap)
+	h := hub.New(slog.Default())
 	reqStats := stats.New()
 
 	h.OnChunk = func(msg types.ChunkMsg) {
@@ -110,12 +112,12 @@ func setupTestRouter(t *testing.T) (routerURL, apiKey, clientToken string, clean
 			return 0
 		}
 		return apiHandler.Count()
-	}, reqStats, "e2e", "llmesh", "localhost")
+	}, reqStats, "e2e", "llmesh", "localhost", testSink)
 	if err != nil {
 		t.Fatalf("admin new: %v", err)
 	}
 
-	sched := scheduler.New(q, h, adminHandler.State())
+	sched := scheduler.New(q, h, adminHandler.State(), slog.Default())
 	sched.Start()
 
 	apiHandler = &api.Handler{
@@ -1240,7 +1242,7 @@ func TestE2E_AdminStateClientToken(t *testing.T) {
 
 // TestE2E_HubRegisterDisconnect verifies hub WS lifecycle.
 func TestE2E_HubRegisterDisconnect(t *testing.T) {
-	h := hub.New()
+	h := hub.New(slog.Default())
 	availableCh := make(chan struct{}, 1)
 	h.OnAvailable = func() {
 		select {
@@ -1326,11 +1328,11 @@ func TestE2E_HubRegisterDisconnect(t *testing.T) {
 // TestE2E_SchedulerDispatch verifies scheduler picks the right client.
 func TestE2E_SchedulerDispatch(t *testing.T) {
 	q := queue.New()
-	h := hub.New()
+	h := hub.New(slog.Default())
 	st, _ := admin.LoadState(t.TempDir() + "/state.json")
 	st.AddAPIKey(admin.APIKey{Key: "sk-user", Owner: "alice", Priority: "normal"})
 
-	sched := scheduler.New(q, h, st)
+	sched := scheduler.New(q, h, st, slog.Default())
 	sched.Start()
 	defer sched.Stop()
 

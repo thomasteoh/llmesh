@@ -19,7 +19,17 @@ import (
 	"llmesh/router/internal/translate"
 )
 
-var log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+var _apiLog atomic.Pointer[slog.Logger]
+
+func init() {
+	l := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	_apiLog.Store(l)
+}
+
+// SetLogger replaces the package logger atomically. Safe to call before ListenAndServe.
+func SetLogger(l *slog.Logger) { _apiLog.Store(l) }
+
+func apiLogger() *slog.Logger { return _apiLog.Load() }
 
 // APIKeyStore is satisfied by *admin.State (duck typing — no import needed).
 type APIKeyStore interface {
@@ -274,16 +284,16 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 				flusher.Flush()
 			}
 		case <-queueTimer.C:
-			log.Error("api: stream timeout", "request_id", req.ID, "timeout", "5min")
+			apiLogger().Error("api: stream timeout", "request_id", req.ID, "timeout", "5min")
 			serviceUnavailable(w, "request timed out waiting for a worker")
 			return
 		case <-activityTimer.C:
-			log.Warn("api: stream worker silent", "request_id", req.ID, "timeout", "2min")
+			apiLogger().Warn("api: stream worker silent", "request_id", req.ID, "timeout", "2min")
 			fmt.Fprintf(w, "data: {\"error\":\"worker stopped responding\"}\n\n")
 			flusher.Flush()
 			return
 		case <-r.Context().Done():
-			log.Info("api: stream client disconnected", "request_id", req.ID)
+			apiLogger().Info("api: stream client disconnected", "request_id", req.ID)
 			h.cancelRequest(req.ID)
 			return
 		}
@@ -325,12 +335,12 @@ func (h *Handler) batchResponse(w http.ResponseWriter, r *http.Request, req *typ
 				toolCalls = chunk.ToolCallsDelta
 			}
 		case <-timeout.C:
-			log.Error("api: batch timeout", "request_id", req.ID, "timeout", "10min")
+			apiLogger().Error("api: batch timeout", "request_id", req.ID, "timeout", "10min")
 			serviceUnavailable(w, "request timed out")
 			h.cancelRequest(req.ID)
 			return
 		case <-r.Context().Done():
-			log.Info("api: batch client disconnected", "request_id", req.ID)
+			apiLogger().Info("api: batch client disconnected", "request_id", req.ID)
 			h.cancelRequest(req.ID)
 			return
 		}
@@ -350,7 +360,7 @@ func (h *Handler) writeBatch(w http.ResponseWriter, req *types.InferenceRequest,
 		resp = translate.OpenAIFullResponse(req.ID, content, finishReason, toolCalls, usage)
 	}
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		log.Error("api: encode response", "error", err)
+		apiLogger().Error("api: encode response", "error", err)
 	}
 }
 

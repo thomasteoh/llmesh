@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -25,7 +26,7 @@ func dialHub(t *testing.T, h *Hub, name, owner, token string) *websocket.Conn {
 }
 
 func TestIsConnected(t *testing.T) {
-	h := New()
+	h := New(slog.Default())
 	conn := dialHub(t, h, "mac", "alice", "ct-alice-abc")
 	defer conn.Close()
 	time.Sleep(20 * time.Millisecond)
@@ -35,7 +36,7 @@ func TestIsConnected(t *testing.T) {
 }
 
 func TestLastSeenTime_AfterDisconnect(t *testing.T) {
-	h := New()
+	h := New(slog.Default())
 	conn := dialHub(t, h, "mac", "alice", "ct-alice-def")
 	time.Sleep(20 * time.Millisecond)
 	conn.Close()
@@ -49,14 +50,14 @@ func TestLastSeenTime_AfterDisconnect(t *testing.T) {
 }
 
 func TestLastSeenTime_NeverConnected(t *testing.T) {
-	h := New()
+	h := New(slog.Default())
 	if !h.LastSeenTime("ct-nobody").IsZero() {
 		t.Fatal("expected zero for never-connected token")
 	}
 }
 
 func TestCloseByToken(t *testing.T) {
-	h := New()
+	h := New(slog.Default())
 	conn := dialHub(t, h, "mac", "alice", "ct-alice-xyz")
 	defer conn.Close()
 	time.Sleep(20 * time.Millisecond)
@@ -68,7 +69,7 @@ func TestCloseByToken(t *testing.T) {
 }
 
 func TestActiveClientCount(t *testing.T) {
-	h := New()
+	h := New(slog.Default())
 	if h.ActiveClientCount() != 0 {
 		t.Fatal("expected 0 initially")
 	}
@@ -81,7 +82,7 @@ func TestActiveClientCount(t *testing.T) {
 }
 
 func TestConnectedModels(t *testing.T) {
-	h := New()
+	h := New(slog.Default())
 	conn := dialHub(t, h, "mac", "alice", "ct-alice-models")
 	defer conn.Close()
 	time.Sleep(20 * time.Millisecond)

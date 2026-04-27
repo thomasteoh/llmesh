@@ -3,15 +3,12 @@ package scheduler
 
 import (
 	"log/slog"
-	"os"
 	"sync"
 
 	"llmesh/pkg/types"
 	"llmesh/router/internal/hub"
 	"llmesh/router/internal/queue"
 )
-
-var log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 // AliasProvider supplies the current alias→[]models map. Satisfied by *admin.State.
 type AliasProvider interface {
@@ -23,6 +20,7 @@ type Scheduler struct {
 	queue    *queue.Queue
 	hub      *hub.Hub
 	aliases  AliasProvider
+	log      *slog.Logger
 	signal   chan struct{}
 	stopCh   chan struct{}
 	once     sync.Once
@@ -31,11 +29,12 @@ type Scheduler struct {
 
 // New creates a Scheduler wired to the given queue, hub, and alias provider.
 // It registers itself as the hub's OnAvailable callback.
-func New(q *queue.Queue, h *hub.Hub, aliases AliasProvider) *Scheduler {
+func New(q *queue.Queue, h *hub.Hub, aliases AliasProvider, logger *slog.Logger) *Scheduler {
 	s := &Scheduler{
 		queue:   q,
 		hub:     h,
 		aliases: aliases,
+		log:     logger,
 		signal:  make(chan struct{}, 1),
 		stopCh:  make(chan struct{}),
 	}
@@ -136,11 +135,11 @@ func (s *Scheduler) drainQueue() {
 		if !s.hub.SendToClient(best.clientID, job) {
 			s.hub.DecrInFlight(best.clientID)
 			s.queue.Push(*req)
-			log.Warn("scheduler: client unavailable, re-queued", "client_id", best.clientID, "request_id", req.ID)
+			s.log.Warn("scheduler: client unavailable, re-queued", "client_id", best.clientID, "request_id", req.ID)
 			return
 		}
 		s.hub.TrackJob(best.clientID, *req)
-		log.Info("scheduler: dispatched", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "client_id", best.clientID, "client_owner", best.clientOwner)
+		s.log.Info("scheduler: dispatched", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "client_id", best.clientID, "client_owner", best.clientOwner)
 	}
 }
 

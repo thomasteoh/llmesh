@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
+
+	"llmesh/router/internal/logring"
 )
 
 type statRowJSON struct {
@@ -50,6 +53,59 @@ func toStatRowJSON(rows []StatRow) []statRowJSON {
 	}
 	return out
 }
+
+// ─── Logs API ─────────────────────────────────────────────────────────────────
+
+type logEntryJSON struct {
+	Time    string            `json:"time"`
+	Level   string            `json:"level"`
+	Message string            `json:"msg"`
+	Attrs   map[string]string `json:"attrs,omitempty"`
+}
+
+type logsResponseJSON struct {
+	Category string         `json:"category"`
+	Entries  []logEntryJSON `json:"entries"`
+}
+
+func (a *Admin) handleLogsJSON(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	category := r.URL.Query().Get("category")
+	valid := false
+	for _, c := range logring.Categories() {
+		if c == category {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		http.Error(w, "invalid category", http.StatusBadRequest)
+		return
+	}
+	limit := 200
+	if ls := r.URL.Query().Get("limit"); ls != "" {
+		if n, err := strconv.Atoi(ls); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+	entries := a.sink.Query(category, limit)
+	out := make([]logEntryJSON, len(entries))
+	for i, e := range entries {
+		out[i] = logEntryJSON{
+			Time:    e.Time.Format("2006-01-02T15:04:05.000Z07:00"),
+			Level:   e.Level,
+			Message: e.Message,
+			Attrs:   e.Attrs,
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(logsResponseJSON{Category: category, Entries: out})
+}
+
+// ─── Dashboard API ────────────────────────────────────────────────────────────
 
 func (a *Admin) handleDashboardJSON(w http.ResponseWriter, r *http.Request) {
 	tokens := a.state.ClientTokensFor("", true)

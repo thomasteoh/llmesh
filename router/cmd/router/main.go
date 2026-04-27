@@ -15,6 +15,7 @@ import (
 	"llmesh/router/internal/api"
 	"llmesh/router/internal/correlation"
 	"llmesh/router/internal/hub"
+	"llmesh/router/internal/logring"
 	"llmesh/router/internal/queue"
 	"llmesh/router/internal/scheduler"
 	"llmesh/router/internal/stats"
@@ -23,7 +24,9 @@ import (
 // version is set at build time via -ldflags "-X main.version=<tag>".
 var version = "dev"
 
-var log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+var sink = logring.New(logring.DefaultCap)
+
+var log = logring.NewLogger(sink, "router", slog.LevelInfo)
 
 var landingTmpl = template.Must(template.New("landing").Parse(landingHTML))
 
@@ -124,8 +127,9 @@ func main() {
 
 	q := queue.New()
 	store := correlation.New()
-	h := hub.New()
+	h := hub.New(logring.NewLogger(sink, "hub", slog.LevelInfo))
 	reqStats := stats.New()
+	api.SetLogger(logring.NewLogger(sink, "api", slog.LevelInfo))
 
 	h.OnChunk = func(msg types.ChunkMsg) {
 		store.Send(msg)
@@ -149,13 +153,13 @@ func main() {
 			return 0
 		}
 		return apiHandler.Count()
-	}, reqStats, version, cfg.Name, cfg.Host)
+	}, reqStats, version, cfg.Name, cfg.Host, sink)
 	if err != nil {
 		log.Error("admin", "error", err)
 		os.Exit(1)
 	}
 
-	sched := scheduler.New(q, h, adminHandler.State())
+	sched := scheduler.New(q, h, adminHandler.State(), logring.NewLogger(sink, "scheduler", slog.LevelInfo))
 	sched.Start()
 
 	apiHandler = &api.Handler{

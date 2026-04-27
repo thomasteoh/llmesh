@@ -6,15 +6,13 @@ import (
 	"html/template"
 	"log/slog"
 	"net/http"
-	"os"
 	"strings"
 
 	"llmesh/router/internal/hub"
+	"llmesh/router/internal/logring"
 	"llmesh/router/internal/queue"
 	"llmesh/router/internal/stats"
 )
-
-var log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 //go:embed templates static
 var adminFS embed.FS
@@ -32,10 +30,12 @@ type Admin struct {
 	sessions      *sessionStore
 	tmpls         map[string]*template.Template
 	mux           *http.ServeMux
+	log           *slog.Logger
+	sink          *logring.Sink
 }
 
 // New creates an Admin handler. statePath is the path to state.json.
-func New(statePath string, h *hub.Hub, q *queue.Queue, reqCount func() int64, s *stats.Stats, routerVersion, name, host string) (*Admin, error) {
+func New(statePath string, h *hub.Hub, q *queue.Queue, reqCount func() int64, s *stats.Stats, routerVersion, name, host string, sink *logring.Sink) (*Admin, error) {
 	if reqCount == nil {
 		return nil, fmt.Errorf("admin: reqCount must not be nil")
 	}
@@ -53,6 +53,8 @@ func New(statePath string, h *hub.Hub, q *queue.Queue, reqCount func() int64, s 
 		name:          name,
 		host:          host,
 		sessions:      newSessionStore(),
+		log:           logring.NewLogger(sink, "admin", slog.LevelInfo),
+		sink:          sink,
 	}
 	if err := a.parseTemplates(); err != nil {
 		return nil, err
@@ -173,6 +175,9 @@ func (a *Admin) registerRoutes() {
 	// Dashboard JSON API
 	mux.HandleFunc("/admin/api/dashboard", a.requireAuth(a.handleDashboardJSON))
 
+	// Logs JSON API (admin-only)
+	mux.HandleFunc("/admin/api/logs", a.requireAdmin(a.handleLogsJSON))
+
 	a.mux = mux
 }
 
@@ -200,7 +205,7 @@ func (a *Admin) render(w http.ResponseWriter, name string, data any) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := t.Execute(w, data); err != nil {
-		log.Error("admin: render", "template", name, "error", err)
+		a.log.Error("admin: render", "template", name, "error", err)
 	}
 }
 
