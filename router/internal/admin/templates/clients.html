@@ -1,6 +1,6 @@
 {{define "content"}}
 {{if .NewToken}}
-<div class="new-key-banner">
+<div class="new-key-banner" role="alert">
   <p>&#10003; Token created. Copy it now &mdash; it will not be shown again.</p>
   <code id="new-tok-val">{{.NewToken}}</code>
   <div class="new-key-actions">
@@ -30,11 +30,11 @@
     <tbody>
       {{range .Tokens}}
       <tr>
-        <td><span class="muted">{{.Owner}}/</span>{{.Name}} <button class="btn-copy" data-copy="{{.Token}}" title="Copy token">&#10697;</button></td>
-        <td><span class="badge {{if and (eq .Status "connected") (gt (len .Connections) 1)}}multi_connected{{else}}{{.Status}}{{end}}">{{if and (eq .Status "connected") (gt (len .Connections) 1)}}&#9679; {{len .Connections}} connected{{else if eq .Status "connected"}}&#9679; connected{{else if eq .Status "offline"}}&#9675; offline{{else}}&#9675; never connected{{end}}</span></td>
-        <td class="muted">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
-        <td style="text-align:right;">
-          <form method="POST" action="/admin/clients/revoke" style="display:inline;">
+        <td data-label="Name"><span class="muted">{{.Owner}}/</span>{{.Name}} <button class="btn-copy" data-copy="{{.Token}}" title="Copy token">&#10697;</button></td>
+        <td data-label="Status"><span class="badge {{if and (eq .Status "connected") (gt (len .Connections) 1)}}multi_connected{{else}}{{.Status}}{{end}}">{{if and (eq .Status "connected") (gt (len .Connections) 1)}}&#9679; {{len .Connections}} connected{{else if eq .Status "connected"}}&#9679; connected{{else if eq .Status "offline"}}&#9675; offline{{else}}&#9675; never connected{{end}}</span></td>
+        <td data-label="Last seen" class="muted">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
+        <td>
+          <form method="POST" action="/admin/clients/revoke" style="display:inline;" onsubmit="return confirm('Revoke this client token? The client will be disconnected and cannot reconnect.')">
             <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
             <input type="hidden" name="token" value="{{.Token}}">
             <button type="submit" class="btn-danger" title="Revoke">&#x2715;</button>
@@ -58,7 +58,7 @@
       </tr>
       {{end}}
       {{else}}
-      <tr><td colspan="4" class="muted" style="padding:16px 10px;">No client tokens yet.</td></tr>
+      <tr class="empty-row"><td colspan="4">No client tokens yet.</td></tr>
       {{end}}
     </tbody>
   </table>
@@ -89,15 +89,17 @@
         <a class="btn-download" href="/downloads/llm-client-darwin-amd64" download="llm-client">Download</a>
       </div>
       <div class="os-tab-panel" id="os-darwin-arm64">
-        <p class="docs-p">Apple Silicon (M1–M4).</p>
+        <p class="docs-p">Apple Silicon (M1&ndash;M4).</p>
         <a class="btn-download" href="/downloads/llm-client-darwin-arm64" download="llm-client">Download</a>
       </div>
     </div>
   </div>
 
-  <details style="margin-top:20px;">
-    <summary style="cursor:pointer;font-size:12px;font-weight:600;color:var(--text-muted);user-select:none;">Show config &amp; run instructions</summary>
-    <div style="margin-top:14px;">
+  <div class="collapsible" style="margin-top:20px;">
+    <div class="collapsible-header" data-toggle="client-run-section" onclick="toggleSection('client-run-section')">
+      <span class="toggle-arrow">&#9662;</span> Config &amp; run instructions
+    </div>
+    <div class="collapsible-body" id="client-run-section">
       <div class="docs-label">Run</div>
       <div class="docs-code">chmod +x llm-client
 ./llm-client -config ./config.yaml</div>
@@ -121,6 +123,6 @@ models:
         install with <mono>sudo install -m644 llm-client.1 /usr/local/share/man/man1/</mono>
       </p>
     </div>
-  </details>
+  </div>
 </div>
 {{end}}
