@@ -517,6 +517,51 @@ mono, code { font-family: monospace; font-size: 11px; }
   text-align: right;
 }
 
+/* ─── Client filter bar ─────────────────────────────────────── */
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+#client-filter {
+  flex: 1;
+  max-width: 380px;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 7px 10px;
+  color: var(--text);
+  font-size: 12px;
+}
+#client-filter:focus { outline: none; border-color: var(--accent); }
+
+/* ─── User groups (admin clients view) ──────────────────────── */
+.user-group { margin-bottom: 20px; }
+.user-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 0 6px 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 2px;
+}
+.user-group-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* ─── Pagination ─────────────────────────────────────────────── */
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  padding: 20px 0 4px;
+}
+.pagination .btn-secondary { min-width: 80px; }
+
 /* ─── In-flight jobs ─────────────────────────────────────────── */
 .conn-jobs {
   border-top: 1px solid var(--border);

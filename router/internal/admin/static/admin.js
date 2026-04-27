@@ -103,6 +103,76 @@ function toggleDocsNav() {
   if (chevron) chevron.textContent = open ? '\u25b4' : '\u25be'; // ▴ / ▾
 }
 
+/* ─── Clients filter + pagination ──────────────────────────── */
+
+function initClientGroups() {
+  var container = document.getElementById('groups-container');
+  if (!container) return;
+
+  var filterInput  = document.getElementById('client-filter');
+  var summary      = document.getElementById('filter-summary');
+  var prevBtn      = document.getElementById('prev-page');
+  var nextBtn      = document.getElementById('next-page');
+  var pageInfo     = document.getElementById('page-info');
+  var paginationEl = document.getElementById('pagination-controls');
+  var PER_PAGE     = 10;
+
+  var allGroups = Array.from(container.querySelectorAll('.user-group'));
+  var filtered  = allGroups.slice();
+  var currentPage = 0;
+
+  function applyFilter() {
+    var q = filterInput ? filterInput.value.trim().toLowerCase() : '';
+    filtered = q
+      ? allGroups.filter(function(g) {
+          var u = (g.getAttribute('data-username') || '').toLowerCase();
+          var c = (g.getAttribute('data-clients')  || '').toLowerCase();
+          return u.indexOf(q) !== -1 || c.indexOf(q) !== -1;
+        })
+      : allGroups.slice();
+    currentPage = 0;
+    render();
+  }
+
+  function render() {
+    var start      = currentPage * PER_PAGE;
+    var end        = start + PER_PAGE;
+    var pageGroups = new Set(filtered.slice(start, end));
+    var total      = filtered.length;
+    var totalPages = Math.max(1, Math.ceil(total / PER_PAGE));
+
+    allGroups.forEach(function(g) {
+      g.style.display = pageGroups.has(g) ? '' : 'none';
+    });
+
+    if (pageInfo) {
+      var pageStr = 'Page ' + (currentPage + 1) + ' of ' + totalPages;
+      pageInfo.textContent = total < allGroups.length
+        ? total + ' user' + (total !== 1 ? 's' : '') + ' matched \u00b7 ' + pageStr
+        : pageStr;
+    }
+    if (summary) {
+      summary.textContent = (filterInput && filterInput.value.trim() && total < allGroups.length)
+        ? total + ' of ' + allGroups.length + ' users'
+        : '';
+    }
+    if (prevBtn) prevBtn.disabled = currentPage === 0;
+    if (nextBtn) nextBtn.disabled = currentPage >= totalPages - 1;
+    if (paginationEl) paginationEl.style.display = totalPages > 1 ? '' : 'none';
+  }
+
+  if (filterInput) filterInput.addEventListener('input', applyFilter);
+
+  window.changeClientPage = function(delta) {
+    var totalPages = Math.max(1, Math.ceil(filtered.length / PER_PAGE));
+    currentPage = Math.max(0, Math.min(totalPages - 1, currentPage + delta));
+    render();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  render();
+}
+
 /* ─── Dashboard polling ─────────────────────────────────────── */
 
 function initDashboard() {
@@ -312,6 +382,7 @@ function fallbackCopy(text) {
 
 document.addEventListener('DOMContentLoaded', function() {
   initDashboard();
+  initClientGroups();
 
   // Restore docs section from URL hash
   var hash = window.location.hash.slice(1);
