@@ -10,7 +10,7 @@
 <body class="auth-body">
 <div class="auth-card">
   <div class="brand">llmesh</div>
-  {{if .Error}}<div class="flash error" style="margin-bottom:14px;border-radius:4px;">{{.Error}}</div>{{end}}
+  {{if .Error}}<div class="flash error">{{.Error}}</div>{{end}}
   <form method="POST" action="/admin/login">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <label>Username<input name="username" type="text" autocomplete="username" autofocus></label>
