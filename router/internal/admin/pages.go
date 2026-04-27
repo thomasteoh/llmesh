@@ -362,14 +362,7 @@ func (a *Admin) handleClientTokenConfig(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	host := strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
-			r == '.' || r == '-' || r == ':' || r == '[' || r == ']' {
-			return r
-		}
-		return -1
-	}, r.Host)
-	yaml := fmt.Sprintf("router_url: \"wss://%s/ws/client\"\nrouter_token: \"%s\"\nmax_concurrent: 4\nmodels:\n  - name: \"llama3.2:3b\"\n    endpoint: \"http://localhost:8080\"\n", host, token)
+	yaml := fmt.Sprintf("router_url: \"wss://%s/ws/client\"\nrouter_token: \"%s\"\nmax_concurrent: 4\nmodels:\n  - name: \"llama3.2:3b\"\n    endpoint: \"http://localhost:8080\"\n", a.host, token)
 	w.Header().Set("Content-Type", "application/x-yaml")
 	w.Header().Set("Content-Disposition", `attachment; filename="config.yaml"`)
 	fmt.Fprint(w, yaml)
