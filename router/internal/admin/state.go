@@ -302,6 +302,15 @@ func (s *State) OwnerFor(key string) string {
 	return k.Owner
 }
 
+// LabelFor returns "owner/label" for the given API key, or "" if not found.
+func (s *State) LabelFor(key string) string {
+	k, ok := s.LookupAPIKey(key)
+	if !ok {
+		return ""
+	}
+	return k.Owner + "/" + k.Label
+}
+
 // --- Clients ---
 
 func (s *State) LookupClientToken(token string) (ClientToken, bool) {

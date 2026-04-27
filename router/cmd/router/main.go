@@ -144,7 +144,7 @@ func main() {
 	// Wire reqCount after apiHandler is created using a closure that captures the pointer.
 	var apiHandler *api.Handler
 
-	adminHandler, err := admin.New(*statePath, h, func() int64 {
+	adminHandler, err := admin.New(*statePath, h, q, func() int64 {
 		if apiHandler == nil {
 			return 0
 		}

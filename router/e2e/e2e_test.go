@@ -105,7 +105,7 @@ func setupTestRouter(t *testing.T) (routerURL, apiKey, clientToken string, clean
 
 	var apiHandler *api.Handler
 
-	adminHandler, err := admin.New(statePath, h, func() int64 {
+	adminHandler, err := admin.New(statePath, h, q, func() int64 {
 		if apiHandler == nil {
 			return 0
 		}
