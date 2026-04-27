@@ -26,8 +26,9 @@ type sessionStore struct {
 }
 
 type sessionEntry struct {
-	Username string
-	Expiry   time.Time
+	Username  string
+	Expiry    time.Time
+	CSRFToken string // plaintext CSRF token to serve with first page after login
 }
 
 func newSessionStore() *sessionStore {
@@ -64,6 +65,25 @@ func (s *sessionStore) delete(id string) {
 	s.mu.Lock()
 	delete(s.entries, id)
 	s.mu.Unlock()
+}
+
+func (s *sessionStore) setCSRF(id, token string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e, ok := s.entries[id]; ok {
+		e.CSRFToken = token
+		s.entries[id] = e
+	}
+}
+
+func (s *sessionStore) getCSRF(id string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.entries[id]
+	if !ok {
+		return "", false
+	}
+	return e.CSRFToken, true
 }
 
 // sessionUser returns the authenticated User for this request, or User{} if not authenticated.
@@ -135,6 +155,11 @@ func (a *Admin) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sid := a.sessions.create(username)
+	// Generate a fresh CSRF token for the user and store it in the session.
+	csrfToken, err := a.state.RefreshCSRFToken(username)
+	if err == nil && csrfToken != "" {
+		a.sessions.setCSRF(sid, csrfToken)
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
 		Value:    sid,
@@ -152,8 +177,14 @@ func (a *Admin) handleLogout(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	// Look up username BEFORE deleting the session.
+	var username string
 	if c, err := r.Cookie(sessionCookie); err == nil {
+		username, _ = a.sessions.lookup(c.Value)
 		a.sessions.delete(c.Value)
+	}
+	if username != "" {
+		a.state.UpdateUser(username, func(user *User) { user.CSRFToken = "" })
 	}
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Path: "/admin", MaxAge: -1})
 	http.Redirect(w, r, "/admin/login", http.StatusFound)

@@ -1,3 +1,10 @@
+/* ─── CSRF helpers ──────────────────────────────────────────── */
+
+function getCSRFToken() {
+  var input = document.querySelector('input[name="_csrf"]');
+  return input ? input.value : '';
+}
+
 /* ─── Theme ─────────────────────────────────────────────────── */
 
 function applyTheme(theme) {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"os"
+	"time"
 
 	clientPkg "llmesh/client"
 	"llmesh/client/internal/llamacpp"
@@ -12,6 +13,11 @@ import (
 )
 
 var log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+// keepAliveInterval is how often to send an empty chunk to the router to
+// prevent its TTFT and activity timers from firing during long prompt evaluation.
+// Must be shorter than the router's 2-minute activityTimer.
+const keepAliveInterval = 60 * time.Second
 
 // SendFn sends a JSON-encodable message back to the router over WebSocket.
 type SendFn func(msg any) error
@@ -30,6 +36,26 @@ func Handle(ctx context.Context, job types.JobMsg, cfg *clientPkg.Config, send S
 		})
 		return
 	}
+
+	// Send an empty chunk to the router every minute so its TTFT and activity
+	// timers don't fire during long prompt evaluation. The router ignores
+	// chunks with empty deltas when writing the HTTP response.
+	keepAliveDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(keepAliveInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				_ = send(types.ChunkMsg{Type: "chunk", RequestID: req.ID})
+			case <-keepAliveDone:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	defer close(keepAliveDone)
 
 	llmClient := llamacpp.New(endpoint)
 	chatTemplate := cfg.ChatTemplateFor(req.Model)

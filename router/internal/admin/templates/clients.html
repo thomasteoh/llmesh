@@ -13,6 +13,7 @@
   <div class="card-title">Add client</div>
   <p class="docs-p" style="margin-bottom:14px;">A client token authenticates a llama.cpp instance (a machine or container running a model) to the router. Use it in the client's config file so the router knows this client is allowed to serve requests.</p>
   <form method="POST" action="/admin/clients">
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <div class="form-row">
       <div class="form-group" style="flex:2;">
         <label>Name</label>
@@ -34,6 +35,7 @@
         <td class="muted">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
         <td style="text-align:right;">
           <form method="POST" action="/admin/clients/revoke" style="display:inline;">
+            <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
             <input type="hidden" name="token" value="{{.Token}}">
             <button type="submit" class="btn-danger" title="Revoke">&#x2715;</button>
           </form>

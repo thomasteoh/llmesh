@@ -1,3 +1,4 @@
-name: "llmesh"        # brand name shown on landing page
+name: "llmesh"              # brand name shown on landing page and admin UI
+host: "llmesh.example.com"  # public hostname used in admin UI client setup instructions
 server:
   port: 53002

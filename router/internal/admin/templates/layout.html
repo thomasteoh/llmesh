@@ -23,7 +23,7 @@
     <button class="nav-icon-btn hamburger" id="nav-toggle" onclick="toggleNav()" aria-label="Open navigation">&#9776;</button>
   </div>
 </nav>
-<form id="logout-form" method="POST" action="/admin/logout" style="display:none"></form>
+<form id="logout-form" method="POST" action="/admin/logout" style="display:none"><input type="hidden" name="_csrf" value="{{.CSRFToken}}"></form>
 {{if .Flash}}<div class="flash success">{{.Flash}}</div>{{end}}
 {{if .Error}}<div class="flash error">{{.Error}}</div>{{end}}
 <main>{{block "content" .}}{{end}}</main>

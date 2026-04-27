@@ -19,6 +19,7 @@ type basePage struct {
 	IsAdmin       bool
 	Flash         string
 	Error         string
+	CSRFToken     string
 	RouterVersion string
 	Name          string
 	Host          string
@@ -101,7 +102,7 @@ type UserRow struct {
 }
 
 func (a *Admin) newBasePage(page string, u User) basePage {
-	return basePage{
+	bp := basePage{
 		Page:          page,
 		Username:      u.Username,
 		IsAdmin:       u.Role == "admin",
@@ -109,6 +110,12 @@ func (a *Admin) newBasePage(page string, u User) basePage {
 		Name:          a.name,
 		Host:          a.host,
 	}
+	// Generate a fresh CSRF token for each page render (one-time use).
+	csrfToken, err := a.state.RefreshCSRFToken(u.Username)
+	if err == nil && csrfToken != "" {
+		bp.CSRFToken = csrfToken
+	}
+	return bp
 }
 
 // --- Dashboard ---

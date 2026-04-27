@@ -12,6 +12,7 @@
   <div class="brand">llmesh</div>
   {{if .Error}}<div class="flash error" style="margin-bottom:14px;border-radius:4px;">{{.Error}}</div>{{end}}
   <form method="POST" action="/admin/login">
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <label>Username<input name="username" type="text" autocomplete="username" autofocus></label>
     <label>Password<input name="password" type="password" autocomplete="current-password"></label>
     <button type="submit">Sign in</button>
