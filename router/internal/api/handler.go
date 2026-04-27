@@ -26,6 +26,7 @@ type APIKeyStore interface {
 	ValidAPIKey(key string) bool
 	PriorityFor(key string) types.Priority
 	OwnerFor(key string) string
+	LabelFor(key string) string
 }
 
 // ModelStore is satisfied by *hub.Hub (duck typing — no import needed).
@@ -154,6 +155,8 @@ func (h *Handler) enqueue(
 	req.ID = uuid.New().String()
 	req.Priority = h.Keys.PriorityFor(key)
 	req.Owner = h.Keys.OwnerFor(key)
+	req.APIKeyLabel = h.Keys.LabelFor(key)
+	req.WordCount = messageWordCount(req)
 	h.requestCount.Add(1)
 	req.EnqueuedAt = time.Now()
 
@@ -349,6 +352,30 @@ func (h *Handler) writeBatch(w http.ResponseWriter, req *types.InferenceRequest,
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		log.Error("api: encode response", "error", err)
 	}
+}
+
+// messageWordCount returns an approximate word count across all messages in req.
+// It tries to extract plain text from content fields; falls back to raw bytes.
+func messageWordCount(req *types.InferenceRequest) int {
+	count := 0
+	for _, m := range req.Messages {
+		var s string
+		if json.Unmarshal(m.Content, &s) == nil {
+			count += len(strings.Fields(s))
+			continue
+		}
+		var blocks []struct {
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(m.Content, &blocks) == nil {
+			for _, b := range blocks {
+				count += len(strings.Fields(b.Text))
+			}
+			continue
+		}
+		count += len(strings.Fields(string(m.Content)))
+	}
+	return count
 }
 
 func (h *Handler) OpenAI() http.HandlerFunc {

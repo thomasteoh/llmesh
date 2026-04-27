@@ -55,11 +55,19 @@ func (c *Client) DecrInFlight() {
 	c.inFlight.Add(-1)
 }
 
+// InFlightRecord is a snapshot of a job currently being processed by a client.
+type InFlightRecord struct {
+	ClientID    string
+	ClientToken string
+	Req         types.InferenceRequest
+}
+
 // Hub manages WebSocket client connections and acts as the client registry.
 type Hub struct {
 	mu       sync.RWMutex
 	clients  map[string]*Client
-	lastSeen map[string]time.Time // token → last disconnect time
+	lastSeen map[string]time.Time   // token → last disconnect time
+	jobs     map[string]InFlightRecord // requestID → in-flight record
 
 	// OnChunk is called when a client sends a ChunkMsg.
 	OnChunk func(msg types.ChunkMsg)
@@ -74,6 +82,7 @@ func New() *Hub {
 	return &Hub{
 		clients:  make(map[string]*Client),
 		lastSeen: make(map[string]time.Time),
+		jobs:     make(map[string]InFlightRecord),
 	}
 }
 
@@ -177,6 +186,7 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 		}
 		if msg.Done {
 			client.DecrInFlight()
+			h.untrackJob(msg.RequestID)
 			if h.OnAvailable != nil {
 				h.OnAvailable()
 			}
@@ -191,6 +201,7 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 			return
 		}
 		client.DecrInFlight()
+		h.untrackJob(msg.RequestID)
 		if h.OnAvailable != nil {
 			h.OnAvailable()
 		}
@@ -327,6 +338,56 @@ func (h *Hub) DecrInFlight(clientID string) {
 	if ok {
 		client.DecrInFlight()
 	}
+}
+
+// TrackJob registers an in-flight job for the given client. Called by the scheduler after dispatch.
+func (h *Hub) TrackJob(clientID string, req types.InferenceRequest) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	token := ""
+	if c, ok := h.clients[clientID]; ok {
+		token = c.Token
+	}
+	h.jobs[req.ID] = InFlightRecord{ClientID: clientID, ClientToken: token, Req: req}
+}
+
+// untrackJob removes the job record for requestID. Called internally when a job completes.
+func (h *Hub) untrackJob(requestID string) {
+	h.mu.Lock()
+	delete(h.jobs, requestID)
+	h.mu.Unlock()
+}
+
+// LookupInFlightJob returns the in-flight record for requestID, if any.
+func (h *Hub) LookupInFlightJob(requestID string) (InFlightRecord, bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	rec, ok := h.jobs[requestID]
+	return rec, ok
+}
+
+// InFlightJobsByClientID returns all currently tracked jobs for the given client connection.
+func (h *Hub) InFlightJobsByClientID(clientID string) []InFlightRecord {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	var out []InFlightRecord
+	for _, rec := range h.jobs {
+		if rec.ClientID == clientID {
+			out = append(out, rec)
+		}
+	}
+	return out
+}
+
+// AllInFlightJobs returns a snapshot of all currently tracked in-flight jobs.
+func (h *Hub) AllInFlightJobs() []InFlightRecord {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	out := make([]InFlightRecord, 0, len(h.jobs))
+	for _, rec := range h.jobs {
+		out = append(out, rec)
+	}
+	return out
 }
 
 // CancelRequest broadcasts a cancel message to all connected clients for the given requestID.

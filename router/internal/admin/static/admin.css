@@ -517,6 +517,53 @@ mono, code { font-family: monospace; font-size: 11px; }
   text-align: right;
 }
 
+/* ─── In-flight jobs ─────────────────────────────────────────── */
+.conn-jobs {
+  border-top: 1px solid var(--border);
+  padding: 4px 0 4px 20px;
+}
+.job-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 11px;
+}
+.job-model {
+  font-family: monospace;
+  color: var(--text);
+  white-space: nowrap;
+}
+.job-key {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.job-words { white-space: nowrap; }
+.job-time { white-space: nowrap; }
+.btn-xs {
+  padding: 1px 6px;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+/* ─── Queue collapsible header ───────────────────────────────── */
+.queue-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.queue-count {
+  font-size: 11px;
+  padding: 1px 7px;
+}
+.badge.muted-badge {
+  background: var(--surface-3);
+  color: var(--text-muted);
+}
+
 /* ─── Model availability / alias badges ──────────────────────── */
 /* ─── Token stats panel ──────────────────────────────────────── */
 .stats-panels {

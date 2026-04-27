@@ -139,6 +139,7 @@ func (s *Scheduler) drainQueue() {
 			log.Warn("scheduler: client unavailable, re-queued", "client_id", best.clientID, "request_id", req.ID)
 			return
 		}
+		s.hub.TrackJob(best.clientID, *req)
 		log.Info("scheduler: dispatched", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "client_id", best.clientID, "client_owner", best.clientOwner)
 	}
 }
