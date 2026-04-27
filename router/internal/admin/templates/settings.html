@@ -38,9 +38,9 @@
               {{if .Disabled}}
                 <form method="POST" action="/admin/settings/users/enable" style="display:inline;"><input type="hidden" name="_csrf" value="{{$.CSRFToken}}"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-success">Enable</button></form>
               {{else}}
-                {{if eq .Role "admin"}}<form method="POST" action="/admin/settings/users/demote" style="display:inline;"><input type="hidden" name="_csrf" value="{{$.CSRFToken}}"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-secondary">Demote</button></form>{{end}}
+                {{if eq .Role "admin"}}<form method="POST" action="/admin/settings/users/demote" style="display:inline;" onsubmit="return confirm('Demote {{.Username}} from admin to member?')"><input type="hidden" name="_csrf" value="{{$.CSRFToken}}"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-secondary">Demote</button></form>{{end}}
                 {{if eq .Role "member"}}<form method="POST" action="/admin/settings/users/promote" style="display:inline;"><input type="hidden" name="_csrf" value="{{$.CSRFToken}}"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-secondary">Promote</button></form>{{end}}
-                <form method="POST" action="/admin/settings/users/disable" style="display:inline;"><input type="hidden" name="_csrf" value="{{$.CSRFToken}}"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-danger">Disable</button></form>
+                <form method="POST" action="/admin/settings/users/disable" style="display:inline;" onsubmit="return confirm('Disable {{.Username}}? They will not be able to sign in.')"><input type="hidden" name="_csrf" value="{{$.CSRFToken}}"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-danger">Disable</button></form>
               {{end}}
             </div>
             {{end}}
