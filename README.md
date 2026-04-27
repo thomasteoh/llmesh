@@ -4,18 +4,42 @@ A lightweight, self-hosted LLM router that pools your llama.cpp instances into a
 
 ## Architecture
 
-```
-[Caller (agent/tool)]    [llm-router]         [llm-client(s)]
-        │                     │                      │
-        │  POST /v1/...        │   wss://.../ws/client│
-        │─────────────────────►│◄─────────────────────│
-        │                     │  schedule job         │
-        │                     │──────────────────────►│── llama.cpp
-        │  SSE / response      │◄──────────────────────│
-        │◄─────────────────────│
-```
+llmesh sits between callers (agents, tools, scripts) and your llama.cpp instances:
+
+- **Router** — single API endpoint, pools all connected clients, handles authentication, request queuing, and affinity-based scheduling.
+- **Client** — lightweight agent running on each machine with llama.cpp; connects to the router over WebSocket and dispatches inference jobs.
 
 Callers only need to know the router URL. Inference runs on local llama.cpp nodes connected as clients over WebSocket.
+
+### Request Flow
+
+```mermaid
+sequenceDiagram
+    participant C as Caller
+    participant R as Router
+    participant W as llm-client
+    participant L as llama.cpp
+
+    C->>R: POST /v1/chat/completions
+    R->>R: validate API key
+    R->>R: queue + schedule job
+    R->>W: WebSocket "job" (JSON)
+    W->>L: POST /v1/chat/completions (SSE)
+    L-->>W: SSE stream of tokens
+    W-->>R: WebSocket "chunk" messages
+    R-->>C: SSE stream
+    R->>W: WebSocket "cancel" (on client disconnect)
+```
+
+### Scheduling Strategy
+
+The router dispatches requests to available clients using **client-centric affinity scheduling**:
+
+1. **Owner affinity** — a request from user X prefers a client registered by user X
+2. **Priority tier** — requests can be tagged `high`, `normal`, or `low`
+3. **FIFO** — within the same tier, oldest first
+
+Model aliases allow multiple clients serving different implementations of the same model to be addressed by a single logical name (e.g., `gpt-4o` → `unsloth/qwen3-30b` or `llama3.1:70b`).
 
 ---
 
