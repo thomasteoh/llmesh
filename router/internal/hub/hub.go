@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"os"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -14,8 +13,6 @@ import (
 	"github.com/gorilla/websocket"
 	"llmesh/pkg/types"
 )
-
-var log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
@@ -66,8 +63,9 @@ type InFlightRecord struct {
 type Hub struct {
 	mu       sync.RWMutex
 	clients  map[string]*Client
-	lastSeen map[string]time.Time   // token → last disconnect time
+	lastSeen map[string]time.Time      // token → last disconnect time
 	jobs     map[string]InFlightRecord // requestID → in-flight record
+	log      *slog.Logger
 
 	// OnChunk is called when a client sends a ChunkMsg.
 	OnChunk func(msg types.ChunkMsg)
@@ -78,11 +76,12 @@ type Hub struct {
 }
 
 // New creates and returns a new Hub.
-func New() *Hub {
+func New(logger *slog.Logger) *Hub {
 	return &Hub{
 		clients:  make(map[string]*Client),
 		lastSeen: make(map[string]time.Time),
 		jobs:     make(map[string]InFlightRecord),
+		log:      logger,
 	}
 }
 
@@ -91,7 +90,7 @@ func New() *Hub {
 func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token string) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Error("hub: ws upgrade error", "error", err)
+		h.log.Error("hub: ws upgrade error", "error", err)
 		return
 	}
 
@@ -108,7 +107,7 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token
 	h.clients[client.ID] = client
 	h.mu.Unlock()
 
-	log.Info("hub: client connected", "id", client.ID, "name", name, "owner", owner)
+	h.log.Info("hub: client connected", "id", client.ID, "name", name, "owner", owner)
 
 	go h.writeLoop(client)
 	h.readLoop(client)
@@ -120,7 +119,7 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token
 	}
 	h.mu.Unlock()
 	close(client.send)
-	log.Info("hub: client disconnected", "id", client.ID)
+	h.log.Info("hub: client disconnected", "id", client.ID)
 	if h.OnAvailable != nil {
 		h.OnAvailable()
 	}
@@ -140,7 +139,7 @@ func (h *Hub) readLoop(client *Client) {
 func (h *Hub) writeLoop(client *Client) {
 	for msg := range client.send {
 		if err := client.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
-			log.Error("hub: write error", "id", client.ID, "error", err)
+			h.log.Error("hub: write error", "id", client.ID, "error", err)
 			client.conn.Close() // force readLoop to exit immediately
 			return
 		}
@@ -152,7 +151,7 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 		Type string `json:"type"`
 	}
 	if err := json.Unmarshal(data, &envelope); err != nil {
-		log.Warn("hub: bad message", "id", client.ID, "error", err)
+		h.log.Warn("hub: bad message", "id", client.ID, "error", err)
 		return
 	}
 
@@ -174,7 +173,7 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 		client.MaxConcurrent = msg.MaxConcurrent
 		client.Version = msg.Version
 		h.mu.Unlock()
-		log.Info("hub: client registered", "id", client.ID, "models", msg.Models, "max_concurrent", msg.MaxConcurrent, "version", msg.Version)
+		h.log.Info("hub: client registered", "id", client.ID, "models", msg.Models, "max_concurrent", msg.MaxConcurrent, "version", msg.Version)
 		if h.OnAvailable != nil {
 			h.OnAvailable()
 		}
@@ -228,7 +227,7 @@ func (h *Hub) SendToClient(clientID string, msg any) bool {
 	case client.send <- data:
 		return true
 	default:
-		log.Warn("hub: send buffer full", "client_id", clientID)
+		h.log.Warn("hub: send buffer full", "client_id", clientID)
 		return false
 	}
 }
