@@ -65,9 +65,17 @@ type APIKeysPage struct {
 	FormError string
 }
 
+// ClientUserGroup groups a user's client tokens for the admin view.
+type ClientUserGroup struct {
+	Username string
+	HasLive  bool // true if any token has a live connection
+	Tokens   []ClientTokenRow
+}
+
 type ClientTokensPage struct {
 	basePage
-	Tokens    []ClientTokenRow
+	Groups    []ClientUserGroup // admin view: tokens grouped by owner
+	Tokens    []ClientTokenRow  // non-admin view: own tokens only
 	NewToken  string
 	FormError string
 }
@@ -354,12 +362,17 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, u User, newToken, form
 		}
 		rows = append(rows, row)
 	}
-	a.render(w, "clients", ClientTokensPage{
+	page := ClientTokensPage{
 		basePage:  a.newBasePage("clients", u),
-		Tokens:    rows,
 		NewToken:  newToken,
 		FormError: formErr,
-	})
+	}
+	if u.Role == "admin" {
+		page.Groups = buildClientGroups(rows)
+	} else {
+		page.Tokens = rows
+	}
+	a.render(w, "clients", page)
 }
 
 func (a *Admin) handleClientTokenCreate(w http.ResponseWriter, r *http.Request) {
@@ -651,6 +664,34 @@ func (a *Admin) handleAPIKeyPriority(w http.ResponseWriter, r *http.Request) {
 	priority := r.FormValue("priority")
 	a.state.UpdateAPIKeyPriority(key, priority) // errors silently ignored; bad input just doesn't save
 	http.Redirect(w, r, "/admin/api-keys", http.StatusFound)
+}
+
+// buildClientGroups groups ClientTokenRows by owner, sorted: live users first, then alpha.
+func buildClientGroups(rows []ClientTokenRow) []ClientUserGroup {
+	groupMap := make(map[string]*ClientUserGroup)
+	var order []string
+	for _, row := range rows {
+		if _, exists := groupMap[row.Owner]; !exists {
+			groupMap[row.Owner] = &ClientUserGroup{Username: row.Owner}
+			order = append(order, row.Owner)
+		}
+		g := groupMap[row.Owner]
+		g.Tokens = append(g.Tokens, row)
+		if strings.Contains(row.Status, "connected") {
+			g.HasLive = true
+		}
+	}
+	groups := make([]ClientUserGroup, 0, len(groupMap))
+	for _, username := range order {
+		groups = append(groups, *groupMap[username])
+	}
+	sort.Slice(groups, func(i, j int) bool {
+		if groups[i].HasLive != groups[j].HasLive {
+			return groups[i].HasLive
+		}
+		return groups[i].Username < groups[j].Username
+	})
+	return groups
 }
 
 // --- Job / Queue cancel ---
