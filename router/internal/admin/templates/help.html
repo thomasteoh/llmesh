@@ -28,9 +28,10 @@
   // Lazy-render diagrams in visible sections
   window.__renderDiagrams = function() {
     window.__mermaidReady.then(function() {
-      const visible = document.querySelector('.docs-section.active .mermaid');
-      if (visible && !visible.getAttribute('data-processed')) {
-        mermaid.run({ nodes: [visible] }).catch(function(e) { console.warn('Mermaid render failed', e); });
+      const nodes = Array.from(document.querySelectorAll('.docs-section.active .mermaid'))
+        .filter(function(el) { return !el.getAttribute('data-processed'); });
+      if (nodes.length) {
+        mermaid.run({ nodes: nodes }).catch(function(e) { console.warn('Mermaid render failed', e); });
       }
     });
   };
