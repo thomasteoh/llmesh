@@ -20,7 +20,7 @@
         <span class="alias-badge">
           {{.}}
           {{if $.IsAdmin}}
-          <form method="POST" action="/admin/model-aliases/delete" style="display:contents;" onsubmit="return confirm('Remove alias \u201c{{.}}\u201d?')">
+          <form method="POST" action="/admin/model-aliases/delete" class="form-inline" onsubmit="return confirm('Remove alias \u201c{{.}}\u201d?')">
             <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
             <input type="hidden" name="alias" value="{{.}}">
             <input type="hidden" name="model" value="{{$model}}">
@@ -90,7 +90,7 @@
       {{range .Clients}}
       <tr>
         <td data-label="Client">{{.Name}}</td>
-        <td data-label="Status"><span class="badge {{.Status}}">{{if eq .Status "connected"}}&#9679; connected{{else if eq .Status "offline"}}&#9675; offline{{else}}&#9675; never connected{{end}}</span></td>
+        <td data-label="Status"><span class="badge {{.StatusClass}}">{{.StatusLabel}}</span></td>
         <td data-label="Last seen" class="muted">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
         <td data-label="Models" class="muted">{{if .Models}}{{.Models}}{{else}}&mdash;{{end}}</td>
         <td data-label="Version" class="muted">{{if .Version}}{{.Version}}{{else}}&mdash;{{end}}</td>
@@ -123,7 +123,7 @@
             <td data-label="Words" class="muted">{{if .WordCount}}{{.WordCount}}{{else}}&mdash;{{end}}</td>
             <td data-label="Queued" class="muted">{{.EnqueuedAt}}</td>
             <td>
-              <form method="POST" action="/admin/queue/cancel" style="display:inline;" onsubmit="return confirm('Remove this request from the queue?')">
+              <form method="POST" action="/admin/queue/cancel" class="form-inline" onsubmit="return confirm('Remove this request from the queue?')">
                 <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
                 <input type="hidden" name="request_id" value="{{.ID}}">
                 <button type="submit" class="btn-danger btn-xs" title="Cancel" aria-label="Cancel queued job">&#x2715;</button>

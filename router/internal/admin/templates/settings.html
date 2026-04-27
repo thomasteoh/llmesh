@@ -1,56 +1,89 @@
 {{define "content"}}
-<div class="settings-narrow">
-  <div class="card">
-    <div class="card-title">Change password</div>
-    <form method="POST" action="/admin/settings/password">
-      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-      <div class="form-group" style="margin-bottom:12px;"><label>Current password</label><input name="current" type="password"></div>
-      <div class="form-group" style="margin-bottom:12px;"><label>New password</label><input name="new" type="password"></div>
-      <div class="form-group" style="margin-bottom:14px;"><label>Confirm new password</label><input name="confirm" type="password"></div>
-      <button type="submit" class="btn">Update password</button>
-    </form>
+<div class="tab-container">
+  <div class="tab-bar underline">
+    <button class="tab-btn active" onclick="showSettingsTab('tab-password', this)">Password</button>
+    {{if .IsAdmin}}
+    <button class="tab-btn" onclick="showSettingsTab('tab-users', this)">Users</button>
+    <button class="tab-btn" onclick="showSettingsTab('tab-logs', this)">Logs</button>
+    {{end}}
   </div>
-</div>
 
-{{if .IsAdmin}}
-<div style="margin-top:8px;">
-  <div class="section-header">
-    <div class="section-title">Users</div>
-    <form method="POST" action="/admin/settings/users" class="inline-form">
-      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-      <input name="username" placeholder="username" class="inline-input">
-      <input name="password" type="password" placeholder="password" class="inline-input">
-      <button type="submit" class="btn">Add user</button>
-    </form>
+  {{/* ── Password tab ── */}}
+  <div id="tab-password" class="tab-panel active">
+    <div class="settings-narrow">
+      <div class="card">
+        <div class="card-title">Change password</div>
+        <form method="POST" action="/admin/settings/password">
+          <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+          <div class="form-group" style="margin-bottom:12px;"><label>Current password</label><input name="current" type="password"></div>
+          <div class="form-group" style="margin-bottom:12px;"><label>New password</label><input name="new" type="password"></div>
+          <div class="form-group" style="margin-bottom:14px;"><label>Confirm new password</label><input name="confirm" type="password"></div>
+          <button type="submit" class="btn">Update password</button>
+        </form>
+      </div>
+    </div>
   </div>
-  <div class="table-scroll">
-    <table class="data-table">
-      <thead><tr><th>Username</th><th>Role</th><th>Status</th><th></th></tr></thead>
-      <tbody>
-        {{range .Users}}
-        <tr{{if .Disabled}} style="opacity:0.6;"{{end}}>
-          <td>{{.Username}}{{if .IsSelf}} <span class="muted">(you)</span>{{end}}</td>
-          <td><span class="badge {{.Role}}">{{.Role}}</span></td>
-          <td><span class="badge {{if .Disabled}}disabled{{else}}active{{end}}">{{if .Disabled}}disabled{{else}}active{{end}}</span></td>
-          <td style="text-align:right;">
-            {{if not .IsSelf}}
-            <div style="display:flex;gap:6px;justify-content:flex-end;">
-              {{if .Disabled}}
-                <form method="POST" action="/admin/settings/users/enable" style="display:inline;"><input type="hidden" name="_csrf" value="{{$.CSRFToken}}"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-success">Enable</button></form>
-              {{else}}
-                {{if eq .Role "admin"}}<form method="POST" action="/admin/settings/users/demote" style="display:inline;" onsubmit="return confirm('Demote {{.Username}} from admin to member?')"><input type="hidden" name="_csrf" value="{{$.CSRFToken}}"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-secondary">Demote</button></form>{{end}}
-                {{if eq .Role "member"}}<form method="POST" action="/admin/settings/users/promote" style="display:inline;"><input type="hidden" name="_csrf" value="{{$.CSRFToken}}"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-secondary">Promote</button></form>{{end}}
-                <form method="POST" action="/admin/settings/users/disable" style="display:inline;" onsubmit="return confirm('Disable {{.Username}}? They will not be able to sign in.')"><input type="hidden" name="_csrf" value="{{$.CSRFToken}}"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-danger">Disable</button></form>
-              {{end}}
-            </div>
+
+  {{if .IsAdmin}}
+  {{/* ── Users tab ── */}}
+  <div id="tab-users" class="tab-panel">
+    <div style="margin-top:8px;">
+      <div class="section-header">
+        <div class="section-title">Users</div>
+        <form method="POST" action="/admin/settings/users" class="inline-form">
+          <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+          <input name="username" placeholder="username" class="inline-input">
+          <input name="password" type="password" placeholder="password" class="inline-input">
+          <button type="submit" class="btn">Add user</button>
+        </form>
+      </div>
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>Username</th><th>Role</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            {{range .Users}}
+            <tr{{if .Disabled}} style="opacity:0.6;"{{end}}>
+              <td>{{.Username}}{{if .IsSelf}} <span class="muted">(you)</span>{{end}}</td>
+              <td><span class="badge {{.Role}}">{{.Role}}</span></td>
+              <td><span class="badge {{if .Disabled}}disabled{{else}}active{{end}}">{{if .Disabled}}disabled{{else}}active{{end}}</span></td>
+              <td class="cell-actions">
+                {{if not .IsSelf}}
+                <div style="display:flex;gap:6px;justify-content:flex-end;">
+                  {{if .Disabled}}
+                    <form method="POST" action="/admin/settings/users/enable" class="form-inline"><input type="hidden" name="_csrf" value="{{$.CSRFToken}}"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-success">Enable</button></form>
+                  {{else}}
+                    {{if eq .Role "admin"}}<form method="POST" action="/admin/settings/users/demote" class="form-inline" onsubmit="return confirm('Demote {{.Username}} from admin to member?')"><input type="hidden" name="_csrf" value="{{$.CSRFToken}}"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-secondary">Demote</button></form>{{end}}
+                    {{if eq .Role "member"}}<form method="POST" action="/admin/settings/users/promote" class="form-inline"><input type="hidden" name="_csrf" value="{{$.CSRFToken}}"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-secondary">Promote</button></form>{{end}}
+                    <form method="POST" action="/admin/settings/users/disable" class="form-inline" onsubmit="return confirm('Disable {{.Username}}? They will not be able to sign in.')"><input type="hidden" name="_csrf" value="{{$.CSRFToken}}"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-danger">Disable</button></form>
+                  {{end}}
+                </div>
+                {{end}}
+              </td>
+            </tr>
             {{end}}
-          </td>
-        </tr>
-        {{end}}
-      </tbody>
-    </table>
+          </tbody>
+        </table>
+      </div>
+      <p class="table-hint">Cannot disable or demote yourself. At least one active admin must remain.</p>
+    </div>
   </div>
-  <p class="table-hint">Cannot disable or demote yourself. At least one active admin must remain.</p>
+
+  {{/* ── Logs tab ── */}}
+  <div id="tab-logs" class="tab-panel">
+    <div class="logs-toolbar">
+      <div class="tab-bar" id="log-cat-tabs">
+        <button class="tab-btn active" onclick="showLogCat('router', this)">router</button>
+        <button class="tab-btn" onclick="showLogCat('hub', this)">hub</button>
+        <button class="tab-btn" onclick="showLogCat('scheduler', this)">scheduler</button>
+        <button class="tab-btn" onclick="showLogCat('api', this)">api</button>
+        <button class="tab-btn" onclick="showLogCat('admin', this)">admin</button>
+      </div>
+      <span class="muted" id="logs-last-updated" style="font-size:11px;"></span>
+    </div>
+    <div id="logs-container" class="logs-container">
+      <div class="logs-empty">Select a category above to load logs.</div>
+    </div>
+  </div>
+  {{end}}
 </div>
-{{end}}
 {{end}}
