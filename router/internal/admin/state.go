@@ -2,6 +2,8 @@ package admin
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -18,6 +20,7 @@ type User struct {
 	PasswordHash string `json:"password_hash"`
 	Role         string `json:"role"`     // "admin" | "member"
 	Disabled     bool   `json:"disabled"`
+	CSRFToken    string `json:"csrf_token,omitempty"` // SHA-256 hash of current valid CSRF token
 }
 
 type APIKey struct {
@@ -382,6 +385,73 @@ func GenClientTokenValue(owner string) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("ct-%s-%s", owner, r), nil
+}
+
+// --- CSRF Token helpers ---
+
+func generateCSRFToken() (string, error) {
+	return genRandom(32)
+}
+
+func hashToken(token string) string {
+	h := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(h[:])
+}
+
+// ValidateCSRF checks the submitted token against the stored hash.
+func (u User) ValidateCSRF(token string) bool {
+	if u.CSRFToken == "" || token == "" {
+		return false
+	}
+	h := hashToken(token)
+	return subtle.ConstantTimeCompare([]byte(u.CSRFToken), []byte(h)) == 1
+}
+
+// ConsumeCSRF validates a CSRF token for the given user and atomically
+// invalidates it (one-time use). Returns true if valid, false otherwise.
+func (s *State) ConsumeCSRF(username, token string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.data.Users {
+		if s.data.Users[i].Username == username {
+			u := &s.data.Users[i]
+			if u.CSRFToken == "" || token == "" {
+				return false
+			}
+			h := hashToken(token)
+			if subtle.ConstantTimeCompare([]byte(u.CSRFToken), []byte(h)) != 1 {
+				return false
+			}
+			// Consume: invalidate the token so it cannot be reused.
+			u.CSRFToken = ""
+			if err := s.save(); err != nil {
+				return false
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// RefreshCSRFToken generates a new CSRF token for the named user and persists it.
+// Returns the plaintext token (to embed in forms).
+func (s *State) RefreshCSRFToken(username string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.data.Users {
+		if s.data.Users[i].Username == username {
+			token, err := generateCSRFToken()
+			if err != nil {
+				return "", err
+			}
+			s.data.Users[i].CSRFToken = hashToken(token)
+			if err := s.save(); err != nil {
+				return "", err
+			}
+			return token, nil
+		}
+	}
+	return "", fmt.Errorf("user not found: %s", username)
 }
 
 // --- Model Aliases ---

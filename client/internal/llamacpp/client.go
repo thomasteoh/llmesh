@@ -8,8 +8,23 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"llmesh/pkg/types"
+)
+
+const (
+	// idleTimeout is the maximum gap between tokens once streaming has started.
+	// Fires only after the first content token — before that, health checks
+	// (healthCheckInterval) detect a hung llamacpp process instead.
+	idleTimeout = 60 * time.Second
+
+	// healthCheckInterval is how often to probe /health while waiting for the
+	// first token. Detects a crashed or hung llamacpp before inference begins.
+	healthCheckInterval = 30 * time.Second
+
+	// healthCheckTimeout is the per-probe deadline for /health requests.
+	healthCheckTimeout = 10 * time.Second
 )
 
 // ChunkCallback is called for each token chunk received from llama.cpp.
@@ -111,7 +126,12 @@ func (c *Client) Infer(ctx context.Context, req types.InferenceRequest, chatTemp
 		return fmt.Errorf("marshal: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint+"/v1/chat/completions", bytes.NewReader(data))
+	// inferCtx is a child of ctx so we can cancel just this HTTP request on
+	// idle timeout without disturbing the caller's context.
+	inferCtx, inferCancel := context.WithCancel(ctx)
+	defer inferCancel()
+
+	httpReq, err := http.NewRequestWithContext(inferCtx, http.MethodPost, c.endpoint+"/v1/chat/completions", bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("new request: %w", err)
 	}
@@ -128,14 +148,84 @@ func (c *Client) Infer(ctx context.Context, req types.InferenceRequest, chatTemp
 	}
 
 	if req.Stream {
-		return c.readStream(resp, cb)
+		// firstToken is closed by readStream when the first content token arrives.
+		// The health-check goroutine below uses it to stop polling once inference
+		// is confirmed to be producing output.
+		firstToken := make(chan struct{})
+		go c.watchHealth(inferCtx, inferCancel, firstToken)
+		return c.readStream(inferCtx, inferCancel, resp, cb, firstToken)
 	}
 	return c.readBatch(resp, cb)
 }
 
-func (c *Client) readStream(resp *http.Response, cb ChunkCallback) error {
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1 MB max line
+// watchHealth polls /health every healthCheckInterval until firstToken is closed
+// (first content token received) or ctx is done. If a health check fails, it
+// calls cancel to abort the in-flight inference request immediately.
+func (c *Client) watchHealth(ctx context.Context, cancel context.CancelFunc, firstToken <-chan struct{}) {
+	ticker := time.NewTicker(healthCheckInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			// Guard against a race where ticker fires as ctx is being cancelled.
+			if ctx.Err() != nil {
+				return
+			}
+			if err := c.checkHealth(ctx); err != nil {
+				cancel()
+				return
+			}
+		case <-firstToken:
+			return
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// checkHealth probes the llamacpp /health endpoint with a short deadline.
+// Any HTTP response (including 503 "loading model") means the process is alive.
+// A connection error or timeout means it is hung or crashed.
+func (c *Client) checkHealth(ctx context.Context) error {
+	hctx, cancel := context.WithTimeout(ctx, healthCheckTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(hctx, http.MethodGet, c.endpoint+"/health", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}
+
+type scanLine struct {
+	text string
+	err  error
+}
+
+func (c *Client) readStream(ctx context.Context, cancel context.CancelFunc, resp *http.Response, cb ChunkCallback, firstToken chan<- struct{}) error {
+	lines := make(chan scanLine, 8)
+	go func() {
+		defer close(lines)
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1 MB max line
+		for scanner.Scan() {
+			select {
+			case lines <- scanLine{text: scanner.Text()}:
+			case <-ctx.Done():
+				return
+			}
+		}
+		if err := scanner.Err(); err != nil && ctx.Err() == nil {
+			select {
+			case lines <- scanLine{err: err}:
+			case <-ctx.Done():
+			}
+		}
+	}()
 
 	// With include_usage:true, llama.cpp sends the usage-only chunk AFTER the
 	// finish_reason chunk, then [DONE]. We must not fire done=true until [DONE]
@@ -143,52 +233,94 @@ func (c *Client) readStream(resp *http.Response, cb ChunkCallback) error {
 	var pendingUsage *types.UsageInfo
 	var finishReason string
 	done := false
+	firstContent := false
 
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-		payload := strings.TrimPrefix(line, "data: ")
-		if payload == "[DONE]" {
-			cb("", nil, true, finishReason, pendingUsage)
-			done = true
-			break
-		}
-		var chunk inferChunk
-		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
-			continue
-		}
-		// Stash usage from any chunk that carries it (usage-only chunk has no choices).
-		if chunk.Usage != nil {
-			pendingUsage = &types.UsageInfo{
-				PromptTokens:     chunk.Usage.PromptTokens,
-				CompletionTokens: chunk.Usage.CompletionTokens,
-				TotalTokens:      chunk.Usage.TotalTokens,
+	// Idle timer: only active after first content token. Before that, watchHealth
+	// detects a hung llamacpp process via /health polling.
+	idleTimer := time.NewTimer(0)
+	idleTimer.Stop()
+	defer idleTimer.Stop()
+
+	for {
+		select {
+		case result, ok := <-lines:
+			if !ok {
+				// Scanner goroutine exited (EOF or ctx cancelled).
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				if !done {
+					cb("", nil, true, finishReason, pendingUsage)
+				}
+				return nil
 			}
-		}
-		if len(chunk.Choices) == 0 {
-			continue
-		}
-		choice := chunk.Choices[0]
-		// Accumulate finish_reason but do NOT fire done yet — wait for [DONE].
-		if choice.FinishReason != nil && *choice.FinishReason != "" {
-			finishReason = *choice.FinishReason
-		}
-		delta := choice.Delta
-		if delta.Content != "" || len(delta.ToolCalls) > 0 {
-			cb(delta.Content, delta.ToolCalls, false, "", nil)
+			if result.err != nil {
+				return fmt.Errorf("stream read: %w", result.err)
+			}
+
+			line := result.text
+			if !strings.HasPrefix(line, "data: ") {
+				// Skip blank SSE separators and comment lines — do NOT reset
+				// the idle timer; only actual data: lines prove the stream is alive.
+				continue
+			}
+			// Reset idle timer on every data: line (not blank separators).
+			if firstContent {
+				if !idleTimer.Stop() {
+					select {
+					case <-idleTimer.C:
+					default:
+					}
+				}
+				idleTimer.Reset(idleTimeout)
+			}
+			payload := strings.TrimPrefix(line, "data: ")
+			if payload == "[DONE]" {
+				cb("", nil, true, finishReason, pendingUsage)
+				done = true
+				// Drain remaining lines so the scanner goroutine can exit.
+				for range lines {
+				}
+				return nil
+			}
+			var chunk inferChunk
+			if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+				continue
+			}
+			// Stash usage from any chunk that carries it (usage-only chunk has no choices).
+			if chunk.Usage != nil {
+				pendingUsage = &types.UsageInfo{
+					PromptTokens:     chunk.Usage.PromptTokens,
+					CompletionTokens: chunk.Usage.CompletionTokens,
+					TotalTokens:      chunk.Usage.TotalTokens,
+				}
+			}
+			if len(chunk.Choices) == 0 {
+				continue
+			}
+			choice := chunk.Choices[0]
+			// Accumulate finish_reason but do NOT fire done yet — wait for [DONE].
+			if choice.FinishReason != nil && *choice.FinishReason != "" {
+				finishReason = *choice.FinishReason
+			}
+			delta := choice.Delta
+			if delta.Content != "" || len(delta.ToolCalls) > 0 {
+				if !firstContent {
+					firstContent = true
+					close(firstToken) // stop health-check polling
+					idleTimer.Reset(idleTimeout)
+				}
+				cb(delta.Content, delta.ToolCalls, false, "", nil)
+			}
+
+		case <-idleTimer.C:
+			cancel()
+			return fmt.Errorf("stream stalled: no token for %v", idleTimeout)
+
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("stream read: %w", err)
-	}
-	// Stream ended without [DONE] (e.g. server closed early) — fire done so the
-	// caller is never left hanging.
-	if !done {
-		cb("", nil, true, finishReason, pendingUsage)
-	}
-	return nil
 }
 
 func (c *Client) readBatch(resp *http.Response, cb ChunkCallback) error {

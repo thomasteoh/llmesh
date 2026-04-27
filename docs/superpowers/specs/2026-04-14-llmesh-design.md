@@ -120,19 +120,20 @@ type ErrorMsg    { Type: "error";     RequestID, Message string }
 
 ### Router Config (`router/config.yaml.example`)
 
+`config.yaml` covers infrastructure only. Credentials (admin users, API keys, client tokens) are managed via the admin UI and persisted in `state.json`.
+
 ```yaml
+name: "llmesh"              # brand name shown on landing page and admin UI
+host: "llmesh.example.com"  # public hostname — shown in admin UI client setup instructions
 server:
   port: 53002
-  client_token: "change-me-client-secret"
-
-api_keys:
-  - key: "sk-prod-abc123"
-    label: "prod-agents"
-    priority: high    # 0
-  - key: "sk-dev-xyz456"
-    label: "dev"
-    priority: low     # 2
 ```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `name` | `llmesh` | Brand name shown on the landing page |
+| `host` | `llmesh.example.com` | Public hostname used in admin UI when generating client config |
+| `server.port` | `53002` | Port the router listens on |
 
 ### Priority Queue (`router/internal/queue`)
 
@@ -203,15 +204,18 @@ data: {"type":"message_stop"}
 ### Client Config (`client/config.yaml.example`)
 
 ```yaml
-router_url: "wss://llm.teoh.co/ws/client"
-router_token: "change-me-client-secret"
+router_url: "wss://llmesh.example.com/ws/client"  # WebSocket URL of the router
+router_token: "ct-admin-xxxxxxxxxxxxxxxx"           # client token from router admin UI → Clients
 max_concurrent: 4
 models:
   - name: "llama3.2:3b"
     endpoint: "http://host.docker.internal:8080"
-  - name: "mistral-7b"
+  - name: "unsloth/qwen3-30b-a3b"
     endpoint: "http://host.docker.internal:8081"
+    # chat_template: "qwen2.5"   # optional: override model's built-in Jinja template
 ```
+
+`router_token` must be created in the router admin UI (Clients tab) before starting the client.
 
 ### Lifecycle
 
@@ -232,16 +236,23 @@ Per-connection `context.Context` is cancelled on disconnect, aborting any in-fli
 ```bash
 cd /home/tteoh/llmesh
 cp router/config.yaml.example router/config.yaml
-# Edit router/config.yaml: set client_token and api_keys
+# Edit: set name, host, server.port
 docker compose up -d
 caddy-request add llm.teoh.co 53002
 ```
+
+Navigate to `http://[HOST]:[PORT]/admin`. On first run the setup wizard creates the initial admin account. From the admin dashboard:
+- **Clients** → Create a client token for each `llm-client` instance
+- **API Keys** → Create API keys for callers
+- **Settings** → Configure model aliases if needed
+
+All credentials live in `state.json` (mounted volume). There are no credentials in `config.yaml`.
 
 ### Client (local machine)
 
 ```bash
 cp client/config.yaml.example client/config.yaml
-# Edit: set router_url, router_token, model endpoints
+# Edit: set router_url, router_token (from admin UI → Clients), model endpoints
 docker compose -f docker-compose.client.yml up -d
 ```
 

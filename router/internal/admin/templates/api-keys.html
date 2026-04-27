@@ -12,6 +12,7 @@
   <div class="card-title">Add API key</div>
   <p class="docs-p" style="margin-bottom:14px;">An API key authenticates callers (e.g. AI agents, scripts) to the router. Include it in your request header so the router knows who is making the call and applies the correct priority tier.</p>
   <form method="POST" action="/admin/api-keys">
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <div class="form-row">
       <div class="form-group" style="flex:2;">
         <label>Label</label>
@@ -37,6 +38,7 @@
         <td>
           {{if $.IsAdmin}}
           <form method="POST" action="/admin/api-keys/priority" style="display:inline;">
+            <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
             <input type="hidden" name="key" value="{{.Key}}">
             <select name="priority" class="priority-inline priority-{{.Priority}}" onchange="this.form.submit()" title="Change priority">
               <option value="high"{{if eq .Priority "high"}} selected{{end}}>high</option>
@@ -51,6 +53,7 @@
         <td class="muted">{{.CreatedAt.Format "2006-01-02"}}</td>
         <td style="text-align:right;">
           <form method="POST" action="/admin/api-keys/revoke" style="display:inline;">
+            <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
             <input type="hidden" name="key" value="{{.Key}}">
             <button type="submit" class="btn-danger">Revoke</button>
           </form>

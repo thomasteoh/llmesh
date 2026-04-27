@@ -20,6 +20,7 @@
           {{.}}
           {{if $.IsAdmin}}
           <form method="POST" action="/admin/model-aliases/delete" style="display:contents;">
+            <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
             <input type="hidden" name="alias" value="{{.}}">
             <input type="hidden" name="model" value="{{$model}}">
             <button type="submit" class="alias-badge-del" title="Remove alias">&#x2715;</button>
@@ -29,6 +30,7 @@
         {{end}}
         {{if $.IsAdmin}}
         <form method="POST" action="/admin/model-aliases" class="model-add-alias">
+          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
           <input type="hidden" name="model" value="{{$model}}">
           <input name="alias" placeholder="add alias&hellip;" autocomplete="off" style="width:90px;">
           <button type="submit" class="alias-add-btn" title="Add alias">+</button>

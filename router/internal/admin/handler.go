@@ -105,8 +105,10 @@ func (a *Admin) registerRoutes() {
 
 	// Auth (no session required)
 	mux.HandleFunc("/admin/login", a.handleLogin)
-	mux.HandleFunc("/admin/logout", a.handleLogout)
 	mux.HandleFunc("/admin/setup", a.handleSetup)
+
+	// Logout requires auth + CSRF
+	mux.HandleFunc("/admin/logout", a.requireAuth(a.postWithCSRF(a.handleLogout)))
 
 	// Protected pages
 	mux.HandleFunc("/admin/", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
@@ -124,40 +126,22 @@ func (a *Admin) registerRoutes() {
 
 	mux.HandleFunc("/admin/api-keys", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
-			a.handleAPIKeyCreate(w, r)
+			a.postWithCSRF(a.handleAPIKeyCreate)(w, r)
 		} else {
 			a.handleAPIKeys(w, r)
 		}
 	}))
-	mux.HandleFunc("/admin/api-keys/revoke", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		a.handleAPIKeyRevoke(w, r)
-	}))
-	mux.HandleFunc("/admin/api-keys/priority", a.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		a.handleAPIKeyPriority(w, r)
-	}))
+	mux.HandleFunc("/admin/api-keys/revoke", a.requireAuth(a.postWithCSRF(a.handleAPIKeyRevoke)))
+	mux.HandleFunc("/admin/api-keys/priority", a.requireAdmin(a.postWithCSRF(a.handleAPIKeyPriority)))
 
 	mux.HandleFunc("/admin/clients", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
-			a.handleClientTokenCreate(w, r)
+			a.postWithCSRF(a.handleClientTokenCreate)(w, r)
 		} else {
 			a.handleClientTokens(w, r)
 		}
 	}))
-	mux.HandleFunc("/admin/clients/revoke", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		a.handleClientTokenRevoke(w, r)
-	}))
+	mux.HandleFunc("/admin/clients/revoke", a.requireAuth(a.postWithCSRF(a.handleClientTokenRevoke)))
 	mux.HandleFunc("/admin/clients/config", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -166,73 +150,19 @@ func (a *Admin) registerRoutes() {
 		a.handleClientTokenConfig(w, r)
 	}))
 
-	mux.HandleFunc("/admin/model-aliases", a.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Redirect(w, r, "/admin/clients", http.StatusFound)
-			return
-		}
-		a.handleModelAliasCreate(w, r)
-	}))
-	mux.HandleFunc("/admin/model-aliases/delete", a.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		a.handleModelAliasDelete(w, r)
-	}))
+	mux.HandleFunc("/admin/model-aliases", a.requireAdmin(a.postWithCSRF(a.handleModelAliasCreate)))
+	mux.HandleFunc("/admin/model-aliases/delete", a.requireAdmin(a.postWithCSRF(a.handleModelAliasDelete)))
 
 	// Help page.
 	mux.HandleFunc("/admin/help", a.requireAuth(a.handleHelp))
 
-	mux.HandleFunc("/admin/settings", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		} else {
-			a.handleSettings(w, r)
-		}
-	}))
-	mux.HandleFunc("/admin/settings/password", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		a.handleChangePassword(w, r)
-	}))
-	mux.HandleFunc("/admin/settings/users", a.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		a.handleAddUser(w, r)
-	}))
-	mux.HandleFunc("/admin/settings/users/disable", a.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		a.handleUserDisable(w, r)
-	}))
-	mux.HandleFunc("/admin/settings/users/enable", a.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		a.handleUserEnable(w, r)
-	}))
-	mux.HandleFunc("/admin/settings/users/promote", a.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		a.handleUserPromote(w, r)
-	}))
-	mux.HandleFunc("/admin/settings/users/demote", a.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		a.handleUserDemote(w, r)
-	}))
+	mux.HandleFunc("/admin/settings", a.requireAuth(a.handleSettings))
+	mux.HandleFunc("/admin/settings/password", a.requireAuth(a.postWithCSRF(a.handleChangePassword)))
+	mux.HandleFunc("/admin/settings/users", a.requireAdmin(a.postWithCSRF(a.handleAddUser)))
+	mux.HandleFunc("/admin/settings/users/disable", a.requireAdmin(a.postWithCSRF(a.handleUserDisable)))
+	mux.HandleFunc("/admin/settings/users/enable", a.requireAdmin(a.postWithCSRF(a.handleUserEnable)))
+	mux.HandleFunc("/admin/settings/users/promote", a.requireAdmin(a.postWithCSRF(a.handleUserPromote)))
+	mux.HandleFunc("/admin/settings/users/demote", a.requireAdmin(a.postWithCSRF(a.handleUserDemote)))
 
 	// Dashboard JSON API
 	mux.HandleFunc("/admin/api/dashboard", a.requireAuth(a.handleDashboardJSON))
@@ -270,4 +200,26 @@ func (a *Admin) render(w http.ResponseWriter, name string, data any) {
 
 func (a *Admin) renderStandalone(w http.ResponseWriter, name string, data any) {
 	a.render(w, name, data)
+}
+
+// postWithCSRF returns an http.HandlerFunc that only accepts POST requests
+// and validates the CSRF token. It expects the user to already be in context
+// (from requireAuth or requireAdmin). The token is consumed (one-time use).
+func (a *Admin) postWithCSRF(handler func(http.ResponseWriter, *http.Request)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		token := r.PostFormValue("_csrf")
+		if token == "" {
+			token = r.Header.Get("X-CSRF-Token")
+		}
+		uRaw, ok := r.Context().Value(ctxUser).(User)
+		if !ok || !a.state.ConsumeCSRF(uRaw.Username, token) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		handler(w, r)
+	}
 }

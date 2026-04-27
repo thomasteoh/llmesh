@@ -2,6 +2,8 @@
 !*.yaml.example
 router/router
 client/client
+router/cmd/router/router
+client/cmd/client/client
 router/state.json
 
 vendor/
