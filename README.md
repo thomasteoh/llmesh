@@ -1,6 +1,49 @@
 # llmesh
 
-A lightweight, self-hosted LLM router that pools your llama.cpp instances into a single OpenAI/Anthropic-compatible API endpoint.
+llmesh lets you share your local AI models across a team without anyone needing to know which machine is running what.
+
+You point all your tools — agents, scripts, IDE plugins — at one URL. llmesh takes care of routing each request to whichever of your machines has the right model free. When one machine is busy, requests wait in a queue and go to the next available one. When a machine goes offline, the rest keep working.
+
+It speaks the same API formats as OpenAI and Anthropic, so anything that already works with those services works with llmesh without changes. Everything runs on your own hardware. Nothing leaves your network.
+
+---
+
+## Design philosophy
+
+**Thin and focused.** The router routes requests — it does not run inference, transform outputs, or call external services. One job, done reliably.
+
+**Self-hosted by default.** No accounts to create, no telemetry, no external dependencies at runtime. State lives in a single JSON file on disk.
+
+**Protocol-compatible.** OpenAI and Anthropic wire formats are supported natively. If a tool works with those APIs, it works with llmesh.
+
+**Simple to operate.** One binary per role, configuration in YAML, state in JSON. No database, no message broker, no service mesh required.
+
+**Network-friendly.** Client machines connect *out* to the router over WebSocket — no inbound firewall rules or port forwarding needed on client machines.
+
+---
+
+## System requirements
+
+### Router
+
+The router does not run inference and is deliberately lightweight.
+
+- **OS:** Linux or macOS (x86-64 or ARM64)
+- **RAM:** ~64 MB minimum under load
+- **CPU:** Any — the router is I/O-bound, not compute-bound
+- **Runtime:** Docker (for the published image), or Go 1.26+ to build from source
+- **Network:** Reachable by both callers and client machines; TLS termination recommended (e.g. via a reverse proxy)
+
+### Client (llm-client)
+
+The client is a small binary that runs alongside your llama.cpp instance.
+
+- **OS:** Linux (x86-64, ARM64) or macOS (Intel, Apple Silicon)
+- **RAM:** ~10 MB for the client binary itself — GPU/RAM requirements are determined by your llama.cpp models
+- **Runtime:** Requires a running llama.cpp HTTP server (`llama-server`) on the same machine
+- **Network:** Outbound HTTPS/WSS to the router only; no inbound ports required
+
+---
 
 ## Architecture
 
@@ -137,7 +180,7 @@ docker compose -f docker-compose.client.yml up -d
 ## Build from source
 
 ```bash
-git clone <repo> llmesh && cd llmesh
+git clone https://github.com/thomasteoh/llmesh && cd llmesh
 docker compose build
 docker compose -f docker-compose.client.yml build
 ```
@@ -152,7 +195,7 @@ docker compose -f docker-compose.client.yml build
 go test -v -race -count=1 ./...
 ```
 
-Run on every pull request and push to `master`. Includes race detection; coverage is uploaded to Codecov.
+Run on every pull request. Includes race detection; coverage is uploaded to Codecov.
 
 ### End-to-end tests
 
@@ -176,9 +219,9 @@ Tags generated per release:
 
 | Tag | Example | Description |
 |-----|---------|-------------|
-| `{{version}}` | `v0.1.0` | Exact release version |
+| `{{version}}` | `0.1.0` | Exact release version |
 | `{{major}}.{{minor}}` | `0.1` | Major.minor track |
-| `latest` | `latest` | Most recent non-prerelease |
+| `latest` | `latest` | Most recent stable release (not applied to release candidates) |
 
 To use the published image instead of building from source, replace the `build:` block in `docker-compose.yml`:
 
@@ -234,6 +277,10 @@ llmesh/
 
 ---
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## License
 
-Private / self-hosted only.
+[MIT](LICENSE)
