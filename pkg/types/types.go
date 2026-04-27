@@ -51,7 +51,9 @@ type InferenceRequest struct {
 	ToolChoice  json.RawMessage `json:"tool_choice,omitempty"`
 	SourceFmt   string          `json:"source_fmt"` // "openai" | "anthropic" | "openai-responses"
 	Priority    Priority        `json:"priority"`
-	Owner       string          `json:"owner"`       // username of the API-key holder
+	Owner       string          `json:"owner"`        // username of the API-key holder
+	APIKeyLabel string          `json:"api_key_label,omitempty"` // "owner/label" of the key used
+	WordCount   int             `json:"word_count,omitempty"`    // approximate word count across all messages
 	EnqueuedAt  time.Time       `json:"enqueued_at"`
 }
 

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"llmesh/router/internal/hub"
+	"llmesh/router/internal/queue"
 	"llmesh/router/internal/stats"
 )
 
@@ -22,6 +23,7 @@ var adminFS embed.FS
 type Admin struct {
 	state         *State
 	hub           *hub.Hub
+	queue         *queue.Queue
 	reqCount      func() int64
 	stats         *stats.Stats
 	routerVersion string
@@ -33,7 +35,7 @@ type Admin struct {
 }
 
 // New creates an Admin handler. statePath is the path to state.json.
-func New(statePath string, h *hub.Hub, reqCount func() int64, s *stats.Stats, routerVersion, name, host string) (*Admin, error) {
+func New(statePath string, h *hub.Hub, q *queue.Queue, reqCount func() int64, s *stats.Stats, routerVersion, name, host string) (*Admin, error) {
 	if reqCount == nil {
 		return nil, fmt.Errorf("admin: reqCount must not be nil")
 	}
@@ -44,6 +46,7 @@ func New(statePath string, h *hub.Hub, reqCount func() int64, s *stats.Stats, ro
 	a := &Admin{
 		state:         state,
 		hub:           h,
+		queue:         q,
 		reqCount:      reqCount,
 		stats:         s,
 		routerVersion: routerVersion,
@@ -152,6 +155,9 @@ func (a *Admin) registerRoutes() {
 
 	mux.HandleFunc("/admin/model-aliases", a.requireAdmin(a.postWithCSRF(a.handleModelAliasCreate)))
 	mux.HandleFunc("/admin/model-aliases/delete", a.requireAdmin(a.postWithCSRF(a.handleModelAliasDelete)))
+
+	mux.HandleFunc("/admin/jobs/cancel", a.requireAuth(a.postWithCSRF(a.handleJobCancel)))
+	mux.HandleFunc("/admin/queue/cancel", a.requireAdmin(a.postWithCSRF(a.handleQueueCancel)))
 
 	// Help page.
 	mux.HandleFunc("/admin/help", a.requireAuth(a.handleHelp))

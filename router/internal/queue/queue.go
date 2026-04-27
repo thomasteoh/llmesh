@@ -138,6 +138,15 @@ func betterForClient(a, b types.InferenceRequest, preferOwner string) bool {
 	return a.EnqueuedAt.Before(b.EnqueuedAt)
 }
 
+// Snapshot returns a copy of all queued requests in their current order.
+func (q *Queue) Snapshot() []types.InferenceRequest {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	out := make([]types.InferenceRequest, len(q.items))
+	copy(out, q.items)
+	return out
+}
+
 // Signal wakes up goroutines waiting on the queue (e.g., after a client becomes available).
 func (q *Queue) Signal() {
 	q.cond.Signal()

@@ -52,6 +52,25 @@
               <span class="conn-models" title="{{.Models}}">{{.Models}}</span>
               <span class="conn-capacity">{{.InFlight}} / {{.MaxConcurrent}}</span>
             </div>
+            {{if .Jobs}}
+            <div class="conn-jobs">
+              {{range .Jobs}}
+              <div class="job-row">
+                <span class="job-model">{{.Model}}</span>
+                {{if .APIKeyLabel}}<span class="job-key muted">{{.APIKeyLabel}}</span>{{else}}<span class="job-key muted">{{.Owner}}</span>{{end}}
+                {{if .WordCount}}<span class="job-words muted">{{.WordCount}}w</span>{{end}}
+                <span class="job-time muted">{{.EnqueuedAt}}</span>
+                {{if .CanCancel}}
+                <form method="POST" action="/admin/jobs/cancel" style="display:contents;" onsubmit="return confirm('Cancel this job? The request will be aborted.')">
+                  <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+                  <input type="hidden" name="request_id" value="{{.ID}}">
+                  <button type="submit" class="btn-danger btn-xs" title="Cancel job" aria-label="Cancel job">&#x2715;</button>
+                </form>
+                {{end}}
+              </div>
+              {{end}}
+            </div>
+            {{end}}
             {{end}}
           </div>
         </td>

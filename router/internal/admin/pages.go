@@ -45,6 +45,8 @@ type DashboardPage struct {
 	Clients       []ClientRow
 	StatsByModel  []StatRow
 	StatsByUser   []StatRow
+	QueueLen      int
+	QueueItems    []QueuedJobRow // only populated for admins
 }
 
 type ClientRow struct {
@@ -71,11 +73,34 @@ type ClientTokensPage struct {
 }
 
 type ConnectedClientRow struct {
-	Name   string
-	Version string
-	Models string
-	InFlight int
+	Name          string
+	Version       string
+	Models        string
+	InFlight      int
 	MaxConcurrent int
+	Jobs          []InFlightJobRow
+}
+
+// InFlightJobRow is a single in-flight job for display on the clients page.
+type InFlightJobRow struct {
+	ID          string
+	Owner       string
+	APIKeyLabel string
+	Model       string
+	EnqueuedAt  string
+	WordCount   int
+	CanCancel   bool
+}
+
+// QueuedJobRow is a single queued (waiting) job for display on the dashboard.
+type QueuedJobRow struct {
+	ID          string
+	Owner       string
+	APIKeyLabel string
+	Model       string
+	Priority    string
+	EnqueuedAt  string
+	WordCount   int
 }
 
 type ClientTokenRow struct {
@@ -173,6 +198,24 @@ func (a *Admin) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		Clients:       clients,
 		StatsByModel:  statsRows(a.stats, true),
 		StatsByUser:   statsRows(a.stats, false),
+	}
+	if a.queue != nil {
+		snap := a.queue.Snapshot()
+		data.QueueLen = len(snap)
+		if u.Role == "admin" {
+			data.QueueItems = make([]QueuedJobRow, 0, len(snap))
+			for _, req := range snap {
+				data.QueueItems = append(data.QueueItems, QueuedJobRow{
+					ID:          req.ID,
+					Owner:       req.Owner,
+					APIKeyLabel: req.APIKeyLabel,
+					Model:       req.Model,
+					Priority:    priorityName(int(req.Priority)),
+					EnqueuedAt:  humanTime(req.EnqueuedAt),
+					WordCount:   req.WordCount,
+				})
+			}
+		}
 	}
 	a.render(w, "dashboard", data)
 }
@@ -279,13 +322,28 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, u User, newToken, form
 					Aliases: modelAliases[m],
 				})
 			}
+			isAdmin := u.Role == "admin"
+			isTokenOwner := t.Owner == u.Username
 			for _, ci := range connInfos {
+				var jobs []InFlightJobRow
+				for _, rec := range a.hub.InFlightJobsByClientID(ci.ID) {
+					jobs = append(jobs, InFlightJobRow{
+						ID:          rec.Req.ID,
+						Owner:       rec.Req.Owner,
+						APIKeyLabel: rec.Req.APIKeyLabel,
+						Model:       rec.Req.Model,
+						EnqueuedAt:  humanTime(rec.Req.EnqueuedAt),
+						WordCount:   rec.Req.WordCount,
+						CanCancel:   isAdmin || rec.Req.Owner == u.Username || isTokenOwner,
+					})
+				}
 				row.Connections = append(row.Connections, ConnectedClientRow{
 					Name:          ci.Name,
 					Version:       ci.Version,
 					Models:        strings.Join(ci.Models, ", "),
 					InFlight:      ci.InFlight,
 					MaxConcurrent: ci.MaxConcurrent,
+					Jobs:          jobs,
 				})
 			}
 		} else if ls := a.hub.LastSeenTime(t.Token); !ls.IsZero() {
@@ -593,6 +651,45 @@ func (a *Admin) handleAPIKeyPriority(w http.ResponseWriter, r *http.Request) {
 	priority := r.FormValue("priority")
 	a.state.UpdateAPIKeyPriority(key, priority) // errors silently ignored; bad input just doesn't save
 	http.Redirect(w, r, "/admin/api-keys", http.StatusFound)
+}
+
+// --- Job / Queue cancel ---
+
+func (a *Admin) handleJobCancel(w http.ResponseWriter, r *http.Request) {
+	u := ctxGetUser(r)
+	reqID := r.FormValue("request_id")
+	rec, ok := a.hub.LookupInFlightJob(reqID)
+	if ok {
+		ct, ctOK := a.state.LookupClientToken(rec.ClientToken)
+		isClientOwner := ctOK && ct.Owner == u.Username
+		if u.Role != "admin" && rec.Req.Owner != u.Username && !isClientOwner {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		a.hub.CancelRequest(reqID)
+	}
+	http.Redirect(w, r, "/admin/clients", http.StatusFound)
+}
+
+func (a *Admin) handleQueueCancel(w http.ResponseWriter, r *http.Request) {
+	// requireAdmin middleware already enforces admin-only.
+	reqID := r.FormValue("request_id")
+	if a.queue != nil {
+		a.queue.PopByID(reqID)
+	}
+	http.Redirect(w, r, "/admin/", http.StatusFound)
+}
+
+// priorityName converts a types.Priority value to its display string.
+func priorityName(p int) string {
+	switch p {
+	case 0:
+		return "high"
+	case 2:
+		return "low"
+	default:
+		return "normal"
+	}
 }
 
 // humanTime formats a time as a human-readable relative string.
