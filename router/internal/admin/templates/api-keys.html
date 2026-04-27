@@ -1,6 +1,6 @@
 {{define "content"}}
 {{if .NewKey}}
-<div class="new-key-banner">
+<div class="new-key-banner" role="alert">
   <p>&#10003; Key created. Copy it now &mdash; it will not be shown again.</p>
   <code id="new-key-val">{{.NewKey}}</code>
   <div class="new-key-actions">
@@ -33,26 +33,27 @@
     <tbody>
       {{range .Keys}}
       <tr>
-        <td><span class="muted">{{.Owner}}/</span>{{.Label}}</td>
-        <td class="muted" style="font-family:monospace;font-size:11px;">{{truncate .Key 20}}&hellip; <button class="btn-copy" data-copy="{{.Key}}" title="Copy full key">&#10697;</button></td>
-        <td>
+        <td data-label="Label"><span class="muted">{{.Owner}}/</span>{{.Label}}</td>
+        <td data-label="Key" class="muted" style="font-family:monospace;font-size:11px;">{{truncate .Key 20}}&hellip; <button class="btn-copy" data-copy="{{.Key}}" title="Copy full key">&#10697;</button></td>
+        <td data-label="Priority">
           {{if $.IsAdmin}}
-          <form method="POST" action="/admin/api-keys/priority" style="display:inline;">
+          <form method="POST" action="/admin/api-keys/priority" style="display:inline-flex;align-items:center;gap:4px;">
             <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
             <input type="hidden" name="key" value="{{.Key}}">
-            <select name="priority" class="priority-inline priority-{{.Priority}}" onchange="this.form.submit()" title="Change priority">
+            <select name="priority" class="priority-inline priority-{{.Priority}}" title="Change priority">
               <option value="high"{{if eq .Priority "high"}} selected{{end}}>high</option>
               <option value="normal"{{if eq .Priority "normal"}} selected{{end}}>normal</option>
               <option value="low"{{if eq .Priority "low"}} selected{{end}}>low</option>
             </select>
+            <button type="submit" class="btn-priority-save" title="Save priority">&#10003;</button>
           </form>
           {{else}}
           <span class="badge {{.Priority}}">{{.Priority}}</span>
           {{end}}
         </td>
-        <td class="muted">{{.CreatedAt.Format "2006-01-02"}}</td>
-        <td style="text-align:right;">
-          <form method="POST" action="/admin/api-keys/revoke" style="display:inline;">
+        <td data-label="Created" class="muted">{{.CreatedAt.Format "2006-01-02"}}</td>
+        <td>
+          <form method="POST" action="/admin/api-keys/revoke" style="display:inline;" onsubmit="return confirm('Revoke this API key? This cannot be undone.')">
             <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
             <input type="hidden" name="key" value="{{.Key}}">
             <button type="submit" class="btn-danger">Revoke</button>
@@ -60,10 +61,10 @@
         </td>
       </tr>
       {{else}}
-      <tr><td colspan="5" class="muted" style="padding:16px 10px;">No API keys yet.</td></tr>
+      <tr class="empty-row"><td colspan="5">No API keys yet.</td></tr>
       {{end}}
     </tbody>
   </table>
 </div>
-<p class="table-hint">Keys shown truncated. Click &#10697; to copy full value. Keys cannot be recovered after leaving this page.{{if .IsAdmin}} Admins can change priority inline.{{end}}</p>
+<p class="table-hint">Keys shown truncated. Click &#10697; to copy full value. Keys cannot be recovered after leaving this page.{{if .IsAdmin}} Admins can change priority using the ✓ button.{{end}}</p>
 {{end}}
