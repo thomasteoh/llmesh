@@ -120,6 +120,52 @@ docker compose -f docker-compose.client.yml build
 
 ---
 
+## Testing
+
+### Unit tests
+
+```bash
+go test -v -race -count=1 ./...
+```
+
+Run on every pull request and push to `master`. Includes race detection; coverage is uploaded to Codecov.
+
+### End-to-end tests
+
+```bash
+go test -v -timeout 120s ./router/e2e/...
+```
+
+Spins up an in-process router with a mock llama.cpp client and exercises the full request path: HTTP → auth → queue → scheduler → WebSocket → response translation. Run on push to `master`.
+
+---
+
+## Releases
+
+Docker images are published to the GitHub Container Registry on every GitHub release:
+
+```
+ghcr.io/thomasteoh/llmesh:<version>
+```
+
+Tags generated per release:
+
+| Tag | Example | Description |
+|-----|---------|-------------|
+| `{{version}}` | `v0.1.0` | Exact release version |
+| `{{major}}.{{minor}}` | `0.1` | Major.minor track |
+| `latest` | `latest` | Most recent non-prerelease |
+
+To use the published image instead of building from source, replace the `build:` block in `docker-compose.yml`:
+
+```yaml
+services:
+  llm-router:
+    image: ghcr.io/thomasteoh/llmesh:latest
+```
+
+---
+
 ## API Endpoints
 
 Replace `[HOST]` and `[PORT]` with your router's address (port default: `53002`).
