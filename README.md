@@ -78,7 +78,7 @@ sequenceDiagram
 
 The router dispatches requests to available clients using **client-centric affinity scheduling**:
 
-1. **Owner affinity** — a request from user X prefers a client registered by user X
+1. **Owner affinity** — a client prefers requests submitted by the same user (user will have their own requests processed first)
 2. **Priority tier** — requests can be tagged `high`, `normal`, or `low`
 3. **FIFO** — within the same tier, oldest first
 
@@ -203,7 +203,7 @@ Run on every pull request. Includes race detection; coverage is uploaded to Code
 go test -v -timeout 120s ./router/e2e/...
 ```
 
-Spins up an in-process router with a mock llama.cpp client and exercises the full request path: HTTP → auth → queue → scheduler → WebSocket → response translation. Run on push to `master`.
+Spins up an in-process router with a mock llama.cpp client and exercises the full request path: HTTP → auth → queue → scheduler → WebSocket → response translation. Run on push to `main`.
 
 ---
 
@@ -242,6 +242,7 @@ Replace `[HOST]` and `[PORT]` with your router's address (port default: `53002`)
 | `POST /v1/chat/completions` | OpenAI chat completions (streaming + non-streaming) |
 | `POST /v1/messages` | Anthropic messages API |
 | `POST /v1/responses` | OpenAI Responses API |
+| `GET /v1/models` | List available models |
 | `GET /health` | Health check |
 | `GET /admin` | Admin dashboard |
 
