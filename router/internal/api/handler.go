@@ -193,15 +193,18 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 		return
 	}
 
-	// Phase 1 — queue + TTFT timer: 5min to receive the first chunk.
+	// Phase 1 — queue + TTFT timer: 15min to receive the first chunk.
 	// Covers queue wait, prompt evaluation, and time-to-first-token.
-	// Generous because large-context prompt eval can take several minutes.
-	queueTimer := time.NewTimer(5 * time.Minute)
+	// Generous because large-context prompt eval on slow local hardware can take
+	// many minutes before producing the first output token.
+	queueTimer := time.NewTimer(15 * time.Minute)
 	defer queueTimer.Stop()
 
 	// Phase 2 — activity timer: resets on every chunk. Fires only if the worker
-	// goes silent for 2min, indicating a crash or stuck inference.
-	activityTimer := time.NewTimer(2 * time.Minute)
+	// goes silent for 5min, indicating a crash or stuck inference.
+	// Generous enough for slow local hardware while avoiding long waits on
+	// genuinely stuck inference.
+	activityTimer := time.NewTimer(5 * time.Minute)
 	activityTimer.Stop() // activated when first chunk arrives
 	defer activityTimer.Stop()
 
@@ -212,7 +215,7 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 			default:
 			}
 		}
-		activityTimer.Reset(2 * time.Minute)
+		activityTimer.Reset(5 * time.Minute)
 	}
 
 	// SSE keep-alive: send a comment line every 15s while waiting for first chunk.
@@ -282,11 +285,11 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 			fmt.Fprintf(w, ": ping\n\n")
 			flusher.Flush()
 		case <-queueTimer.C:
-			apiLogger().Error("api: stream timeout", "request_id", req.ID, "timeout", "5min")
+			apiLogger().Error("api: stream timeout", "request_id", req.ID, "timeout", "15min")
 			serviceUnavailable(w, "request timed out waiting for a worker")
 			return
 		case <-activityTimer.C:
-			apiLogger().Warn("api: stream worker silent", "request_id", req.ID, "timeout", "2min")
+			apiLogger().Warn("api: stream worker silent", "request_id", req.ID, "timeout", "5min")
 			fmt.Fprintf(w, "data: {\"error\":\"worker stopped responding\"}\n\n")
 			flusher.Flush()
 			return
