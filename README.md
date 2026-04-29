@@ -78,7 +78,7 @@ sequenceDiagram
 
 The router dispatches requests to available clients using **client-centric affinity scheduling**:
 
-1. **Owner affinity** — a request from user X prefers a client registered by user X
+1. **Owner affinity** — a client registered by user X is preferred for requests submitted by user X
 2. **Priority tier** — requests can be tagged `high`, `normal`, or `low`
 3. **FIFO** — within the same tier, oldest first
 
