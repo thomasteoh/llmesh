@@ -11,7 +11,7 @@
 <div class="card">
   <div class="card-title">Add API key</div>
   <p class="field-desc" style="margin-bottom:14px;">An API key authenticates callers (e.g. AI agents, scripts) to the router. Include it in your request header so the router knows who is making the call and applies the correct priority tier.</p>
-  <form method="POST" action="/admin/api-keys">
+  <form method="POST" action="/portal/api-keys">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <div class="form-row">
       <div class="form-group" style="flex:2;">
@@ -37,7 +37,7 @@
         <td data-label="Key" class="muted" style="font-family:monospace;font-size:11px;">{{truncate .Key 20}}&hellip; <button class="btn-copy" data-copy="{{.Key}}" title="Copy full key">&#10697;</button></td>
         <td data-label="Priority">
           {{if $.IsAdmin}}
-          <form method="POST" action="/admin/api-keys/priority" style="display:inline-flex;align-items:center;gap:4px;">
+          <form method="POST" action="/portal/api-keys/priority" style="display:inline-flex;align-items:center;gap:4px;">
             <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
             <input type="hidden" name="key" value="{{.Key}}">
             <select name="priority" class="priority-inline priority-{{.Priority}}" title="Change priority">
@@ -53,7 +53,7 @@
         </td>
         <td data-label="Created" class="muted">{{.CreatedAt.Format "2006-01-02"}}</td>
         <td>
-          <form method="POST" action="/admin/api-keys/revoke" class="form-inline" onsubmit="return confirm('Revoke this API key? This cannot be undone.')">
+          <form method="POST" action="/portal/api-keys/revoke" class="form-inline" onsubmit="return confirm('Revoke this API key? This cannot be undone.')">
             <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
             <input type="hidden" name="key" value="{{.Key}}">
             <button type="submit" class="btn-danger">Revoke</button>

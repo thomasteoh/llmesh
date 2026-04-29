@@ -4,14 +4,14 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>llmesh &mdash; Sign in</title>
-  <link rel="stylesheet" href="/admin/static/admin.css">
+  <link rel="stylesheet" href="/portal/static/admin.css">
   <script>(function(){var t;try{t=localStorage.getItem('llmesh-theme');}catch(e){}if(!t&&window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches)t='light';if(t)document.documentElement.setAttribute('data-theme',t);})();</script>
 </head>
 <body class="auth-body">
 <div class="auth-card">
   <div class="brand">llmesh</div>
   {{if .Error}}<div class="flash error">{{.Error}}</div>{{end}}
-  <form method="POST" action="/admin/login">
+  <form method="POST" action="/portal/login">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <label>Username<input name="username" type="text" autocomplete="username" autofocus></label>
     <label>Password<input name="password" type="password" autocomplete="current-password"></label>

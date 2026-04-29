@@ -21,7 +21,7 @@
           {{if .WordCount}}<span class="job-words muted">{{.WordCount}}w</span>{{end}}
           <span class="job-time muted">{{.EnqueuedAt}}</span>
           {{if .CanCancel}}
-          <form method="POST" action="/admin/jobs/cancel" class="form-inline" onsubmit="return confirm('Cancel this job? The request will be aborted.')">
+          <form method="POST" action="/portal/jobs/cancel" class="form-inline" onsubmit="return confirm('Cancel this job? The request will be aborted.')">
             <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
             <input type="hidden" name="request_id" value="{{.ID}}">
             <button type="submit" class="btn-danger btn-xs" title="Cancel job" aria-label="Cancel job">&#x2715;</button>
@@ -45,14 +45,14 @@
   <code id="new-tok-val">{{.NewToken}}</code>
   <div class="new-key-actions">
     <button class="btn-secondary" data-copy-from="new-tok-val">Copy token</button>
-    <a class="btn-secondary" href="/admin/clients/config?token={{.NewToken}}" download="config.yaml">Download config.yaml</a>
+    <a class="btn-secondary" href="/portal/clients/config?token={{.NewToken}}" download="config.yaml">Download config.yaml</a>
   </div>
 </div>
 {{end}}
 <div class="card">
   <div class="card-title">Add client</div>
   <p class="field-desc" style="margin-bottom:14px;">A client token authenticates a llama.cpp instance (a machine or container running a model) to the router. Use it in the client's config file so the router knows this client is allowed to serve requests.</p>
-  <form method="POST" action="/admin/clients">
+  <form method="POST" action="/portal/clients">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <div class="form-row">
       <div class="form-group" style="flex:2;">
@@ -89,7 +89,7 @@
             <td data-label="Status"><span class="badge {{.StatusClass}}">{{.StatusLabel}}</span></td>
             <td data-label="Last seen" class="muted">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
             <td class="cell-actions">
-              <form method="POST" action="/admin/clients/revoke" class="form-inline" onsubmit="return confirm('Revoke this client token? The client will be disconnected and cannot reconnect.')">
+              <form method="POST" action="/portal/clients/revoke" class="form-inline" onsubmit="return confirm('Revoke this client token? The client will be disconnected and cannot reconnect.')">
                 <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
                 <input type="hidden" name="token" value="{{.Token}}">
                 <button type="submit" class="btn-danger btn-xs" title="Revoke">&#x2715;</button>
@@ -125,7 +125,7 @@
         <td data-label="Status"><span class="badge {{.StatusClass}}">{{.StatusLabel}}</span></td>
         <td data-label="Last seen" class="muted">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
         <td class="cell-actions">
-          <form method="POST" action="/admin/clients/revoke" class="form-inline" onsubmit="return confirm('Revoke this client token? The client will be disconnected and cannot reconnect.')">
+          <form method="POST" action="/portal/clients/revoke" class="form-inline" onsubmit="return confirm('Revoke this client token? The client will be disconnected and cannot reconnect.')">
             <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
             <input type="hidden" name="token" value="{{.Token}}">
             <button type="submit" class="btn-danger btn-xs" title="Revoke">&#x2715;</button>
