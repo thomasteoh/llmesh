@@ -217,7 +217,12 @@ func main() {
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	log.Info("llm-router listening on", "version", version, "addr", addr)
-	if err := http.ListenAndServe(addr, secureHeaders(mux)); err != nil {
+	srv := &http.Server{
+		Addr:        addr,
+		Handler:     secureHeaders(mux),
+		IdleTimeout: 0, // disabled: SSE streams must not be closed for inactivity
+	}
+	if err := srv.ListenAndServe(); err != nil {
 		log.Error("listen and serve", "error", err)
 		os.Exit(1)
 	}

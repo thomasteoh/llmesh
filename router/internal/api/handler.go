@@ -279,10 +279,8 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 				}
 			}
 		case <-keepAlive.C:
-			if !started {
-				fmt.Fprintf(w, ": ping\n\n")
-				flusher.Flush()
-			}
+			fmt.Fprintf(w, ": ping\n\n")
+			flusher.Flush()
 		case <-queueTimer.C:
 			apiLogger().Error("api: stream timeout", "request_id", req.ID, "timeout", "5min")
 			serviceUnavailable(w, "request timed out waiting for a worker")
