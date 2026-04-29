@@ -112,6 +112,11 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token
 	go h.writeLoop(client)
 	h.readLoop(client)
 
+	// Collect in-flight jobs before removing the client so we can fail them immediately.
+	// dispatch() only runs from within readLoop (which has already returned), so there
+	// is no race between this cleanup and job tracking.
+	orphaned := h.InFlightJobsByClientID(client.ID)
+
 	h.mu.Lock()
 	delete(h.clients, client.ID)
 	if token != "" {
@@ -120,6 +125,22 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token
 	h.mu.Unlock()
 	close(client.send)
 	h.log.Info("hub: client disconnected", "id", client.ID)
+
+	// Immediately fail any jobs that were in-flight when the client disconnected.
+	// Without this the caller would wait for the router's activity timer (2 min).
+	for _, rec := range orphaned {
+		h.untrackJob(rec.Req.ID)
+		client.DecrInFlight()
+		h.log.Warn("hub: failing orphaned job on disconnect", "request_id", rec.Req.ID, "client_id", client.ID)
+		if h.OnError != nil {
+			h.OnError(types.ErrorMsg{
+				Type:      "error",
+				RequestID: rec.Req.ID,
+				Message:   "client disconnected during inference",
+			})
+		}
+	}
+
 	if h.OnAvailable != nil {
 		h.OnAvailable()
 	}
