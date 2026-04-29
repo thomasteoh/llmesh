@@ -123,7 +123,7 @@ The `state.json` file (admin users, API keys, client tokens) is created automati
 
 **First-run setup**
 
-Navigate to `http://[HOST]:[PORT]/admin`. On first run you are redirected to the setup wizard to create the initial admin account. All credentials are managed via this UI — there are no credentials in `config.yaml`.
+Navigate to `http://[HOST]:[PORT]/portal`. On first run you are redirected to the setup wizard to create the initial admin account. All credentials are managed via this UI — there are no credentials in `config.yaml`.
 
 From the admin dashboard you can:
 - **Clients** → Create client tokens (needed to configure each `llm-client`)
@@ -244,7 +244,7 @@ Replace `[HOST]` and `[PORT]` with your router's address (port default: `53002`)
 | `POST /v1/responses` | OpenAI Responses API |
 | `GET /v1/models` | List available models |
 | `GET /health` | Health check |
-| `GET /admin` | Admin dashboard |
+| `GET /portal` | Admin dashboard |
 
 All `/v1/*` endpoints require `Authorization: Bearer <api-key>`.
 

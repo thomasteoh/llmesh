@@ -103,12 +103,12 @@ func (a *Admin) sessionUser(r *http.Request) (User, bool) {
 	return u, true
 }
 
-// requireAuth wraps a handler, redirecting to /admin/login if no valid session.
+// requireAuth wraps a handler, redirecting to /portal/login if no valid session.
 func (a *Admin) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u, ok := a.sessionUser(r)
 		if !ok {
-			http.Redirect(w, r, "/admin/login", http.StatusFound)
+			http.Redirect(w, r, "/portal/login", http.StatusFound)
 			return
 		}
 		next(w, r.WithContext(context.WithValue(r.Context(), ctxUser, u)))
@@ -163,13 +163,13 @@ func (a *Admin) handleLogin(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
 		Value:    sid,
-		Path:     "/admin",
+		Path:     "/portal",
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(sessionTTL.Seconds()),
 	})
-	http.Redirect(w, r, "/admin/", http.StatusFound)
+	http.Redirect(w, r, "/portal/", http.StatusFound)
 }
 
 func (a *Admin) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -186,13 +186,13 @@ func (a *Admin) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if username != "" {
 		a.state.UpdateUser(username, func(user *User) { user.CSRFToken = "" })
 	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Path: "/admin", MaxAge: -1})
-	http.Redirect(w, r, "/admin/login", http.StatusFound)
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Path: "/portal", MaxAge: -1})
+	http.Redirect(w, r, "/portal/login", http.StatusFound)
 }
 
 func (a *Admin) handleSetup(w http.ResponseWriter, r *http.Request) {
 	if !a.state.NeedsSetup() {
-		http.Redirect(w, r, "/admin/login", http.StatusFound)
+		http.Redirect(w, r, "/portal/login", http.StatusFound)
 		return
 	}
 	if r.Method == http.MethodGet {
@@ -228,7 +228,7 @@ func (a *Admin) handleSetupPost(w http.ResponseWriter, r *http.Request) {
 		a.renderStandalone(w, "setup", map[string]string{"Error": err.Error()})
 		return
 	}
-	http.Redirect(w, r, "/admin/login", http.StatusFound)
+	http.Redirect(w, r, "/portal/login", http.StatusFound)
 }
 
 // HashPassword hashes a plaintext password using bcrypt.

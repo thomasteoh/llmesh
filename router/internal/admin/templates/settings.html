@@ -13,7 +13,7 @@
     <div class="settings-narrow">
       <div class="card">
         <div class="card-title">Change password</div>
-        <form method="POST" action="/admin/settings/password">
+        <form method="POST" action="/portal/settings/password">
           <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
           <div class="form-group" style="margin-bottom:12px;"><label>Current password</label><input name="current" type="password"></div>
           <div class="form-group" style="margin-bottom:12px;"><label>New password</label><input name="new" type="password"></div>
@@ -30,7 +30,7 @@
     <div style="margin-top:8px;">
       <div class="section-header">
         <div class="section-title">Users</div>
-        <form method="POST" action="/admin/settings/users" class="inline-form">
+        <form method="POST" action="/portal/settings/users" class="inline-form">
           <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
           <input name="username" placeholder="username" class="inline-input">
           <input name="password" type="password" placeholder="password" class="inline-input">
@@ -50,11 +50,11 @@
                 {{if not .IsSelf}}
                 <div style="display:flex;gap:6px;justify-content:flex-end;">
                   {{if .Disabled}}
-                    <form method="POST" action="/admin/settings/users/enable" class="form-inline"><input type="hidden" name="_csrf" value="{{$.CSRFToken}}"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-success">Enable</button></form>
+                    <form method="POST" action="/portal/settings/users/enable" class="form-inline"><input type="hidden" name="_csrf" value="{{$.CSRFToken}}"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-success">Enable</button></form>
                   {{else}}
-                    {{if eq .Role "admin"}}<form method="POST" action="/admin/settings/users/demote" class="form-inline" onsubmit="return confirm('Demote {{.Username}} from admin to member?')"><input type="hidden" name="_csrf" value="{{$.CSRFToken}}"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-secondary">Demote</button></form>{{end}}
-                    {{if eq .Role "member"}}<form method="POST" action="/admin/settings/users/promote" class="form-inline"><input type="hidden" name="_csrf" value="{{$.CSRFToken}}"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-secondary">Promote</button></form>{{end}}
-                    <form method="POST" action="/admin/settings/users/disable" class="form-inline" onsubmit="return confirm('Disable {{.Username}}? They will not be able to sign in.')"><input type="hidden" name="_csrf" value="{{$.CSRFToken}}"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-danger">Disable</button></form>
+                    {{if eq .Role "admin"}}<form method="POST" action="/portal/settings/users/demote" class="form-inline" onsubmit="return confirm('Demote {{.Username}} from admin to member?')"><input type="hidden" name="_csrf" value="{{$.CSRFToken}}"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-secondary">Demote</button></form>{{end}}
+                    {{if eq .Role "member"}}<form method="POST" action="/portal/settings/users/promote" class="form-inline"><input type="hidden" name="_csrf" value="{{$.CSRFToken}}"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-secondary">Promote</button></form>{{end}}
+                    <form method="POST" action="/portal/settings/users/disable" class="form-inline" onsubmit="return confirm('Disable {{.Username}}? They will not be able to sign in.')"><input type="hidden" name="_csrf" value="{{$.CSRFToken}}"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-danger">Disable</button></form>
                   {{end}}
                 </div>
                 {{end}}

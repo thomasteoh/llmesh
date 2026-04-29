@@ -77,6 +77,26 @@ const landingHTML = `<!DOCTYPE html>
     letter-spacing: 0.04em;
     text-transform: uppercase;
   }
+  .links {
+    margin-top: 24px;
+    font-size: 12px;
+    font-family: system-ui, sans-serif;
+    display: flex;
+    gap: 24px;
+  }
+  .links a {
+    color: var(--accent);
+    text-decoration: none;
+    letter-spacing: 0.03em;
+  }
+  .links a:hover { text-decoration: underline; }
+  .links .sep { color: var(--muted); }
+  .api-url {
+    margin-top: 8px;
+    font-size: 11px;
+    font-family: monospace;
+    color: var(--muted);
+  }
 </style>
 </head>
 <body>
@@ -96,6 +116,12 @@ The model knows no silence, holds no shame,
 it does not dream of what you meant to say.
 But token follows token all the same,
 and something close to meaning finds its way.</pre>
+    <div class="links">
+      <a href="/portal">Portal</a>
+      <span class="sep">&mdash;</span>
+      <a href="/health">Health</a>
+    </div>
+    <div class="api-url">API: https://{{.Host}}/v1</div>
     <div class="footer">{{.Name}} &mdash; local inference gateway</div>
   </div>
 </div>
@@ -179,9 +205,10 @@ func main() {
 			http.NotFound(w, r)
 			return
 		}
-		data := struct{ Count, Name string }{
+		data := struct{ Count, Name, Host string }{
 			Count: fmtCount(apiHandler.Count()),
 			Name:  cfg.Name,
+			Host:  cfg.Host,
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if err := landingTmpl.Execute(w, data); err != nil {
@@ -212,8 +239,16 @@ func main() {
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"status":"ok","version":%q}`+"\n", version)
 	})
-	mux.Handle("/admin/", adminHandler)
-	mux.Handle("/admin", adminHandler)
+	mux.Handle("/portal/", adminHandler)
+	mux.Handle("/portal", adminHandler)
+	// Backward-compat redirect: old /admin bookmarks → /portal
+	mux.HandleFunc("/admin/", func(w http.ResponseWriter, r *http.Request) {
+		target := "/portal" + r.URL.Path[len("/admin"):]
+		http.Redirect(w, r, target, http.StatusMovedPermanently)
+	})
+	mux.HandleFunc("/admin", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/portal", http.StatusMovedPermanently)
+	})
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	log.Info("llm-router listening on", "version", version, "addr", addr)

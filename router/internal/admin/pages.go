@@ -300,7 +300,7 @@ func (a *Admin) handleAPIKeyRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 	key := r.FormValue("key")
 	a.state.RevokeAPIKey(u.Username, key, u.Role == "admin")
-	http.Redirect(w, r, "/admin/api-keys", http.StatusFound)
+	http.Redirect(w, r, "/portal/api-keys", http.StatusFound)
 }
 
 // --- Clients ---
@@ -436,7 +436,7 @@ func (a *Admin) handleClientTokenRevoke(w http.ResponseWriter, r *http.Request) 
 	token := r.FormValue("token")
 	a.state.RevokeClientToken(u.Username, token, u.Role == "admin")
 	a.hub.CloseByToken(token)
-	http.Redirect(w, r, "/admin/clients", http.StatusFound)
+	http.Redirect(w, r, "/portal/clients", http.StatusFound)
 }
 
 // handleClientTokenConfig serves a pre-filled config.yaml for the given token.
@@ -474,7 +474,7 @@ func (a *Admin) handleModelAliasCreate(w http.ResponseWriter, r *http.Request) {
 	if alias != "" && model != "" {
 		a.state.AddAlias(alias, model) // duplicate errors silently ignored
 	}
-	http.Redirect(w, r, "/admin/", http.StatusFound)
+	http.Redirect(w, r, "/portal/", http.StatusFound)
 }
 
 func (a *Admin) handleModelAliasDelete(w http.ResponseWriter, r *http.Request) {
@@ -492,10 +492,10 @@ func (a *Admin) handleModelAliasDelete(w http.ResponseWriter, r *http.Request) {
 	// Redirect back to the originating page (dashboard or clients)
 	ref := r.FormValue("ref")
 	if ref == "clients" {
-		http.Redirect(w, r, "/admin/clients", http.StatusFound)
+		http.Redirect(w, r, "/portal/clients", http.StatusFound)
 		return
 	}
-	http.Redirect(w, r, "/admin/", http.StatusFound)
+	http.Redirect(w, r, "/portal/", http.StatusFound)
 }
 
 // --- Help ---
@@ -602,7 +602,7 @@ func (a *Admin) handleUserDisable(w http.ResponseWriter, r *http.Request) {
 		a.renderSettings(w, u, "", err.Error())
 		return
 	}
-	http.Redirect(w, r, "/admin/settings", http.StatusFound)
+	http.Redirect(w, r, "/portal/settings", http.StatusFound)
 }
 
 func (a *Admin) handleUserEnable(w http.ResponseWriter, r *http.Request) {
@@ -616,7 +616,7 @@ func (a *Admin) handleUserEnable(w http.ResponseWriter, r *http.Request) {
 		a.renderSettings(w, u, "", err.Error())
 		return
 	}
-	http.Redirect(w, r, "/admin/settings", http.StatusFound)
+	http.Redirect(w, r, "/portal/settings", http.StatusFound)
 }
 
 func (a *Admin) handleUserPromote(w http.ResponseWriter, r *http.Request) {
@@ -630,7 +630,7 @@ func (a *Admin) handleUserPromote(w http.ResponseWriter, r *http.Request) {
 		a.renderSettings(w, u, "", err.Error())
 		return
 	}
-	http.Redirect(w, r, "/admin/settings", http.StatusFound)
+	http.Redirect(w, r, "/portal/settings", http.StatusFound)
 }
 
 func (a *Admin) handleUserDemote(w http.ResponseWriter, r *http.Request) {
@@ -644,7 +644,7 @@ func (a *Admin) handleUserDemote(w http.ResponseWriter, r *http.Request) {
 		a.renderSettings(w, u, "", err.Error())
 		return
 	}
-	http.Redirect(w, r, "/admin/settings", http.StatusFound)
+	http.Redirect(w, r, "/portal/settings", http.StatusFound)
 }
 
 // statsRows converts stats.Stats rows to StatRow slices sorted by total tokens desc.
@@ -686,7 +686,7 @@ func (a *Admin) handleAPIKeyPriority(w http.ResponseWriter, r *http.Request) {
 	key := r.FormValue("key")
 	priority := r.FormValue("priority")
 	a.state.UpdateAPIKeyPriority(key, priority) // errors silently ignored; bad input just doesn't save
-	http.Redirect(w, r, "/admin/api-keys", http.StatusFound)
+	http.Redirect(w, r, "/portal/api-keys", http.StatusFound)
 }
 
 // buildClientGroups groups ClientTokenRows by owner, sorted: live users first, then alpha.
@@ -732,7 +732,7 @@ func (a *Admin) handleJobCancel(w http.ResponseWriter, r *http.Request) {
 		}
 		a.hub.CancelRequest(reqID)
 	}
-	http.Redirect(w, r, "/admin/clients", http.StatusFound)
+	http.Redirect(w, r, "/portal/clients", http.StatusFound)
 }
 
 func (a *Admin) handleQueueCancel(w http.ResponseWriter, r *http.Request) {
@@ -741,7 +741,7 @@ func (a *Admin) handleQueueCancel(w http.ResponseWriter, r *http.Request) {
 	if a.queue != nil {
 		a.queue.PopByID(reqID)
 	}
-	http.Redirect(w, r, "/admin/", http.StatusFound)
+	http.Redirect(w, r, "/portal/", http.StatusFound)
 }
 
 // priorityName converts a types.Priority value to its display string.
