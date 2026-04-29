@@ -17,7 +17,7 @@ const (
 	// idleTimeout is the maximum gap between tokens once streaming has started.
 	// Fires only after the first content token — before that, health checks
 	// (healthCheckInterval) detect a hung llamacpp process instead.
-	idleTimeout = 5 * time.Minute
+	idleTimeout = 10 * time.Minute
 
 	// healthCheckInterval is how often to probe /health while waiting for the
 	// first token. Detects a crashed or hung llamacpp before inference begins.
