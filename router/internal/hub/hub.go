@@ -14,6 +14,11 @@ import (
 	"llmesh/pkg/types"
 )
 
+// LeaseDuration is the maximum time a dispatched job may remain in-flight
+// before the lease reaper reclaims the slot. Matches the worst-case HTTP handler
+// timeout: 15 min TTFT + 5 min activity = 20 min.
+const LeaseDuration = 20 * time.Minute
+
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
@@ -54,9 +59,11 @@ func (c *Client) DecrInFlight() {
 
 // InFlightRecord is a snapshot of a job currently being processed by a client.
 type InFlightRecord struct {
-	ClientID    string
-	ClientToken string
-	Req         types.InferenceRequest
+	ClientID     string
+	ClientToken  string
+	Req          types.InferenceRequest
+	DispatchedAt time.Time // when the job was dispatched to this client
+	LeaseExpiry  time.Time // DispatchedAt + LeaseDuration; slot reclaimed after this
 }
 
 // Hub manages WebSocket client connections and acts as the client registry.
@@ -73,6 +80,9 @@ type Hub struct {
 	OnError func(msg types.ErrorMsg)
 	// OnAvailable is called when a client becomes available (registered or finished a job).
 	OnAvailable func()
+	// OnRelease is called when a client releases a job back to the queue.
+	// The caller should push the request back to the queue and wake the scheduler.
+	OnRelease func(req types.InferenceRequest)
 }
 
 // New creates and returns a new Hub.
@@ -228,6 +238,31 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 		if h.OnError != nil {
 			h.OnError(msg)
 		}
+
+	case "release":
+		var msg types.ReleaseMsg
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return
+		}
+		h.mu.RLock()
+		rec, ok := h.jobs[msg.RequestID]
+		h.mu.RUnlock()
+		if !ok {
+			return // already completed, expired, or unknown
+		}
+		client.DecrInFlight()
+		h.untrackJob(msg.RequestID)
+		h.log.Info("hub: client released job",
+			"request_id", msg.RequestID,
+			"client_id", client.ID,
+			"reason", msg.Reason,
+		)
+		if h.OnRelease != nil {
+			h.OnRelease(rec.Req)
+		}
+		if h.OnAvailable != nil {
+			h.OnAvailable()
+		}
 	}
 }
 
@@ -368,7 +403,14 @@ func (h *Hub) TrackJob(clientID string, req types.InferenceRequest) {
 	if c, ok := h.clients[clientID]; ok {
 		token = c.Token
 	}
-	h.jobs[req.ID] = InFlightRecord{ClientID: clientID, ClientToken: token, Req: req}
+	now := time.Now()
+	h.jobs[req.ID] = InFlightRecord{
+		ClientID:     clientID,
+		ClientToken:  token,
+		Req:          req,
+		DispatchedAt: now,
+		LeaseExpiry:  now.Add(LeaseDuration),
+	}
 }
 
 // untrackJob removes the job record for requestID. Called internally when a job completes.
@@ -507,6 +549,57 @@ func (h *Hub) ActiveClientCount() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return len(h.clients)
+}
+
+// handleExpiredLeases scans all tracked jobs and reclaims slots for any whose
+// LeaseExpiry has passed. Called by the lease reaper goroutine; also exposed for
+// testing so tests can trigger it directly without waiting for the ticker.
+func (h *Hub) handleExpiredLeases() {
+	now := time.Now()
+
+	h.mu.Lock()
+	var expired []InFlightRecord
+	for id, rec := range h.jobs {
+		if rec.LeaseExpiry.Before(now) {
+			expired = append(expired, rec)
+			delete(h.jobs, id)
+		}
+	}
+	h.mu.Unlock()
+
+	if len(expired) == 0 {
+		return
+	}
+
+	for _, rec := range expired {
+		h.log.Warn("hub: lease expired, reclaiming slot",
+			"request_id", rec.Req.ID,
+			"client_id", rec.ClientID,
+			"dispatched_at", rec.DispatchedAt,
+		)
+		h.DecrInFlight(rec.ClientID)
+		// Cancel the job on the client (it may still be processing).
+		h.SendToClient(rec.ClientID, types.CancelMsg{
+			Type:      "cancel",
+			RequestID: rec.Req.ID,
+		})
+	}
+
+	if h.OnAvailable != nil {
+		h.OnAvailable()
+	}
+}
+
+// StartLeaseReaper starts a background goroutine that calls handleExpiredLeases
+// every 30 seconds. It runs until the process exits.
+func (h *Hub) StartLeaseReaper() {
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			h.handleExpiredLeases()
+		}
+	}()
 }
 
 // ConnectedCountByToken returns the number of currently connected clients with the given token.

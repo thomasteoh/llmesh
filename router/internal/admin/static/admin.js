@@ -154,7 +154,7 @@ function ensureLogsLoaded() {
 function fetchLogs() {
   var container = document.getElementById('logs-container');
   if (!container) return;
-  fetch('/admin/api/logs?category=' + encodeURIComponent(_logCurrentCat) + '&limit=200')
+  fetch('/portal/api/logs?category=' + encodeURIComponent(_logCurrentCat) + '&limit=200')
     .then(function(r) {
       if (!r.ok) throw new Error('non-ok');
       return r.json();
@@ -387,7 +387,7 @@ function initDashboard() {
   }
 
   function refresh() {
-    fetch('/admin/api/dashboard').then(function(r) {
+    fetch('/portal/api/dashboard').then(function(r) {
       if (!r.ok) throw new Error('non-ok');
       return r.json();
     }).then(function(d) {
@@ -533,3 +533,27 @@ document.addEventListener('DOMContentLoaded', function() {
     wrap.appendChild(btn);
   });
 });
+
+/* ─── Elapsed time display ───────────────────────────────────── */
+
+function formatElapsed(isoString) {
+  var ms = Date.now() - new Date(isoString).getTime();
+  if (ms < 1000) return '< 1s';
+  var s = Math.floor(ms / 1000);
+  var m = Math.floor(s / 60);
+  s = s % 60;
+  if (m > 0) return m + 'm ' + (s < 10 ? '0' : '') + s + 's';
+  return s + 's';
+}
+
+function updateElapsed() {
+  document.querySelectorAll('[data-since]').forEach(function(el) {
+    el.textContent = formatElapsed(el.getAttribute('data-since'));
+  });
+}
+
+(function() {
+  if (!document.querySelector('[data-since]')) return;
+  updateElapsed();
+  setInterval(updateElapsed, 1000);
+})();

@@ -102,7 +102,7 @@
   </table>
 </div>
 
-{{if .IsAdmin}}
+{{if or .IsAdmin .QueueItems}}
 <div class="collapsible" style="margin-top:24px;" id="queue-section-wrap">
   <div class="collapsible-header queue-header" data-toggle="queue-section" onclick="toggleSection('queue-section')">
     <span class="toggle-arrow">&#9662;</span>
@@ -112,7 +112,7 @@
   <div class="collapsible-body {{if gt .QueueLen 0}}open{{end}}" id="queue-section">
     <div class="table-scroll" style="margin-top:8px;">
       <table class="data-table">
-        <thead><tr><th>User</th><th>Key</th><th>Model</th><th>Priority</th><th>Words</th><th>Queued</th><th></th></tr></thead>
+        <thead><tr><th>User</th><th>Key</th><th>Model</th><th>Priority</th><th>Words</th><th>Waiting</th><th></th></tr></thead>
         <tbody id="queue-tbody">
           {{range .QueueItems}}
           <tr>
@@ -121,13 +121,17 @@
             <td data-label="Model" class="muted">{{.Model}}</td>
             <td data-label="Priority"><span class="badge {{.Priority}}">{{.Priority}}</span></td>
             <td data-label="Words" class="muted">{{if .WordCount}}{{.WordCount}}{{else}}&mdash;{{end}}</td>
-            <td data-label="Queued" class="muted">{{.EnqueuedAt}}</td>
+            <td data-label="Waiting" class="muted">
+              {{if .EnqueuedAtISO}}<span data-since="{{.EnqueuedAtISO}}" title="queued {{.EnqueuedAt}}">—</span>{{else}}{{.EnqueuedAt}}{{end}}
+            </td>
             <td>
+              {{if .CanCancel}}
               <form method="POST" action="/portal/queue/cancel" class="form-inline" onsubmit="return confirm('Remove this request from the queue?')">
                 <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
                 <input type="hidden" name="request_id" value="{{.ID}}">
                 <button type="submit" class="btn-danger btn-xs" title="Cancel" aria-label="Cancel queued job">&#x2715;</button>
               </form>
+              {{end}}
             </td>
           </tr>
           {{else}}

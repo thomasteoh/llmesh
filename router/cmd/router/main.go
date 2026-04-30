@@ -187,6 +187,8 @@ func main() {
 
 	sched := scheduler.New(q, h, adminHandler.State(), logring.NewLogger(sink, "scheduler", slog.LevelInfo))
 	sched.Start()
+	h.OnRelease = func(req types.InferenceRequest) { q.Push(req); sched.Wake() }
+	h.StartLeaseReaper()
 
 	apiHandler = &api.Handler{
 		Keys:        adminHandler.State(),

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
+	"llmesh/pkg/types"
 	"llmesh/router/internal/stats"
 )
 
@@ -46,7 +47,7 @@ type DashboardPage struct {
 	StatsByModel  []StatRow
 	StatsByUser   []StatRow
 	QueueLen      int
-	QueueItems    []QueuedJobRow // only populated for admins
+	QueueItems    []QueuedJobRow // filtered to the requesting user's own items for non-admins
 }
 
 type ClientRow struct {
@@ -93,24 +94,27 @@ type ConnectedClientRow struct {
 
 // InFlightJobRow is a single in-flight job for display on the clients page.
 type InFlightJobRow struct {
-	ID          string
-	Owner       string
-	APIKeyLabel string
-	Model       string
-	EnqueuedAt  string
-	WordCount   int
-	CanCancel   bool
+	ID              string
+	Owner           string
+	APIKeyLabel     string
+	Model           string
+	EnqueuedAt      string
+	DispatchedAtISO string // RFC3339, for JS elapsed computation
+	WordCount       int
+	CanCancel       bool
 }
 
 // QueuedJobRow is a single queued (waiting) job for display on the dashboard.
 type QueuedJobRow struct {
-	ID          string
-	Owner       string
-	APIKeyLabel string
-	Model       string
-	Priority    string
-	EnqueuedAt  string
-	WordCount   int
+	ID            string
+	Owner         string
+	APIKeyLabel   string
+	Model         string
+	Priority      string
+	EnqueuedAt    string
+	EnqueuedAtISO string // RFC3339, for JS elapsed computation
+	WordCount     int
+	CanCancel     bool // true only for admins
 }
 
 type ClientTokenRow struct {
@@ -157,6 +161,21 @@ func (a *Admin) newBasePage(page string, u User) basePage {
 }
 
 // --- Dashboard ---
+
+// filterQueueForUser returns only the queue items visible to u.
+// Admins see all items; members see only their own.
+func filterQueueForUser(items []types.InferenceRequest, u User) []types.InferenceRequest {
+	if u.Role == "admin" {
+		return items
+	}
+	var out []types.InferenceRequest
+	for _, req := range items {
+		if req.Owner == u.Username {
+			out = append(out, req)
+		}
+	}
+	return out
+}
 
 func (a *Admin) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	u := ctxGetUser(r)
@@ -222,20 +241,21 @@ func (a *Admin) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	if a.queue != nil {
 		snap := a.queue.Snapshot()
-		data.QueueLen = len(snap)
-		if u.Role == "admin" {
-			data.QueueItems = make([]QueuedJobRow, 0, len(snap))
-			for _, req := range snap {
-				data.QueueItems = append(data.QueueItems, QueuedJobRow{
-					ID:          req.ID,
-					Owner:       req.Owner,
-					APIKeyLabel: req.APIKeyLabel,
-					Model:       req.Model,
-					Priority:    priorityName(int(req.Priority)),
-					EnqueuedAt:  humanTime(req.EnqueuedAt),
-					WordCount:   req.WordCount,
-				})
-			}
+		visible := filterQueueForUser(snap, u)
+		data.QueueLen = len(snap) // total depth for header badge
+		data.QueueItems = make([]QueuedJobRow, 0, len(visible))
+		for _, req := range visible {
+			data.QueueItems = append(data.QueueItems, QueuedJobRow{
+				ID:            req.ID,
+				Owner:         req.Owner,
+				APIKeyLabel:   req.APIKeyLabel,
+				Model:         req.Model,
+				Priority:      priorityName(int(req.Priority)),
+				EnqueuedAt:    humanTime(req.EnqueuedAt),
+				EnqueuedAtISO: req.EnqueuedAt.UTC().Format(time.RFC3339),
+				WordCount:     req.WordCount,
+				CanCancel:     u.Role == "admin",
+			})
 		}
 	}
 	a.render(w, "dashboard", data)
@@ -355,13 +375,14 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, u User, newToken, form
 				var jobs []InFlightJobRow
 				for _, rec := range a.hub.InFlightJobsByClientID(ci.ID) {
 					jobs = append(jobs, InFlightJobRow{
-						ID:          rec.Req.ID,
-						Owner:       rec.Req.Owner,
-						APIKeyLabel: rec.Req.APIKeyLabel,
-						Model:       rec.Req.Model,
-						EnqueuedAt:  humanTime(rec.Req.EnqueuedAt),
-						WordCount:   rec.Req.WordCount,
-						CanCancel:   isAdmin || rec.Req.Owner == u.Username || isTokenOwner,
+						ID:              rec.Req.ID,
+						Owner:           rec.Req.Owner,
+						APIKeyLabel:     rec.Req.APIKeyLabel,
+						Model:           rec.Req.Model,
+						EnqueuedAt:      humanTime(rec.Req.EnqueuedAt),
+						DispatchedAtISO: rec.DispatchedAt.UTC().Format(time.RFC3339),
+						WordCount:       rec.Req.WordCount,
+						CanCancel:       isAdmin || rec.Req.Owner == u.Username || isTokenOwner,
 					})
 				}
 				row.Connections = append(row.Connections, ConnectedClientRow{
