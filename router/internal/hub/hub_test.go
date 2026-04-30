@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"llmesh/pkg/types"
 )
 
 func dialHub(t *testing.T, h *Hub, name, owner, token string) *websocket.Conn {
@@ -108,5 +109,28 @@ func TestConnectedModels(t *testing.T) {
 		if !want[m] {
 			t.Errorf("unexpected model %q", m)
 		}
+	}
+}
+
+func TestTrackJob_SetsLeaseFields(t *testing.T) {
+	h := New(slog.Default())
+	req := types.InferenceRequest{ID: "req-lease-1", Model: "llama3"}
+	before := time.Now()
+	h.TrackJob("client-1", req)
+	after := time.Now()
+
+	h.mu.RLock()
+	rec, ok := h.jobs["req-lease-1"]
+	h.mu.RUnlock()
+
+	if !ok {
+		t.Fatal("job not tracked")
+	}
+	if rec.DispatchedAt.Before(before) || rec.DispatchedAt.After(after) {
+		t.Errorf("DispatchedAt out of range: %v", rec.DispatchedAt)
+	}
+	expectedExpiry := rec.DispatchedAt.Add(LeaseDuration)
+	if !rec.LeaseExpiry.Equal(expectedExpiry) {
+		t.Errorf("LeaseExpiry = %v, want %v", rec.LeaseExpiry, expectedExpiry)
 	}
 }

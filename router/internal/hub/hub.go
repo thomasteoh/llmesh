@@ -14,6 +14,11 @@ import (
 	"llmesh/pkg/types"
 )
 
+// LeaseDuration is the maximum time a dispatched job may remain in-flight
+// before the lease reaper reclaims the slot. Matches the worst-case HTTP handler
+// timeout: 15 min TTFT + 5 min activity = 20 min.
+const LeaseDuration = 20 * time.Minute
+
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
@@ -54,9 +59,11 @@ func (c *Client) DecrInFlight() {
 
 // InFlightRecord is a snapshot of a job currently being processed by a client.
 type InFlightRecord struct {
-	ClientID    string
-	ClientToken string
-	Req         types.InferenceRequest
+	ClientID     string
+	ClientToken  string
+	Req          types.InferenceRequest
+	DispatchedAt time.Time // when the job was dispatched to this client
+	LeaseExpiry  time.Time // DispatchedAt + LeaseDuration; slot reclaimed after this
 }
 
 // Hub manages WebSocket client connections and acts as the client registry.
@@ -368,7 +375,14 @@ func (h *Hub) TrackJob(clientID string, req types.InferenceRequest) {
 	if c, ok := h.clients[clientID]; ok {
 		token = c.Token
 	}
-	h.jobs[req.ID] = InFlightRecord{ClientID: clientID, ClientToken: token, Req: req}
+	now := time.Now()
+	h.jobs[req.ID] = InFlightRecord{
+		ClientID:     clientID,
+		ClientToken:  token,
+		Req:          req,
+		DispatchedAt: now,
+		LeaseExpiry:  now.Add(LeaseDuration),
+	}
 }
 
 // untrackJob removes the job record for requestID. Called internally when a job completes.
