@@ -154,7 +154,7 @@ function ensureLogsLoaded() {
 function fetchLogs() {
   var container = document.getElementById('logs-container');
   if (!container) return;
-  fetch('/admin/api/logs?category=' + encodeURIComponent(_logCurrentCat) + '&limit=200')
+  fetch('/portal/api/logs?category=' + encodeURIComponent(_logCurrentCat) + '&limit=200')
     .then(function(r) {
       if (!r.ok) throw new Error('non-ok');
       return r.json();
@@ -387,7 +387,7 @@ function initDashboard() {
   }
 
   function refresh() {
-    fetch('/admin/api/dashboard').then(function(r) {
+    fetch('/portal/api/dashboard').then(function(r) {
       if (!r.ok) throw new Error('non-ok');
       return r.json();
     }).then(function(d) {
