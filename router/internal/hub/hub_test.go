@@ -112,6 +112,95 @@ func TestConnectedModels(t *testing.T) {
 	}
 }
 
+func TestLeaseReaper_ReclainsExpiredSlot(t *testing.T) {
+	h := New(slog.Default())
+
+	// Connect a client and register it.
+	conn := dialHub(t, h, "mac", "alice", "ct-lease-test")
+	defer conn.Close()
+	time.Sleep(20 * time.Millisecond)
+
+	reg := `{"type":"register","models":[{"name":"llama3"}],"max_concurrent":2}`
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(reg)); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	time.Sleep(30 * time.Millisecond)
+
+	// Find the client ID.
+	h.mu.RLock()
+	var clientID string
+	for id := range h.clients {
+		clientID = id
+	}
+	h.mu.RUnlock()
+	if clientID == "" {
+		t.Fatal("no client registered")
+	}
+
+	// Track a job with an already-expired lease.
+	req := types.InferenceRequest{ID: "req-expired", Model: "llama3"}
+	h.IncrInFlight(clientID)
+	h.mu.Lock()
+	h.jobs[req.ID] = InFlightRecord{
+		ClientID:     clientID,
+		ClientToken:  "ct-lease-test",
+		Req:          req,
+		DispatchedAt: time.Now().Add(-25 * time.Minute),
+		LeaseExpiry:  time.Now().Add(-5 * time.Minute), // already expired
+	}
+	h.mu.Unlock()
+
+	// Verify job is tracked and inflight is 1.
+	h.mu.RLock()
+	_, tracked := h.jobs[req.ID]
+	h.mu.RUnlock()
+	if !tracked {
+		t.Fatal("job should be tracked before reaper")
+	}
+
+	h.mu.RLock()
+	c := h.clients[clientID]
+	h.mu.RUnlock()
+	if c.InFlight() != 1 {
+		t.Fatalf("expected inflight=1 before reaper, got %d", c.InFlight())
+	}
+
+	// Run the reaper directly.
+	h.handleExpiredLeases()
+
+	// Job should be gone and inflight decremented.
+	h.mu.RLock()
+	_, stillTracked := h.jobs[req.ID]
+	h.mu.RUnlock()
+	if stillTracked {
+		t.Error("expired job should be removed by reaper")
+	}
+	if c.InFlight() != 0 {
+		t.Errorf("expected inflight=0 after reaper, got %d", c.InFlight())
+	}
+}
+
+func TestLeaseReaper_IgnoresActiveLeases(t *testing.T) {
+	h := New(slog.Default())
+	req := types.InferenceRequest{ID: "req-active", Model: "llama3"}
+	h.mu.Lock()
+	h.jobs[req.ID] = InFlightRecord{
+		ClientID:    "client-x",
+		Req:         req,
+		LeaseExpiry: time.Now().Add(10 * time.Minute), // not expired
+	}
+	h.mu.Unlock()
+
+	h.handleExpiredLeases()
+
+	h.mu.RLock()
+	_, still := h.jobs[req.ID]
+	h.mu.RUnlock()
+	if !still {
+		t.Error("active lease should not be removed by reaper")
+	}
+}
+
 func TestTrackJob_SetsLeaseFields(t *testing.T) {
 	h := New(slog.Default())
 	req := types.InferenceRequest{ID: "req-lease-1", Model: "llama3"}

@@ -523,6 +523,57 @@ func (h *Hub) ActiveClientCount() int {
 	return len(h.clients)
 }
 
+// handleExpiredLeases scans all tracked jobs and reclaims slots for any whose
+// LeaseExpiry has passed. Called by the lease reaper goroutine; also exposed for
+// testing so tests can trigger it directly without waiting for the ticker.
+func (h *Hub) handleExpiredLeases() {
+	now := time.Now()
+
+	h.mu.Lock()
+	var expired []InFlightRecord
+	for id, rec := range h.jobs {
+		if rec.LeaseExpiry.Before(now) {
+			expired = append(expired, rec)
+			delete(h.jobs, id)
+		}
+	}
+	h.mu.Unlock()
+
+	if len(expired) == 0 {
+		return
+	}
+
+	for _, rec := range expired {
+		h.log.Warn("hub: lease expired, reclaiming slot",
+			"request_id", rec.Req.ID,
+			"client_id", rec.ClientID,
+			"dispatched_at", rec.DispatchedAt,
+		)
+		h.DecrInFlight(rec.ClientID)
+		// Cancel the job on the client (it may still be processing).
+		h.SendToClient(rec.ClientID, types.CancelMsg{
+			Type:      "cancel",
+			RequestID: rec.Req.ID,
+		})
+	}
+
+	if h.OnAvailable != nil {
+		h.OnAvailable()
+	}
+}
+
+// StartLeaseReaper starts a background goroutine that calls handleExpiredLeases
+// every 30 seconds. It runs until the process exits.
+func (h *Hub) StartLeaseReaper() {
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			h.handleExpiredLeases()
+		}
+	}()
+}
+
 // ConnectedCountByToken returns the number of currently connected clients with the given token.
 func (h *Hub) ConnectedCountByToken(token string) int {
 	h.mu.RLock()
