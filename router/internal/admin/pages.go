@@ -47,7 +47,7 @@ type DashboardPage struct {
 	StatsByModel  []StatRow
 	StatsByUser   []StatRow
 	QueueLen      int
-	QueueItems    []QueuedJobRow // only populated for admins
+	QueueItems    []QueuedJobRow // filtered to the requesting user's own items for non-admins
 }
 
 type ClientRow struct {
