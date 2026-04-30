@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
+	"llmesh/pkg/types"
 	"llmesh/router/internal/stats"
 )
 
@@ -113,6 +114,7 @@ type QueuedJobRow struct {
 	EnqueuedAt    string
 	EnqueuedAtISO string // RFC3339, for JS elapsed computation
 	WordCount     int
+	CanCancel     bool // true only for admins
 }
 
 type ClientTokenRow struct {
@@ -159,6 +161,21 @@ func (a *Admin) newBasePage(page string, u User) basePage {
 }
 
 // --- Dashboard ---
+
+// filterQueueForUser returns only the queue items visible to u.
+// Admins see all items; members see only their own.
+func filterQueueForUser(items []types.InferenceRequest, u User) []types.InferenceRequest {
+	if u.Role == "admin" {
+		return items
+	}
+	var out []types.InferenceRequest
+	for _, req := range items {
+		if req.Owner == u.Username {
+			out = append(out, req)
+		}
+	}
+	return out
+}
 
 func (a *Admin) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	u := ctxGetUser(r)
@@ -224,21 +241,21 @@ func (a *Admin) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	if a.queue != nil {
 		snap := a.queue.Snapshot()
-		data.QueueLen = len(snap)
-		if u.Role == "admin" {
-			data.QueueItems = make([]QueuedJobRow, 0, len(snap))
-			for _, req := range snap {
-				data.QueueItems = append(data.QueueItems, QueuedJobRow{
-					ID:            req.ID,
-					Owner:         req.Owner,
-					APIKeyLabel:   req.APIKeyLabel,
-					Model:         req.Model,
-					Priority:      priorityName(int(req.Priority)),
-					EnqueuedAt:    humanTime(req.EnqueuedAt),
-					EnqueuedAtISO: req.EnqueuedAt.UTC().Format(time.RFC3339),
-					WordCount:     req.WordCount,
-				})
-			}
+		visible := filterQueueForUser(snap, u)
+		data.QueueLen = len(snap) // total depth for header badge
+		data.QueueItems = make([]QueuedJobRow, 0, len(visible))
+		for _, req := range visible {
+			data.QueueItems = append(data.QueueItems, QueuedJobRow{
+				ID:            req.ID,
+				Owner:         req.Owner,
+				APIKeyLabel:   req.APIKeyLabel,
+				Model:         req.Model,
+				Priority:      priorityName(int(req.Priority)),
+				EnqueuedAt:    humanTime(req.EnqueuedAt),
+				EnqueuedAtISO: req.EnqueuedAt.UTC().Format(time.RFC3339),
+				WordCount:     req.WordCount,
+				CanCancel:     u.Role == "admin",
+			})
 		}
 	}
 	a.render(w, "dashboard", data)

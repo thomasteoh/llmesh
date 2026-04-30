@@ -102,7 +102,7 @@
   </table>
 </div>
 
-{{if .IsAdmin}}
+{{if or .IsAdmin .QueueItems}}
 <div class="collapsible" style="margin-top:24px;" id="queue-section-wrap">
   <div class="collapsible-header queue-header" data-toggle="queue-section" onclick="toggleSection('queue-section')">
     <span class="toggle-arrow">&#9662;</span>
@@ -125,11 +125,13 @@
               {{if .EnqueuedAtISO}}<span data-since="{{.EnqueuedAtISO}}" title="queued {{.EnqueuedAt}}">—</span>{{else}}{{.EnqueuedAt}}{{end}}
             </td>
             <td>
+              {{if .CanCancel}}
               <form method="POST" action="/portal/queue/cancel" class="form-inline" onsubmit="return confirm('Remove this request from the queue?')">
                 <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
                 <input type="hidden" name="request_id" value="{{.ID}}">
                 <button type="submit" class="btn-danger btn-xs" title="Cancel" aria-label="Cancel queued job">&#x2715;</button>
               </form>
+              {{end}}
             </td>
           </tr>
           {{else}}
