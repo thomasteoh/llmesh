@@ -93,24 +93,26 @@ type ConnectedClientRow struct {
 
 // InFlightJobRow is a single in-flight job for display on the clients page.
 type InFlightJobRow struct {
-	ID          string
-	Owner       string
-	APIKeyLabel string
-	Model       string
-	EnqueuedAt  string
-	WordCount   int
-	CanCancel   bool
+	ID              string
+	Owner           string
+	APIKeyLabel     string
+	Model           string
+	EnqueuedAt      string
+	DispatchedAtISO string // RFC3339, for JS elapsed computation
+	WordCount       int
+	CanCancel       bool
 }
 
 // QueuedJobRow is a single queued (waiting) job for display on the dashboard.
 type QueuedJobRow struct {
-	ID          string
-	Owner       string
-	APIKeyLabel string
-	Model       string
-	Priority    string
-	EnqueuedAt  string
-	WordCount   int
+	ID            string
+	Owner         string
+	APIKeyLabel   string
+	Model         string
+	Priority      string
+	EnqueuedAt    string
+	EnqueuedAtISO string // RFC3339, for JS elapsed computation
+	WordCount     int
 }
 
 type ClientTokenRow struct {
@@ -227,13 +229,14 @@ func (a *Admin) handleDashboard(w http.ResponseWriter, r *http.Request) {
 			data.QueueItems = make([]QueuedJobRow, 0, len(snap))
 			for _, req := range snap {
 				data.QueueItems = append(data.QueueItems, QueuedJobRow{
-					ID:          req.ID,
-					Owner:       req.Owner,
-					APIKeyLabel: req.APIKeyLabel,
-					Model:       req.Model,
-					Priority:    priorityName(int(req.Priority)),
-					EnqueuedAt:  humanTime(req.EnqueuedAt),
-					WordCount:   req.WordCount,
+					ID:            req.ID,
+					Owner:         req.Owner,
+					APIKeyLabel:   req.APIKeyLabel,
+					Model:         req.Model,
+					Priority:      priorityName(int(req.Priority)),
+					EnqueuedAt:    humanTime(req.EnqueuedAt),
+					EnqueuedAtISO: req.EnqueuedAt.UTC().Format(time.RFC3339),
+					WordCount:     req.WordCount,
 				})
 			}
 		}
@@ -355,13 +358,14 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, u User, newToken, form
 				var jobs []InFlightJobRow
 				for _, rec := range a.hub.InFlightJobsByClientID(ci.ID) {
 					jobs = append(jobs, InFlightJobRow{
-						ID:          rec.Req.ID,
-						Owner:       rec.Req.Owner,
-						APIKeyLabel: rec.Req.APIKeyLabel,
-						Model:       rec.Req.Model,
-						EnqueuedAt:  humanTime(rec.Req.EnqueuedAt),
-						WordCount:   rec.Req.WordCount,
-						CanCancel:   isAdmin || rec.Req.Owner == u.Username || isTokenOwner,
+						ID:              rec.Req.ID,
+						Owner:           rec.Req.Owner,
+						APIKeyLabel:     rec.Req.APIKeyLabel,
+						Model:           rec.Req.Model,
+						EnqueuedAt:      humanTime(rec.Req.EnqueuedAt),
+						DispatchedAtISO: rec.DispatchedAt.UTC().Format(time.RFC3339),
+						WordCount:       rec.Req.WordCount,
+						CanCancel:       isAdmin || rec.Req.Owner == u.Username || isTokenOwner,
 					})
 				}
 				row.Connections = append(row.Connections, ConnectedClientRow{
