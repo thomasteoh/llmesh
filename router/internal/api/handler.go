@@ -105,18 +105,21 @@ func (h *Handler) enqueue(
 ) {
 	key := ExtractBearer(r)
 	if key == "" || !h.Keys.ValidAPIKey(key) {
+		apiLogger().Error("api: unauthorized", "ip", clientIP(r), "key_prefix", maskKey(key), "path", r.URL.Path)
 		unauthorised(w)
 		return
 	}
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
+		apiLogger().Warn("api: read body failed", "error", err, "ip", clientIP(r))
 		internalError(w)
 		return
 	}
 
 	req, err := inbound(body)
 	if err != nil {
+		apiLogger().Warn("api: bad request", "error", err, "model", sanitizeModel(req), "ip", clientIP(r))
 		b, _ := json.Marshal(err.Error())
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
@@ -147,6 +150,7 @@ func (h *Handler) enqueue(
 			}
 		}
 		if !valid {
+			apiLogger().Warn("api: model not found", "model", req.Model, "available_models", h.Models.ActiveModels(), "ip", clientIP(r))
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
 			available := h.Models.ActiveModels()
@@ -169,6 +173,8 @@ func (h *Handler) enqueue(
 	req.WordCount = messageWordCount(req)
 	h.requestCount.Add(1)
 	req.EnqueuedAt = time.Now()
+
+	apiLogger().Info("api: request enqueued", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "key_label", req.APIKeyLabel, "priority", priorityName(int(req.Priority)), "stream", req.Stream, "word_count", req.WordCount, "ip", clientIP(r))
 
 	ch := h.Correlation.Create(req.ID)
 	defer h.Correlation.Delete(req.ID)
@@ -248,6 +254,8 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 					flusher.Flush()
 				}
 				if chunk.Done {
+					elapsed := time.Since(req.EnqueuedAt)
+					apiLogger().Info("api: request completed", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "elapsed_ms", elapsed.Milliseconds(), "stream", true, "finish_reason", chunk.FinishReason)
 					h.recordStats(req, chunk.Usage)
 					for _, l := range translate.AnthropicSSEDone(chunk.FinishReason) {
 						fmt.Fprintf(w, "%s\n\n", l)
@@ -261,6 +269,8 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 					flusher.Flush()
 				}
 				if chunk.Done {
+					elapsed := time.Since(req.EnqueuedAt)
+					apiLogger().Info("api: request completed", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "elapsed_ms", elapsed.Milliseconds(), "stream", true, "finish_reason", chunk.FinishReason)
 					h.recordStats(req, chunk.Usage)
 					fmt.Fprintf(w, "%s\n\n", translate.OpenAIResponsesSSEDone())
 					flusher.Flush()
@@ -272,6 +282,8 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 					flusher.Flush()
 				}
 				if chunk.Done {
+					elapsed := time.Since(req.EnqueuedAt)
+					apiLogger().Info("api: request completed", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "elapsed_ms", elapsed.Milliseconds(), "stream", true, "finish_reason", chunk.FinishReason)
 					h.recordStats(req, chunk.Usage)
 					// Emit final chunk with finish_reason and usage before [DONE]
 					fmt.Fprintf(w, "%s\n\n", translate.OpenAISSEChunk(req.ID, chunk))
@@ -349,7 +361,9 @@ func (h *Handler) batchResponse(w http.ResponseWriter, r *http.Request, req *typ
 }
 
 func (h *Handler) writeBatch(w http.ResponseWriter, req *types.InferenceRequest, content, finishReason string, toolCalls json.RawMessage, usage *types.UsageInfo) {
+	elapsed := time.Since(req.EnqueuedAt)
 	h.recordStats(req, usage)
+	apiLogger().Info("api: request completed", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "elapsed_ms", elapsed.Milliseconds(), "stream", false, "finish_reason", finishReason)
 	w.Header().Set("Content-Type", "application/json")
 	var resp map[string]any
 	switch req.SourceFmt {
@@ -470,5 +484,50 @@ func (h *Handler) ModelList() http.HandlerFunc {
 			"object": "list",
 			"data":   entries,
 		})
+	}
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+// clientIP extracts the client IP from the request, checking X-Forwarded-For first.
+func clientIP(r *http.Request) string {
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		return strings.Split(fwd, ",")[0]
+	}
+	if ip := r.RemoteAddr; ip != "" {
+		// Strip port
+		if idx := strings.LastIndex(ip, ":"); idx != -1 {
+			return ip[:idx]
+		}
+		return ip
+	}
+	return "-"
+}
+
+// maskKey returns the first 8 chars of a key for log-safe identification.
+func maskKey(key string) string {
+	if len(key) <= 8 {
+		return "****" + key
+	}
+	return key[:8] + "****"
+}
+
+// sanitizeModel returns a safe string for logging before parsing succeeds.
+func sanitizeModel(req *types.InferenceRequest) string {
+	if req == nil {
+		return "<nil>"
+	}
+	return req.Model
+}
+
+// priorityName converts a Priority int to a display string.
+func priorityName(p int) string {
+	switch p {
+	case 0:
+		return "high"
+	case 2:
+		return "low"
+	default:
+		return "normal"
 	}
 }
