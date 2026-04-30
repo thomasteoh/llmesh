@@ -223,3 +223,88 @@ func TestTrackJob_SetsLeaseFields(t *testing.T) {
 		t.Errorf("LeaseExpiry = %v, want %v", rec.LeaseExpiry, expectedExpiry)
 	}
 }
+
+func TestDispatch_Release_CallsOnRelease(t *testing.T) {
+	h := New(slog.Default())
+
+	conn := dialHub(t, h, "mac", "alice", "ct-release-test")
+	defer conn.Close()
+	time.Sleep(20 * time.Millisecond)
+
+	reg := `{"type":"register","models":[{"name":"llama3"}],"max_concurrent":2}`
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(reg)); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	time.Sleep(30 * time.Millisecond)
+
+	h.mu.RLock()
+	var clientID string
+	for id := range h.clients {
+		clientID = id
+	}
+	h.mu.RUnlock()
+
+	// Track a job and set inflight.
+	req := types.InferenceRequest{ID: "req-release-1", Model: "llama3", Owner: "alice"}
+	h.IncrInFlight(clientID)
+	h.TrackJob(clientID, req)
+
+	// Wire OnRelease.
+	released := make(chan types.InferenceRequest, 1)
+	h.OnRelease = func(r types.InferenceRequest) {
+		released <- r
+	}
+
+	// Send a release message from the client.
+	msg := `{"type":"release","request_id":"req-release-1","reason":"model_failed"}`
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(msg)); err != nil {
+		t.Fatalf("send release: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	// OnRelease must have been called with the original request.
+	select {
+	case got := <-released:
+		if got.ID != "req-release-1" {
+			t.Errorf("released req ID = %q, want req-release-1", got.ID)
+		}
+	default:
+		t.Error("OnRelease was not called")
+	}
+
+	// Job must be untracked.
+	h.mu.RLock()
+	_, stillTracked := h.jobs["req-release-1"]
+	h.mu.RUnlock()
+	if stillTracked {
+		t.Error("job should be untracked after release")
+	}
+
+	// InFlight must be decremented.
+	h.mu.RLock()
+	client := h.clients[clientID]
+	h.mu.RUnlock()
+	if client.InFlight() != 0 {
+		t.Errorf("InFlight = %d, want 0 after release", client.InFlight())
+	}
+}
+
+func TestDispatch_Release_UnknownID_IsIgnored(t *testing.T) {
+	h := New(slog.Default())
+	called := false
+	h.OnRelease = func(r types.InferenceRequest) { called = true }
+
+	conn := dialHub(t, h, "mac", "alice", "ct-release-unknown")
+	defer conn.Close()
+	time.Sleep(20 * time.Millisecond)
+
+	msg := `{"type":"release","request_id":"does-not-exist","reason":"model_failed"}`
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(msg)); err != nil {
+		t.Fatalf("send release: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	if called {
+		t.Error("OnRelease should not be called for unknown request ID")
+	}
+}

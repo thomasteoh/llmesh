@@ -80,6 +80,9 @@ type Hub struct {
 	OnError func(msg types.ErrorMsg)
 	// OnAvailable is called when a client becomes available (registered or finished a job).
 	OnAvailable func()
+	// OnRelease is called when a client releases a job back to the queue.
+	// The caller should push the request back to the queue and wake the scheduler.
+	OnRelease func(req types.InferenceRequest)
 }
 
 // New creates and returns a new Hub.
@@ -234,6 +237,31 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 		}
 		if h.OnError != nil {
 			h.OnError(msg)
+		}
+
+	case "release":
+		var msg types.ReleaseMsg
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return
+		}
+		h.mu.RLock()
+		rec, ok := h.jobs[msg.RequestID]
+		h.mu.RUnlock()
+		if !ok {
+			return // already completed, expired, or unknown
+		}
+		client.DecrInFlight()
+		h.untrackJob(msg.RequestID)
+		h.log.Info("hub: client released job",
+			"request_id", msg.RequestID,
+			"client_id", client.ID,
+			"reason", msg.Reason,
+		)
+		if h.OnRelease != nil {
+			h.OnRelease(rec.Req)
+		}
+		if h.OnAvailable != nil {
+			h.OnAvailable()
 		}
 	}
 }
