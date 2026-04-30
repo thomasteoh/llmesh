@@ -165,7 +165,7 @@ func (a *Admin) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Value:    sid,
 		Path:     "/portal",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   r.TLS != nil, // only Secure over HTTPS; allow over HTTP for local dev
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(sessionTTL.Seconds()),
 	})
