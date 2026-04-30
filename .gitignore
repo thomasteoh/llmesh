@@ -8,3 +8,4 @@ router/state.json
 
 vendor/
 .superpowers/
+.worktrees/
