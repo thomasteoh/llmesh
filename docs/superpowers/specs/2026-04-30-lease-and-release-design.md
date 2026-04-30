@@ -1,22 +1,27 @@
-# llmesh — Lease & Release Design
+# llmesh — Lease, Release & Request Visibility Design
 
 ## Overview
 
-Three changes:
+Five changes in this spec:
 
-1. **Bug fix** — logs tab in the admin portal shows no entries (stale URL)
-2. **Job leases** — requests dispatched to a client are locked with a time-bound lease; the router reclaims the slot if the lease expires
-3. **Client release** — clients can hand a job back to the router queue rather than failing it; the router re-queues for another client
+1. **Bug fixes** — two stale `/admin/` URLs in `admin.js` break logs tab and dashboard polling
+2. **Job leases** — dispatched requests are time-bounded; the router reclaims the slot on expiry
+3. **Client release** — clients return failed jobs to the queue instead of failing the caller
+4. **Elapsed time display** — show "running Xm Ys" on in-flight jobs, "waiting Xm Ys" on queued jobs
+5. **Queue visibility for non-admins** — users see their own queued and in-flight requests
 
 ---
 
-## 1. Bug Fix: Logs Tab
+## 1. Bug Fixes
 
-**Root cause:** `router/internal/admin/static/admin.js:157` fetches `/admin/api/logs?...`. The portal was renamed from `/admin` to `/portal` (commit `02523c2`), but this fetch URL was not updated. The backward-compat redirect at `/admin/` → `/portal/` is registered in the HTTP mux but applies only to full page navigations, not to fetch requests that need JSON responses.
+Two fetch URLs in `router/internal/admin/static/admin.js` were not updated when the portal moved from `/admin` to `/portal`.
 
-**Fix:** Change the fetch URL to `/portal/api/logs?...`.
+| Line | Current (broken) | Fixed |
+|------|-----------------|-------|
+| 157 | `/admin/api/logs?...` | `/portal/api/logs?...` |
+| 390 | `/admin/api/dashboard` | `/portal/api/dashboard` |
 
-**File:** `router/internal/admin/static/admin.js` — one line.
+The backward-compat redirect (`/admin/` → `/portal/`) is registered in the HTTP mux but does not apply to JSON API fetch requests.
 
 ---
 
@@ -24,50 +29,47 @@ Three changes:
 
 ### Purpose
 
-When the scheduler dispatches a job to a client, the client's in-flight slot is incremented and the job is tracked in `hub.jobs`. If the client is still WS-connected but stops processing (llama.cpp hung, keepalive stopped), the slot stays occupied indefinitely — blocking new work from using that client.
-
-A lease bounds how long a dispatched job can remain unresolved. After the lease expires, the router reclaims the slot, sends a cancel to the client, and wakes the scheduler.
+When the scheduler dispatches a job, the client's in-flight counter is incremented and the job is tracked in `hub.jobs`. If the client is still WS-connected but stops processing (llama.cpp hung, keepalive goroutine died), the slot stays occupied indefinitely. A lease bounds how long a dispatched job can remain unresolved; on expiry, the router reclaims the slot, sends a cancel to the client, and wakes the scheduler.
 
 ### Lease duration
 
-```
+```go
 const LeaseDuration = 20 * time.Minute
 ```
 
-Covers the worst-case router HTTP timeout:
-- Stream: 15 min TTFT + 5 min activity = 20 min
-- Batch: 10 min
+Covers the worst-case router HTTP timeout: stream 15 min TTFT + 5 min activity = 20 min; batch 10 min. The HTTP handler's own timer fires at the same wall-clock time, so lease expiry is cleanup only — the caller has already received a timeout error. The router does **not** re-queue on expiry.
 
-The HTTP handler's own timer fires at the same time, so any lease expiry is cleanup only — the caller has already received a timeout error. The router does **not** re-queue on expiry.
+### `InFlightRecord` changes
 
-### Changes
+Add two fields to `hub.InFlightRecord`:
 
-**`router/internal/hub/hub.go`**
-
-Add to `InFlightRecord`:
 ```go
-LeaseExpiry time.Time
+DispatchedAt time.Time  // set in TrackJob; used for elapsed-time display and lease
+LeaseExpiry  time.Time  // = DispatchedAt + LeaseDuration
 ```
 
-Set in `TrackJob`:
+`TrackJob` sets both:
+
 ```go
+now := time.Now()
 h.jobs[req.ID] = InFlightRecord{
-    ClientID:    clientID,
-    ClientToken: token,
-    Req:         req,
-    LeaseExpiry: time.Now().Add(LeaseDuration),
+    ClientID:     clientID,
+    ClientToken:  token,
+    Req:          req,
+    DispatchedAt: now,
+    LeaseExpiry:  now.Add(LeaseDuration),
 }
 ```
 
-Add `StartLeaseReaper()` method — background goroutine, 30 s ticker:
-1. Lock `h.mu`, collect expired records (those with `LeaseExpiry.Before(now)`)
-2. For each expired record:
-   - Delete from `h.jobs`
-   - Decrement `inFlight` on the client (if still connected)
-   - Send a `CancelMsg` to the client
+### Lease reaper
+
+`StartLeaseReaper()` — background goroutine, 30 s ticker:
+
+1. Lock `h.mu`, collect records where `rec.LeaseExpiry.Before(now)`
+2. For each expired record: delete from `h.jobs`, decrement inflight on the client (if still connected), send `CancelMsg` to the client
 3. If any leases expired, call `h.OnAvailable()` to wake the scheduler
 
-No re-queue on expiry. The HTTP handler's timeout fires at the same wall-clock time; re-queuing would dispatch to a new client with no one waiting for the response.
+No re-queue on expiry. The HTTP handler has already timed out; re-queuing would dispatch work with no waiter.
 
 ---
 
@@ -75,7 +77,7 @@ No re-queue on expiry. The HTTP handler's timeout fires at the same wall-clock t
 
 ### Purpose
 
-When a client's llama.cpp call fails (error from inference, timeout per existing keepalive rules), the client currently sends `ErrorMsg` — which fails the request and returns an error to the caller. With release, the client instead hands the job back; the router re-queues it and another client can pick it up.
+When a client's `llmClient.Infer` call fails (model error, timeout), the client currently sends `ErrorMsg` which fails the request immediately. With release, the client returns the job to the queue and another client can pick it up.
 
 ### New type (`pkg/types/types.go`)
 
@@ -97,19 +99,17 @@ OnRelease func(req types.InferenceRequest)
 ```
 
 **`dispatch` new case `"release"`:**
-```
-1. Parse ReleaseMsg
-2. Look up InFlightRecord by RequestID
-3. If not found: ignore (already completed or expired)
-4. untrackJob(requestID)
-5. DecrInFlight(clientID)
-6. Call h.OnRelease(rec.Req)   // re-queue
-7. Call h.OnAvailable()        // wake scheduler
-```
+
+1. Parse `ReleaseMsg`
+2. Look up `InFlightRecord` by `RequestID`; if not found, ignore (already completed or lease expired)
+3. `untrackJob(requestID)`
+4. `DecrInFlight(clientID)`
+5. Call `h.OnRelease(rec.Req)` — re-queue
+6. Call `h.OnAvailable()` — wake scheduler
 
 ### Router: wiring (`router/cmd/router/main.go`)
 
-After scheduler creation, add:
+After scheduler creation:
 
 ```go
 h.OnRelease = func(req types.InferenceRequest) {
@@ -121,13 +121,83 @@ h.StartLeaseReaper()
 
 ### Client: worker changes (`client/internal/worker/worker.go`)
 
-Current behaviour: `llmClient.Infer` error → `ErrorMsg`.
+| Failure path | Before | After |
+|---|---|---|
+| `llmClient.Infer` returns error | `ErrorMsg` | `ReleaseMsg{Reason: "model_failed"}` |
+| No endpoint found (pre-inference) | `ErrorMsg` | `ErrorMsg` (unchanged — unrecoverable) |
 
-New behaviour:
-- `llmClient.Infer` error → `ReleaseMsg{Reason: "model_failed"}` (re-queue)
-- No endpoint found (pre-inference) → keep `ErrorMsg` (unrecoverable; no other client can fix it)
+---
 
-The keepalive goroutine (60 s ticker, sends empty chunks) already keeps the router's activity timer alive during long prompt evaluation. No changes to the keepalive are needed.
+## 4. Elapsed Time Display
+
+### Purpose
+
+Show how long each request has been running (in-flight) or waiting (queued), so operators can spot stuck or slow requests at a glance.
+
+### Data changes
+
+**`hub.InFlightRecord`** already gains `DispatchedAt` from section 2.
+
+**`admin.InFlightJobRow`** — add:
+```go
+DispatchedAtISO string  // RFC3339, for JS elapsed computation
+```
+
+**`admin.QueuedJobRow`** — add:
+```go
+EnqueuedAtISO string  // RFC3339, for JS elapsed computation
+```
+
+Populated in `pages.go` alongside the existing `EnqueuedAt`/`DispatchedAt` humanTime fields:
+```go
+EnqueuedAtISO:  req.EnqueuedAt.UTC().Format(time.RFC3339),
+DispatchedAtISO: rec.DispatchedAt.UTC().Format(time.RFC3339),
+```
+
+### Template changes
+
+**`clients.html`** — in `.job-row`, add after the existing `job-time` span:
+```html
+<span class="job-elapsed muted" data-since="{{.DispatchedAtISO}}">—</span>
+```
+
+**`dashboard.html`** — in the queue table row, add an "Elapsed" column:
+```html
+<span class="job-elapsed muted" data-since="{{.EnqueuedAtISO}}">—</span>
+```
+
+### JS changes (`admin.js`)
+
+Add a shared `formatElapsed(isoString)` helper and a `setInterval(updateElapsed, 1000)` that finds all `[data-since]` elements and sets their `textContent` to "Xm Ys" or "< 1s".
+
+The format: `2m 14s` (minutes + seconds). No hours display needed (requests time out within 20 min).
+
+---
+
+## 5. Queue Visibility for Non-Admins
+
+### Scoping rules
+
+| Role | Queue (waiting) | In-flight (running) |
+|------|----------------|---------------------|
+| Admin | All requests | All requests on all clients |
+| Non-admin | Own submitted requests | All requests on own client tokens |
+
+In-flight visibility on non-owned clients (jobs submitted by the user but running on another user's client) is out of scope — this edge case is rare in practice and the queue view covers the "where is my request?" question.
+
+### Changes
+
+**`pages.go` — `renderDashboard`:**
+- Remove the `u.Role == "admin"` guard on `QueueItems` population
+- For non-admins, filter: `if u.Role != "admin" && req.Owner != u.Username { continue }`
+- Keep the `cancel` button gated on `u.Role == "admin"` (non-admins can't cancel others' jobs from the queue)
+
+**`dashboard.html`:**
+- Remove `{{if .IsAdmin}}` outer guard on the queue section
+- Gate the cancel button on `{{if .CanCancel}}` (add `CanCancel bool` to `QueuedJobRow`)
+
+**`pages.go` — `QueuedJobRow`:**
+- Add `CanCancel bool` (set to `u.Role == "admin"`)
 
 ---
 
@@ -135,7 +205,7 @@ The keepalive goroutine (60 s ticker, sends empty chunks) already keeps the rout
 
 ```
 Scheduler dispatches job
-  → hub.TrackJob sets LeaseExpiry = now + 20min
+  → hub.TrackJob sets DispatchedAt = now, LeaseExpiry = now + 20min
   → client.InFlight++
 
 Normal completion (chunk done=true):
@@ -161,9 +231,12 @@ Client disconnect:
 
 | File | Change |
 |------|--------|
-| `router/internal/admin/static/admin.js` | Fix fetch URL `/admin/` → `/portal/` |
+| `router/internal/admin/static/admin.js` | Fix 2 stale `/admin/` URLs; add `formatElapsed` + `setInterval` |
 | `pkg/types/types.go` | Add `ReleaseMsg` |
-| `router/internal/hub/hub.go` | `LeaseDuration` const, `LeaseExpiry` on `InFlightRecord`, `OnRelease` callback, `dispatch` "release" case, `StartLeaseReaper` |
+| `router/internal/hub/hub.go` | `LeaseDuration`, `DispatchedAt`/`LeaseExpiry` on `InFlightRecord`, `OnRelease` callback, `dispatch` "release" case, `StartLeaseReaper` |
+| `router/internal/admin/pages.go` | Add `DispatchedAtISO`/`EnqueuedAtISO` to rows; queue visible to non-admins (filtered); add `CanCancel` to `QueuedJobRow` |
+| `router/internal/admin/templates/clients.html` | Add `data-since` span to job rows |
+| `router/internal/admin/templates/dashboard.html` | Add `data-since` span, remove admin gate on queue section, gate cancel on `CanCancel` |
 | `router/cmd/router/main.go` | Wire `h.OnRelease`, call `h.StartLeaseReaper()` |
 | `client/internal/worker/worker.go` | Send `ReleaseMsg` on `Infer` error |
 
@@ -171,6 +244,7 @@ Client disconnect:
 
 ## Out of scope
 
-- Retry limits per request (re-queue loops until HTTP timeout)
+- Retry limits per request (re-queue loops until HTTP timeout fires)
 - Excluding the releasing client from re-queue candidates
 - Persisting lease state across restarts
+- In-flight visibility for own jobs running on another user's client
