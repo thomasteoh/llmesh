@@ -31,8 +31,8 @@ func configWith(model, endpoint string) *clientPkg.Config {
 	}
 }
 
-func TestHandle_InferError_SendsReleaseMsg(t *testing.T) {
-	// llama.cpp returns 500 → Infer fails → worker must send ReleaseMsg.
+func TestHandle_InferError_SendsErrorMsg(t *testing.T) {
+	// llama.cpp returns 500 → Infer fails → worker must send ErrorMsg with the error text.
 	srv := fakeLlamaCpp(t, 500, `{"error":"model overloaded"}`)
 	cfg := configWith("llama3", srv.URL)
 
@@ -55,20 +55,20 @@ func TestHandle_InferError_SendsReleaseMsg(t *testing.T) {
 	if len(sent) == 0 {
 		t.Fatal("expected at least one message sent")
 	}
-	// Last message should be a ReleaseMsg.
+	// Last message should be an ErrorMsg carrying the inference error.
 	data, _ := json.Marshal(sent[len(sent)-1])
-	var rel types.ReleaseMsg
-	if err := json.Unmarshal(data, &rel); err != nil {
+	var errMsg types.ErrorMsg
+	if err := json.Unmarshal(data, &errMsg); err != nil {
 		t.Fatalf("last message is not JSON: %v", err)
 	}
-	if rel.Type != "release" {
-		t.Errorf("expected type=release, got %q", rel.Type)
+	if errMsg.Type != "error" {
+		t.Errorf("expected type=error, got %q", errMsg.Type)
 	}
-	if rel.RequestID != "req-worker-1" {
-		t.Errorf("expected request_id=req-worker-1, got %q", rel.RequestID)
+	if errMsg.RequestID != "req-worker-1" {
+		t.Errorf("expected request_id=req-worker-1, got %q", errMsg.RequestID)
 	}
-	if rel.Reason != "model_failed" {
-		t.Errorf("expected reason=model_failed, got %q", rel.Reason)
+	if errMsg.Message == "" {
+		t.Error("expected non-empty error message")
 	}
 }
 

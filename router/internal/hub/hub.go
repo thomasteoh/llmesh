@@ -19,6 +19,11 @@ import (
 // timeout: 15 min TTFT + 5 min activity = 20 min.
 const LeaseDuration = 20 * time.Minute
 
+// maxAttempts is the total number of times a request may be dispatched to a
+// client before being failed back to the caller. Counts the initial attempt
+// plus any retries triggered by client errors or disconnects.
+const maxAttempts = 3
+
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
@@ -136,21 +141,37 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token
 	close(client.send)
 	h.log.Info("hub: client disconnected", "id", client.ID)
 
-	// Immediately fail any jobs that were in-flight when the client disconnected.
+	// Immediately fail (or retry) any jobs that were in-flight when the client disconnected.
 	// Without this the caller would wait for the router's activity timer (2 min).
 	for _, rec := range orphaned {
-		h.untrackJob(rec.Req.ID)
+		if !h.untrackJob(rec.Req.ID) {
+			continue // lease reaper already handled this job
+		}
 		client.DecrInFlight()
-		h.log.Warn("hub: failing orphaned job on disconnect", "request_id", rec.Req.ID, "client_id", client.ID)
-		if h.OnError != nil {
-			h.OnError(types.ErrorMsg{
-				Type:      "error",
-				RequestID: rec.Req.ID,
-				Message:   "client disconnected during inference",
-			})
+		req := rec.Req
+		req.Attempts++
+		if req.Attempts < maxAttempts && h.OnRelease != nil {
+			h.log.Warn("hub: client disconnected during inference, retrying",
+				"request_id", req.ID, "client_id", client.ID,
+				"attempt", req.Attempts, "max_attempts", maxAttempts)
+			h.OnRelease(req)
+		} else {
+			h.log.Warn("hub: failing orphaned job on disconnect",
+				"request_id", req.ID, "client_id", client.ID,
+				"attempt", req.Attempts, "max_attempts", maxAttempts)
+			if h.OnError != nil {
+				h.OnError(types.ErrorMsg{
+					Type:      "error",
+					RequestID: req.ID,
+					Message:   "client disconnected during inference",
+				})
+			}
 		}
 	}
 
+	// OnAvailable signals that this client's slots are free; the scheduler
+	// will also be woken by any OnRelease calls above (via sched.Wake), but
+	// this covers the case where all orphaned jobs were already expired.
 	if h.OnAvailable != nil {
 		h.OnAvailable()
 	}
@@ -215,10 +236,11 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 			return
 		}
 		if msg.Done {
-			client.DecrInFlight()
-			h.untrackJob(msg.RequestID)
-			if h.OnAvailable != nil {
-				h.OnAvailable()
+			if h.untrackJob(msg.RequestID) {
+				client.DecrInFlight()
+				if h.OnAvailable != nil {
+					h.OnAvailable()
+				}
 			}
 		}
 		if h.OnChunk != nil {
@@ -230,10 +252,26 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return
 		}
-		client.DecrInFlight()
-		h.untrackJob(msg.RequestID)
-		if h.OnAvailable != nil {
-			h.OnAvailable()
+		h.mu.RLock()
+		rec, hasRec := h.jobs[msg.RequestID]
+		h.mu.RUnlock()
+		if h.untrackJob(msg.RequestID) {
+			client.DecrInFlight()
+			if h.OnAvailable != nil {
+				h.OnAvailable()
+			}
+		}
+		if hasRec {
+			req := rec.Req
+			req.Attempts++
+			if req.Attempts < maxAttempts && h.OnRelease != nil {
+				h.log.Warn("hub: client inference error, retrying",
+					"request_id", req.ID, "client_id", client.ID,
+					"message", msg.Message,
+					"attempt", req.Attempts, "max_attempts", maxAttempts)
+				h.OnRelease(req)
+				return
+			}
 		}
 		if h.OnError != nil {
 			h.OnError(msg)
@@ -413,11 +451,15 @@ func (h *Hub) TrackJob(clientID string, req types.InferenceRequest) {
 	}
 }
 
-// untrackJob removes the job record for requestID. Called internally when a job completes.
-func (h *Hub) untrackJob(requestID string) {
+// untrackJob removes the job record for requestID. Returns true if the record
+// existed (and was deleted), false if it was already gone (e.g. lease reaper
+// beat us to it). Callers must only DecrInFlight when this returns true.
+func (h *Hub) untrackJob(requestID string) bool {
 	h.mu.Lock()
+	_, existed := h.jobs[requestID]
 	delete(h.jobs, requestID)
 	h.mu.Unlock()
+	return existed
 }
 
 // LookupInFlightJob returns the in-flight record for requestID, if any.
