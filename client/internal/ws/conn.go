@@ -42,14 +42,24 @@ func New(cfg *clientPkg.Config, version string) *Conn {
 	}
 }
 
-// Run connects to the router and reconnects on disconnect. Blocks forever.
-func (c *Conn) Run() {
+// Run connects to the router and reconnects on disconnect. Blocks until ctx is cancelled.
+func (c *Conn) Run(ctx context.Context) {
 	backoff := time.Second
 	for {
-		err := c.connect()
+		if ctx.Err() != nil {
+			return
+		}
+		err := c.connect(ctx)
+		if ctx.Err() != nil {
+			return // graceful shutdown completed
+		}
 		if err != nil {
 			log.Error("ws: connect error", "error", err, "backoff", backoff.String())
-			time.Sleep(backoff)
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return
+			}
 			if backoff < 60*time.Second {
 				backoff *= 2
 			}
@@ -60,7 +70,7 @@ func (c *Conn) Run() {
 	}
 }
 
-func (c *Conn) connect() error {
+func (c *Conn) connect(outerCtx context.Context) error {
 	header := map[string][]string{
 		"Authorization": {"Bearer " + c.cfg.RouterToken},
 	}
@@ -69,15 +79,16 @@ func (c *Conn) connect() error {
 		return err
 	}
 
-	// Create a context cancelled when this connection closes
-	ctx, cancel := context.WithCancel(context.Background())
+	// connCtx is cancelled when this connection closes or graceful shutdown completes.
+	// Intentionally not derived from outerCtx so we control when job goroutines are cancelled.
+	connCtx, connCancel := context.WithCancel(context.Background())
 
 	c.mu.Lock()
 	c.ws = conn
 	c.mu.Unlock()
 
 	defer func() {
-		cancel()
+		connCancel()
 		conn.Close()
 		c.mu.Lock()
 		c.ws = nil
@@ -107,9 +118,40 @@ func (c *Conn) connect() error {
 				if err := ws.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
 					return
 				}
-			case <-ctx.Done():
+			case <-connCtx.Done():
 				return
 			}
+		}
+	}()
+
+	// Graceful shutdown watcher: on SIGTERM, notify the router about in-flight jobs
+	// before cancelling job contexts and closing the connection.
+	go func() {
+		select {
+		case <-outerCtx.Done():
+			log.Info("ws: shutdown signal received, notifying router of in-flight jobs")
+			c.cancelsMu.Lock()
+			ids := make([]string, 0, len(c.cancels))
+			for id := range c.cancels {
+				ids = append(ids, id)
+			}
+			c.cancelsMu.Unlock()
+			for _, id := range ids {
+				_ = c.send(types.ReleaseMsg{
+					Type:      "release",
+					RequestID: id,
+					Reason:    "client_shutdown",
+				})
+			}
+			// Cancel job goroutines, then send WS close so the read loop exits.
+			connCancel()
+			c.mu.Lock()
+			if ws := c.ws; ws != nil {
+				ws.WriteMessage(websocket.CloseMessage,
+					websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+			}
+			c.mu.Unlock()
+		case <-connCtx.Done():
 		}
 	}()
 
@@ -117,7 +159,7 @@ func (c *Conn) connect() error {
 	models := make([]types.ModelInfo, 0, len(c.cfg.Models))
 	for _, m := range c.cfg.Models {
 		lc := llamacpp.New(c.cfg.EndpointFor(m.Name))
-		ctxSize := lc.ProbeContextSize(ctx)
+		ctxSize := lc.ProbeContextSize(connCtx)
 		models = append(models, types.ModelInfo{Name: m.Name, ContextSize: ctxSize})
 		if ctxSize > 0 {
 			log.Info("ws: model context_size", "model", m.Name, "context_size", ctxSize)
@@ -137,6 +179,9 @@ func (c *Conn) connect() error {
 	for {
 		_, data, err := conn.ReadMessage()
 		if err != nil {
+			if outerCtx.Err() != nil {
+				return nil // graceful shutdown — not a connection error
+			}
 			return err
 		}
 		conn.SetReadDeadline(time.Now().Add(pongWait))
@@ -154,7 +199,7 @@ func (c *Conn) connect() error {
 				continue
 			}
 			c.sem <- struct{}{} // acquire slot
-			jobCtx, jobCancel := context.WithCancel(ctx)
+			jobCtx, jobCancel := context.WithCancel(connCtx)
 			c.cancelsMu.Lock()
 			c.cancels[job.Request.ID] = jobCancel
 			c.cancelsMu.Unlock()

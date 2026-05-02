@@ -55,6 +55,7 @@ type InferenceRequest struct {
 	APIKeyLabel string          `json:"api_key_label,omitempty"` // "owner/label" of the key used
 	WordCount   int             `json:"word_count,omitempty"`    // approximate word count across all messages
 	EnqueuedAt  time.Time       `json:"enqueued_at"`
+	Attempts    int             `json:"attempts,omitempty"` // number of times this request has errored and been retried
 }
 
 // --- WebSocket message types ---

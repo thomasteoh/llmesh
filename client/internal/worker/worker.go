@@ -75,14 +75,12 @@ func Handle(ctx context.Context, job types.JobMsg, cfg *clientPkg.Config, send S
 			}
 		}
 	})
-	if err != nil {
-		if ctx.Err() == nil {
-			log.Error("worker: infer error", "request_id", req.ID, "error", err)
-		}
-		_ = send(types.ReleaseMsg{
-			Type:      "release",
+	if err != nil && ctx.Err() == nil {
+		log.Error("worker: infer error", "request_id", req.ID, "error", err)
+		_ = send(types.ErrorMsg{
+			Type:      "error",
 			RequestID: req.ID,
-			Reason:    "model_failed",
+			Message:   err.Error(),
 		})
 	}
 }

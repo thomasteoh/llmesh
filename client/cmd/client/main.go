@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
 
 	clientPkg "llmesh/client"
 	"llmesh/client/internal/ws"
@@ -54,6 +57,10 @@ Config file fields (YAML):
 
 	log.Info("llm-client starting", "router", cfg.RouterURL, "models", len(cfg.Models), "max_concurrent", cfg.MaxConcurrent)
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+	defer stop()
+
 	conn := ws.New(cfg, version)
-	conn.Run() // blocks forever, reconnects on disconnect
+	conn.Run(ctx) // blocks until ctx cancelled, reconnects on disconnect
+	log.Info("llm-client: shut down")
 }
