@@ -144,7 +144,9 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token
 	// Immediately fail (or retry) any jobs that were in-flight when the client disconnected.
 	// Without this the caller would wait for the router's activity timer (2 min).
 	for _, rec := range orphaned {
-		h.untrackJob(rec.Req.ID)
+		if !h.untrackJob(rec.Req.ID) {
+			continue // lease reaper already handled this job
+		}
 		client.DecrInFlight()
 		req := rec.Req
 		req.Attempts++
@@ -167,6 +169,9 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token
 		}
 	}
 
+	// OnAvailable signals that this client's slots are free; the scheduler
+	// will also be woken by any OnRelease calls above (via sched.Wake), but
+	// this covers the case where all orphaned jobs were already expired.
 	if h.OnAvailable != nil {
 		h.OnAvailable()
 	}
@@ -231,10 +236,11 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 			return
 		}
 		if msg.Done {
-			client.DecrInFlight()
-			h.untrackJob(msg.RequestID)
-			if h.OnAvailable != nil {
-				h.OnAvailable()
+			if h.untrackJob(msg.RequestID) {
+				client.DecrInFlight()
+				if h.OnAvailable != nil {
+					h.OnAvailable()
+				}
 			}
 		}
 		if h.OnChunk != nil {
@@ -249,10 +255,11 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 		h.mu.RLock()
 		rec, hasRec := h.jobs[msg.RequestID]
 		h.mu.RUnlock()
-		client.DecrInFlight()
-		h.untrackJob(msg.RequestID)
-		if h.OnAvailable != nil {
-			h.OnAvailable()
+		if h.untrackJob(msg.RequestID) {
+			client.DecrInFlight()
+			if h.OnAvailable != nil {
+				h.OnAvailable()
+			}
 		}
 		if hasRec {
 			req := rec.Req
@@ -444,11 +451,15 @@ func (h *Hub) TrackJob(clientID string, req types.InferenceRequest) {
 	}
 }
 
-// untrackJob removes the job record for requestID. Called internally when a job completes.
-func (h *Hub) untrackJob(requestID string) {
+// untrackJob removes the job record for requestID. Returns true if the record
+// existed (and was deleted), false if it was already gone (e.g. lease reaper
+// beat us to it). Callers must only DecrInFlight when this returns true.
+func (h *Hub) untrackJob(requestID string) bool {
 	h.mu.Lock()
+	_, existed := h.jobs[requestID]
 	delete(h.jobs, requestID)
 	h.mu.Unlock()
+	return existed
 }
 
 // LookupInFlightJob returns the in-flight record for requestID, if any.

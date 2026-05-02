@@ -117,5 +117,5 @@ type CancelMsg struct {
 type ReleaseMsg struct {
 	Type      string `json:"type"`       // "release"
 	RequestID string `json:"request_id"`
-	Reason    string `json:"reason"`     // "model_failed" | "timeout"
+	Reason    string `json:"reason"`     // "model_failed" | "timeout" | "client_shutdown"
 }
