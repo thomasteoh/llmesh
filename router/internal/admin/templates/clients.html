@@ -89,6 +89,21 @@
             <td data-label="Status"><span class="badge {{.StatusClass}}">{{.StatusLabel}}</span></td>
             <td data-label="Last seen" class="muted">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
             <td class="cell-actions">
+              {{if .ExclusiveOwner}}
+              <form method="POST" action="/portal/clients/exclusive" class="form-inline" title="Owner-only: only {{.Owner}}'s jobs are dispatched to this client. Click to allow shared jobs.">
+                <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+                <input type="hidden" name="token" value="{{.Token}}">
+                <input type="hidden" name="exclusive" value="false">
+                <button type="submit" class="btn-warning btn-xs">owner only</button>
+              </form>
+              {{else}}
+              <form method="POST" action="/portal/clients/exclusive" class="form-inline" title="Shared: this client accepts any job. Click to restrict to {{.Owner}}'s jobs only.">
+                <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+                <input type="hidden" name="token" value="{{.Token}}">
+                <input type="hidden" name="exclusive" value="true">
+                <button type="submit" class="btn-secondary btn-xs">shared</button>
+              </form>
+              {{end}}
               <form method="POST" action="/portal/clients/revoke" class="form-inline" onsubmit="return confirm('Revoke this client token? The client will be disconnected and cannot reconnect.')">
                 <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
                 <input type="hidden" name="token" value="{{.Token}}">
@@ -125,8 +140,23 @@
         <td data-label="Status"><span class="badge {{.StatusClass}}">{{.StatusLabel}}</span></td>
         <td data-label="Last seen" class="muted">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
         <td class="cell-actions">
+          {{if .ExclusiveOwner}}
+          <form method="POST" action="/portal/clients/exclusive" class="form-inline" title="Owner-only: only your jobs are dispatched to this client. Click to allow shared jobs.">
+            <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+            <input type="hidden" name="token" value="{{.Token}}">
+            <input type="hidden" name="exclusive" value="false">
+            <button type="submit" class="btn-warning btn-xs">owner only</button>
+          </form>
+          {{else}}
+          <form method="POST" action="/portal/clients/exclusive" class="form-inline" title="Shared: this client accepts any job. Click to restrict to your jobs only.">
+            <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+            <input type="hidden" name="token" value="{{.Token}}">
+            <input type="hidden" name="exclusive" value="true">
+            <button type="submit" class="btn-secondary btn-xs">shared</button>
+          </form>
+          {{end}}
           <form method="POST" action="/portal/clients/revoke" class="form-inline" onsubmit="return confirm('Revoke this client token? The client will be disconnected and cannot reconnect.')">
-            <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+            <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
             <input type="hidden" name="token" value="{{.Token}}">
             <button type="submit" class="btn-danger btn-xs" title="Revoke">&#x2715;</button>
           </form>

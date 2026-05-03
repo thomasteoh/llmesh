@@ -147,7 +147,7 @@ func setupTestRouter(t *testing.T) (routerURL, apiKey, clientToken string, clean
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		h.ServeWS(w, r, ct.Name, ct.Owner, token)
+		h.ServeWS(w, r, ct.Name, ct.Owner, token, ct.ExclusiveOwner)
 	})
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"status":"ok","version":"e2e"}`+"\n")
@@ -1259,7 +1259,7 @@ func TestE2E_HubRegisterDisconnect(t *testing.T) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		h.ServeWS(w, r, "test-client", "testuser", token)
+		h.ServeWS(w, r, "test-client", "testuser", token, false)
 	})
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
@@ -1359,7 +1359,7 @@ func TestE2E_SchedulerDispatch(t *testing.T) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		h.ServeWS(w, r, "sched-client", "alice", token)
+		h.ServeWS(w, r, "sched-client", "alice", token, false)
 	})
 	ts := httptest.NewServer(mux)
 	defer ts.Close()

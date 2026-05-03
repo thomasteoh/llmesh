@@ -309,6 +309,16 @@ mono, code { font-family: monospace; font-size: 11px; }
   cursor: pointer;
 }
 .btn-success:hover { background: #22c55e1a; }
+.btn-warning {
+  background: none;
+  border: 1px solid #f59e0b40;
+  color: #f59e0b;
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.btn-warning:hover { background: #f59e0b1a; }
 .btn-copy {
   background: none;
   border: none;

@@ -89,16 +89,22 @@ func (s *Scheduler) drainQueue() {
 		aliases := s.aliases.AliasMap()
 
 		type candidate struct {
-			clientID     string
-			clientOwner  string
-			clientModels map[string]bool
-			req          types.InferenceRequest
+			clientID       string
+			clientOwner    string
+			clientModels   map[string]bool
+			req            types.InferenceRequest
 		}
 
 		var best *candidate
 		for _, c := range clients {
 			req := s.queue.PeekBestForClient(c.Models, aliases, c.Owner)
 			if req == nil {
+				continue
+			}
+			// Exclusive clients only serve their owner's requests.
+			if c.ExclusiveOwner && req.Owner != c.Owner {
+				s.log.Debug("scheduler: skipping exclusive client for non-owner request",
+					"client_id", c.ID, "client_owner", c.Owner, "request_owner", req.Owner)
 				continue
 			}
 			cand := &candidate{

@@ -460,6 +460,23 @@ func (a *Admin) handleClientTokenRevoke(w http.ResponseWriter, r *http.Request) 
 	http.Redirect(w, r, "/portal/clients", http.StatusFound)
 }
 
+func (a *Admin) handleClientTokenExclusive(w http.ResponseWriter, r *http.Request) {
+	u := ctxGetUser(r)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	token := r.FormValue("token")
+	exclusive := r.FormValue("exclusive") == "true"
+	if err := a.state.SetClientTokenExclusive(u.Username, token, exclusive, u.Role == "admin"); err != nil {
+		a.log.Warn("admin: exclusive toggle rejected", "actor", u.Username, "error", err)
+		http.Redirect(w, r, "/portal/clients", http.StatusFound)
+		return
+	}
+	a.hub.SetClientExclusive(token, exclusive)
+	http.Redirect(w, r, "/portal/clients", http.StatusFound)
+}
+
 // handleClientTokenConfig serves a pre-filled config.yaml for the given token.
 func (a *Admin) handleClientTokenConfig(w http.ResponseWriter, r *http.Request) {
 	u := ctxGetUser(r)
