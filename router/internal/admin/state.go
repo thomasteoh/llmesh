@@ -32,10 +32,11 @@ type APIKey struct {
 }
 
 type ClientToken struct {
-	Name      string    `json:"name"`
-	Owner     string    `json:"owner"`
-	Token     string    `json:"token"`
-	CreatedAt time.Time `json:"created_at"`
+	Name           string    `json:"name"`
+	Owner          string    `json:"owner"`
+	Token          string    `json:"token"`
+	CreatedAt      time.Time `json:"created_at"`
+	ExclusiveOwner bool      `json:"exclusive_owner,omitempty"` // if true, only dispatch jobs from this client's owner
 }
 
 type stateData struct {
@@ -356,6 +357,20 @@ func (s *State) RevokeClientToken(owner, token string, isAdmin bool) error {
 	for i, t := range s.data.ClientTokens {
 		if t.Token == token && (isAdmin || t.Owner == owner) {
 			s.data.ClientTokens = append(s.data.ClientTokens[:i], s.data.ClientTokens[i+1:]...)
+			return s.save()
+		}
+	}
+	return fmt.Errorf("token not found")
+}
+
+// SetClientTokenExclusive toggles the exclusive_owner flag for the given token.
+// Non-admins may only update their own tokens.
+func (s *State) SetClientTokenExclusive(owner, token string, exclusive bool, isAdmin bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, t := range s.data.ClientTokens {
+		if t.Token == token && (isAdmin || t.Owner == owner) {
+			s.data.ClientTokens[i].ExclusiveOwner = exclusive
 			return s.save()
 		}
 	}

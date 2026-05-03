@@ -15,7 +15,7 @@ import (
 func dialHub(t *testing.T, h *Hub, name, owner, token string) *websocket.Conn {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h.ServeWS(w, r, name, owner, token)
+		h.ServeWS(w, r, name, owner, token, false)
 	}))
 	t.Cleanup(srv.Close)
 	url := "ws" + strings.TrimPrefix(srv.URL, "http")

@@ -37,17 +37,19 @@ type Client struct {
 	ModelContextSizes map[string]int  // model name → context size in tokens (0 = unknown)
 	MaxConcurrent     int             // 0 until "register" message received
 	inFlight          atomic.Int32
-	Name              string
-	Owner             string
-	Token             string
-	Version           string // client version from register message
+	Name           string
+	Owner          string
+	Token          string
+	Version        string // client version from register message
+	ExclusiveOwner bool   // if true, only dispatch jobs from this client's owner
 }
 
 // ClientSummary is a snapshot of an available client used by the scheduler.
 type ClientSummary struct {
-	ID     string
-	Owner  string
-	Models map[string]bool
+	ID             string
+	Owner          string
+	Models         map[string]bool
+	ExclusiveOwner bool // if true, only dispatch jobs from this client's owner
 }
 
 func (c *Client) InFlight() int {
@@ -102,7 +104,7 @@ func New(logger *slog.Logger) *Hub {
 
 // ServeWS upgrades an HTTP connection to WebSocket and registers the client.
 // The caller should have already validated auth.
-func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token string) {
+func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token string, exclusiveOwner bool) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		h.log.Error("hub: ws upgrade error", "error", err)
@@ -110,12 +112,13 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token
 	}
 
 	client := &Client{
-		ID:    uuid.New().String(),
-		conn:  conn,
-		send:  make(chan []byte, 64),
-		Name:  name,
-		Owner: owner,
-		Token: token,
+		ID:             uuid.New().String(),
+		conn:           conn,
+		send:           make(chan []byte, 64),
+		Name:           name,
+		Owner:          owner,
+		Token:          token,
+		ExclusiveOwner: exclusiveOwner,
 	}
 
 	h.mu.Lock()
@@ -368,7 +371,7 @@ func (h *Hub) AvailableClientList() []ClientSummary {
 		for k, v := range c.Models {
 			models[k] = v
 		}
-		out = append(out, ClientSummary{ID: c.ID, Owner: c.Owner, Models: models})
+		out = append(out, ClientSummary{ID: c.ID, Owner: c.Owner, Models: models, ExclusiveOwner: c.ExclusiveOwner})
 	}
 	return out
 }
@@ -583,6 +586,19 @@ func (h *Hub) CloseByToken(token string) {
 	h.mu.RUnlock()
 	for _, c := range targets {
 		c.conn.Close()
+	}
+}
+
+// SetClientExclusive updates the ExclusiveOwner flag on all currently connected
+// clients that authenticated with the given token. Takes effect immediately for
+// subsequent scheduler cycles; in-flight jobs are not affected.
+func (h *Hub) SetClientExclusive(token string, exclusive bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, c := range h.clients {
+		if c.Token == token {
+			c.ExclusiveOwner = exclusive
+		}
 	}
 }
 
