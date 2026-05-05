@@ -9,6 +9,8 @@ import (
 	"os"
 	"strconv"
 
+	"context"
+
 	"llmesh/pkg/types"
 	routerPkg "llmesh/router"
 	"llmesh/router/internal/admin"
@@ -19,6 +21,7 @@ import (
 	"llmesh/router/internal/queue"
 	"llmesh/router/internal/scheduler"
 	"llmesh/router/internal/stats"
+	"llmesh/router/internal/upstream"
 )
 
 // version is set at build time via -ldflags "-X main.version=<tag>".
@@ -189,6 +192,16 @@ func main() {
 	sched.Start()
 	h.OnRelease = func(req types.InferenceRequest) { q.Push(req); sched.Wake() }
 	h.StartLeaseReaper()
+
+	// Upstream connector: connects this router to orchestrator routers as a client.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	conn := upstream.New(h, q, store, sched, logring.NewLogger(sink, "upstream", slog.LevelInfo))
+	if upstreams := adminHandler.State().GetUpstreamRouters(); len(upstreams) > 0 {
+		conn.Reload(ctx, upstreams)
+	}
+	adminHandler.SetUpstreamReloader(func() { conn.Reload(ctx, adminHandler.State().GetUpstreamRouters()) })
+	adminHandler.SetConnectorStatus(conn.Connected)
 
 	apiHandler = &api.Handler{
 		Keys:        adminHandler.State(),

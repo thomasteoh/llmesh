@@ -39,20 +39,31 @@ type ClientToken struct {
 	ExclusiveOwner bool      `json:"exclusive_owner,omitempty"` // if true, only dispatch jobs from this client's owner
 }
 
+// UpstreamRouter configures an upstream (orchestrator) router that this router
+// connects to as a client. Models are advertised automatically from locally
+// connected GPU clients; no manual model configuration is required.
+type UpstreamRouter struct {
+	Name  string `json:"name"`
+	URL   string `json:"url"`   // base URL, e.g. "https://orchestrator.example.com"
+	Token string `json:"token"` // client token issued on the upstream router
+}
+
 type stateData struct {
-	Users        []User               `json:"users"`
-	APIKeys      []APIKey             `json:"api_keys"`
-	ClientTokens []ClientToken        `json:"client_tokens"`
-	ModelAliases map[string][]string  `json:"model_aliases,omitempty"` // alias → list of target model names
+	Users           []User              `json:"users"`
+	APIKeys         []APIKey            `json:"api_keys"`
+	ClientTokens    []ClientToken       `json:"client_tokens"`
+	ModelAliases    map[string][]string `json:"model_aliases,omitempty"`
+	UpstreamRouters []UpstreamRouter    `json:"upstream_routers,omitempty"`
 }
 
 // UnmarshalJSON handles migration from the old map[string]string format.
 func (sd *stateData) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		Users        []User          `json:"users"`
-		APIKeys      []APIKey        `json:"api_keys"`
-		ClientTokens []ClientToken   `json:"client_tokens"`
-		ModelAliases json.RawMessage `json:"model_aliases,omitempty"`
+		Users           []User          `json:"users"`
+		APIKeys         []APIKey        `json:"api_keys"`
+		ClientTokens    []ClientToken   `json:"client_tokens"`
+		ModelAliases    json.RawMessage `json:"model_aliases,omitempty"`
+		UpstreamRouters []UpstreamRouter `json:"upstream_routers,omitempty"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -60,6 +71,7 @@ func (sd *stateData) UnmarshalJSON(data []byte) error {
 	sd.Users = raw.Users
 	sd.APIKeys = raw.APIKeys
 	sd.ClientTokens = raw.ClientTokens
+	sd.UpstreamRouters = raw.UpstreamRouters
 	if len(raw.ModelAliases) > 0 {
 		// Try new format first: map[string][]string
 		var newFmt map[string][]string
@@ -381,6 +393,46 @@ func (s *State) ClientTokenCount() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.data.ClientTokens)
+}
+
+// --- Upstream Routers ---
+
+// GetUpstreamRouters returns a copy of the configured upstream routers.
+func (s *State) GetUpstreamRouters() []UpstreamRouter {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]UpstreamRouter, len(s.data.UpstreamRouters))
+	copy(out, s.data.UpstreamRouters)
+	return out
+}
+
+// AddUpstreamRouter adds an upstream router configuration and saves state.
+func (s *State) AddUpstreamRouter(r UpstreamRouter) error {
+	if r.URL == "" || r.Token == "" {
+		return fmt.Errorf("url and token are required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, existing := range s.data.UpstreamRouters {
+		if existing.URL == r.URL {
+			return fmt.Errorf("upstream %q is already configured", r.URL)
+		}
+	}
+	s.data.UpstreamRouters = append(s.data.UpstreamRouters, r)
+	return s.save()
+}
+
+// RemoveUpstreamRouter removes the upstream router with the given URL and saves state.
+func (s *State) RemoveUpstreamRouter(url string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, r := range s.data.UpstreamRouters {
+		if r.URL == url {
+			s.data.UpstreamRouters = append(s.data.UpstreamRouters[:i], s.data.UpstreamRouters[i+1:]...)
+			return s.save()
+		}
+	}
+	return fmt.Errorf("upstream %q not found", url)
 }
 
 // --- Token generation ---

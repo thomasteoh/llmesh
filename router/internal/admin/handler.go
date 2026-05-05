@@ -32,7 +32,20 @@ type Admin struct {
 	mux           *http.ServeMux
 	log           *slog.Logger
 	sink          *logring.Sink
+
+	// upstreamReload is called after any upstream router add/remove.
+	// Wired by main.go to connector.Reload after the connector is created.
+	upstreamReload func()
+	// upstreamConnected reports whether the given upstream URL is currently connected.
+	// Wired by main.go to connector.Connected.
+	upstreamConnected func(url string) bool
 }
+
+// SetUpstreamReloader registers the callback invoked after upstream router config changes.
+func (a *Admin) SetUpstreamReloader(fn func()) { a.upstreamReload = fn }
+
+// SetConnectorStatus registers the function used to query per-upstream connection status.
+func (a *Admin) SetConnectorStatus(fn func(url string) bool) { a.upstreamConnected = fn }
 
 // New creates an Admin handler. statePath is the path to state.json.
 func New(statePath string, h *hub.Hub, q *queue.Queue, reqCount func() int64, s *stats.Stats, routerVersion, name, host string, sink *logring.Sink) (*Admin, error) {
@@ -172,6 +185,8 @@ func (a *Admin) registerRoutes() {
 	mux.HandleFunc("/portal/settings/users/enable", a.requireAdmin(a.postWithCSRF(a.handleUserEnable)))
 	mux.HandleFunc("/portal/settings/users/promote", a.requireAdmin(a.postWithCSRF(a.handleUserPromote)))
 	mux.HandleFunc("/portal/settings/users/demote", a.requireAdmin(a.postWithCSRF(a.handleUserDemote)))
+	mux.HandleFunc("/portal/settings/upstream/add", a.requireAdmin(a.postWithCSRF(a.handleUpstreamAdd)))
+	mux.HandleFunc("/portal/settings/upstream/remove", a.requireAdmin(a.postWithCSRF(a.handleUpstreamRemove)))
 
 	// Dashboard JSON API
 	mux.HandleFunc("/portal/api/dashboard", a.requireAuth(a.handleDashboardJSON))

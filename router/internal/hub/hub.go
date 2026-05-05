@@ -602,6 +602,20 @@ func (h *Hub) SetClientExclusive(token string, exclusive bool) {
 	}
 }
 
+// TotalSlots returns the sum of MaxConcurrent across all registered clients.
+// Used by the upstream connector to advertise aggregate capacity.
+func (h *Hub) TotalSlots() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	total := 0
+	for _, c := range h.clients {
+		if c.Models != nil {
+			total += c.MaxConcurrent
+		}
+	}
+	return total
+}
+
 // ActiveClientCount returns the number of currently connected clients.
 func (h *Hub) ActiveClientCount() int {
 	h.mu.RLock()
