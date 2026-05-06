@@ -196,7 +196,7 @@ func main() {
 	// Upstream connector: connects this router to orchestrator routers as a client.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	conn := upstream.New(h, q, store, sched, logring.NewLogger(sink, "upstream", slog.LevelInfo))
+	conn := upstream.New(h, q, store, sched, version, logring.NewLogger(sink, "upstream", slog.LevelInfo))
 	if upstreams := adminHandler.State().GetUpstreamRouters(); len(upstreams) > 0 {
 		conn.Reload(ctx, upstreams)
 	}

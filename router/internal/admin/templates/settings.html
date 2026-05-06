@@ -112,7 +112,7 @@
                 {{end}}
               </td>
               <td class="cell-actions">
-                <form method="POST" action="/portal/settings/upstream/remove" class="form-inline" onsubmit="return confirm('Remove upstream {{.URL}}?')">
+                <form method="POST" action="/portal/settings/upstream/remove" class="form-inline" data-confirm="Remove upstream {{.URL}}?" onsubmit="return confirm(this.dataset.confirm)">
                   <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
                   <input type="hidden" name="url" value="{{.URL}}">
                   <button type="submit" class="btn-danger">Remove</button>

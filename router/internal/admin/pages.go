@@ -602,12 +602,17 @@ func (a *Admin) handleUpstreamAdd(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Admin) handleUpstreamRemove(w http.ResponseWriter, r *http.Request) {
+	u := ctxGetUser(r)
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	url := r.FormValue("url")
-	a.state.RemoveUpstreamRouter(url) // error silently ignored
+	upstreamURL := r.FormValue("url")
+	if err := a.state.RemoveUpstreamRouter(upstreamURL); err != nil {
+		a.renderSettings(w, u, "", err.Error())
+		return
+	}
+	a.log.Info("admin: upstream router removed", "actor", u.Username, "url", upstreamURL)
 	if a.upstreamReload != nil {
 		a.upstreamReload()
 	}

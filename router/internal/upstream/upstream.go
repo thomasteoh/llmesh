@@ -35,28 +35,34 @@ const (
 	pingInterval      = 30 * time.Second
 	pongWait          = 60 * time.Second
 	modelPollInterval = 30 * time.Second
+	// maxReadBytes caps incoming WebSocket frame size to prevent a malicious
+	// upstream from sending a single oversized message that OOMs the process.
+	maxReadBytes = 16 << 20 // 16 MiB
 )
 
 // Connector manages outbound connections to upstream routers.
 type Connector struct {
-	h     *hub.Hub
-	q     *queue.Queue
-	store *correlation.Store
-	sched *scheduler.Scheduler
-	log   *slog.Logger
+	h       *hub.Hub
+	q       *queue.Queue
+	store   *correlation.Store
+	sched   *scheduler.Scheduler
+	version string
+	log     *slog.Logger
 
 	mu        sync.Mutex
 	cancels   map[string]context.CancelFunc
 	connected map[string]bool
 }
 
-// New creates a Connector. Call Reload to start connections.
-func New(h *hub.Hub, q *queue.Queue, store *correlation.Store, sched *scheduler.Scheduler, log *slog.Logger) *Connector {
+// New creates a Connector. version is the build-time router version string.
+// Call Reload to start connections.
+func New(h *hub.Hub, q *queue.Queue, store *correlation.Store, sched *scheduler.Scheduler, version string, log *slog.Logger) *Connector {
 	return &Connector{
 		h:         h,
 		q:         q,
 		store:     store,
 		sched:     sched,
+		version:   version,
 		log:       log,
 		cancels:   make(map[string]context.CancelFunc),
 		connected: make(map[string]bool),
@@ -111,7 +117,7 @@ func (c *Connector) setConnected(url string, v bool) {
 }
 
 // run maintains a persistent connection to a single upstream router, reconnecting
-// with exponential backoff on failure.
+// with exponential backoff on failure. Backoff resets after a clean disconnect.
 func (c *Connector) run(ctx context.Context, u admin.UpstreamRouter) {
 	backoff := time.Second
 	for {
@@ -125,7 +131,9 @@ func (c *Connector) run(ctx context.Context, u admin.UpstreamRouter) {
 		if err != nil {
 			c.log.Warn("upstream: connection failed", "url", u.URL, "error", err, "retry_in", backoff)
 		} else {
+			// Clean disconnect — reset backoff so the next attempt is prompt.
 			c.log.Info("upstream: disconnected — reconnecting", "url", u.URL)
+			backoff = time.Second
 		}
 		select {
 		case <-time.After(backoff):
@@ -148,20 +156,32 @@ func (c *Connector) connect(ctx context.Context, u admin.UpstreamRouter) error {
 	}
 	defer conn.Close()
 
+	// Limit incoming frame size to guard against malicious upstream OOM attacks.
+	conn.SetReadLimit(maxReadBytes)
+
 	connCtx, connCancel := context.WithCancel(ctx)
 	defer connCancel()
 
-	// All writes go through sendCh so they are serialised onto the single WS conn.
+	// sendCh serialises all writes onto the single WebSocket connection.
+	// The write goroutine exits when connCtx is cancelled, not when sendCh is closed,
+	// so handleJob goroutines can never send on a closed channel.
 	sendCh := make(chan []byte, 64)
 	go func() {
-		for data := range sendCh {
-			if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
-				connCancel()
+		for {
+			select {
+			case data := <-sendCh:
+				if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+					connCancel()
+					return
+				}
+			case <-connCtx.Done():
 				return
 			}
 		}
 	}()
 
+	// send marshals msg and queues it for the write goroutine.
+	// Returns false if the connection is closing or the buffer is full.
 	send := func(msg any) bool {
 		data, err := json.Marshal(msg)
 		if err != nil {
@@ -170,13 +190,17 @@ func (c *Connector) connect(ctx context.Context, u admin.UpstreamRouter) error {
 		select {
 		case sendCh <- data:
 			return true
+		case <-connCtx.Done():
+			return false
 		default:
 			c.log.Warn("upstream: send buffer full, dropping message", "url", u.URL)
 			return false
 		}
 	}
 
-	// Keepalive.
+	// Keepalive. WriteControl is documented as safe to call concurrently with
+	// WriteMessage in gorilla/websocket, so the ping goroutine may call it
+	// directly without going through sendCh.
 	conn.SetReadDeadline(time.Now().Add(pongWait))
 	conn.SetPongHandler(func(string) error {
 		conn.SetReadDeadline(time.Now().Add(pongWait))
@@ -207,7 +231,7 @@ func (c *Connector) connect(ctx context.Context, u admin.UpstreamRouter) error {
 		Type:          "register",
 		Models:        models,
 		MaxConcurrent: slots,
-		Version:       "router",
+		Version:       "router/" + c.version,
 	}) {
 		return fmt.Errorf("send register failed")
 	}
@@ -217,7 +241,9 @@ func (c *Connector) connect(ctx context.Context, u admin.UpstreamRouter) error {
 
 	lastKey := modelInfoKey(models)
 
-	// Poll for local model changes and reconnect to re-register when they occur.
+	// Poll for local model changes. When the model set changes, interrupt the
+	// read loop by expiring its deadline (safe to call concurrently with reads)
+	// then cancel connCtx to shut everything down cleanly.
 	go func() {
 		ticker := time.NewTicker(modelPollInterval)
 		defer ticker.Stop()
@@ -226,7 +252,9 @@ func (c *Connector) connect(ctx context.Context, u admin.UpstreamRouter) error {
 			case <-ticker.C:
 				if modelInfoKey(c.h.ActiveModelInfos()) != lastKey {
 					c.log.Info("upstream: model set changed, reconnecting to re-register", "url", u.URL)
-					conn.Close()
+					conn.SetReadDeadline(time.Now()) // unblocks ReadMessage immediately
+					connCancel()
+					return
 				}
 			case <-connCtx.Done():
 				return
@@ -242,12 +270,12 @@ func (c *Connector) connect(ctx context.Context, u admin.UpstreamRouter) error {
 	for {
 		_, data, err := conn.ReadMessage()
 		if err != nil {
+			// Cancel all in-flight jobs; write goroutine exits via connCtx.
 			jobsMu.Lock()
 			for _, cancel := range jobs {
 				cancel()
 			}
 			jobsMu.Unlock()
-			close(sendCh)
 			return err
 		}
 		conn.SetReadDeadline(time.Now().Add(pongWait))
@@ -266,10 +294,25 @@ func (c *Connector) connect(ctx context.Context, u admin.UpstreamRouter) error {
 				c.log.Warn("upstream: bad job message", "url", u.URL, "error", err)
 				continue
 			}
-			jobCtx, jobCancel := context.WithCancel(connCtx)
+
 			jobsMu.Lock()
+			// Reject duplicate job IDs — prevents correlation channel hijacking.
+			if _, dup := jobs[msg.Request.ID]; dup {
+				jobsMu.Unlock()
+				c.log.Warn("upstream: duplicate job ID, ignoring", "url", u.URL, "request_id", msg.Request.ID)
+				continue
+			}
+			// Enforce our advertised MaxConcurrent — upstream should honour it,
+			// but we enforce it ourselves to guard against misbehaving upstreams.
+			if len(jobs) >= slots {
+				jobsMu.Unlock()
+				c.log.Warn("upstream: job limit reached, ignoring", "url", u.URL, "request_id", msg.Request.ID, "limit", slots)
+				continue
+			}
+			jobCtx, jobCancel := context.WithCancel(connCtx)
 			jobs[msg.Request.ID] = jobCancel
 			jobsMu.Unlock()
+
 			go func(req types.InferenceRequest) {
 				defer func() {
 					jobsMu.Lock()
@@ -277,6 +320,11 @@ func (c *Connector) connect(ctx context.Context, u admin.UpstreamRouter) error {
 					jobsMu.Unlock()
 					jobCancel()
 				}()
+				// Sanitise fields the upstream controls to prevent priority
+				// spoofing and false attribution in the admin UI.
+				req.Owner = u.Name
+				req.Priority = types.PriorityNormal
+				req.APIKeyLabel = ""
 				c.handleJob(jobCtx, send, req)
 			}(msg.Request)
 
@@ -318,6 +366,7 @@ func (c *Connector) handleJob(ctx context.Context, send func(any) bool, req type
 			}
 		case <-ctx.Done():
 			// Upstream cancelled or connection dropped; cancel locally too.
+			c.log.Debug("upstream: job context cancelled, cancelling local job", "request_id", req.ID)
 			c.h.CancelRequest(req.ID)
 			return
 		}
@@ -325,6 +374,7 @@ func (c *Connector) handleJob(ctx context.Context, send func(any) bool, req type
 }
 
 // toWSURL converts http(s):// to ws(s)://, stripping trailing slashes.
+// Input must be an http:// or https:// URL; other schemes pass through unchanged.
 func toWSURL(u string) string {
 	u = strings.TrimRight(u, "/")
 	u = strings.Replace(u, "https://", "wss://", 1)

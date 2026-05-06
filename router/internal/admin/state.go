@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -411,6 +413,12 @@ func (s *State) AddUpstreamRouter(r UpstreamRouter) error {
 	if r.URL == "" || r.Token == "" {
 		return fmt.Errorf("url and token are required")
 	}
+	parsed, err := url.ParseRequestURI(r.URL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return fmt.Errorf("url must start with http:// or https://")
+	}
+	// Normalise: lowercase scheme+host, strip trailing slash.
+	r.URL = strings.ToLower(strings.TrimRight(r.URL, "/"))
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, existing := range s.data.UpstreamRouters {
