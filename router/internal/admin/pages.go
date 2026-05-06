@@ -133,9 +133,15 @@ type ModelWithAliases struct {
 	Aliases []string
 }
 
+type UpstreamRouterRow struct {
+	UpstreamRouter
+	Connected bool
+}
+
 type SettingsPage struct {
 	basePage
-	Users []UserRow
+	Users     []UserRow
+	Upstreams []UpstreamRouterRow
 }
 
 type UserRow struct {
@@ -556,13 +562,61 @@ func (a *Admin) renderSettings(w http.ResponseWriter, u User, flash, errMsg stri
 	for _, usr := range users {
 		rows = append(rows, UserRow{User: usr, IsSelf: usr.Username == u.Username})
 	}
+	upstream := a.state.GetUpstreamRouters()
+	upstreamRows := make([]UpstreamRouterRow, 0, len(upstream))
+	for _, r := range upstream {
+		connected := a.upstreamConnected != nil && a.upstreamConnected(r.URL)
+		upstreamRows = append(upstreamRows, UpstreamRouterRow{UpstreamRouter: r, Connected: connected})
+	}
 	bp := a.newBasePage("settings", u)
 	bp.Flash = flash
 	bp.Error = errMsg
 	a.render(w, "settings", SettingsPage{
-		basePage: bp,
-		Users:    rows,
+		basePage:  bp,
+		Users:     rows,
+		Upstreams: upstreamRows,
 	})
+}
+
+func (a *Admin) handleUpstreamAdd(w http.ResponseWriter, r *http.Request) {
+	u := ctxGetUser(r)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(r.FormValue("name"))
+	url := strings.TrimSpace(r.FormValue("url"))
+	token := strings.TrimSpace(r.FormValue("token"))
+	if url == "" || token == "" {
+		a.renderSettings(w, u, "", "URL and token are required.")
+		return
+	}
+	if err := a.state.AddUpstreamRouter(UpstreamRouter{Name: name, URL: url, Token: token}); err != nil {
+		a.renderSettings(w, u, "", err.Error())
+		return
+	}
+	if a.upstreamReload != nil {
+		a.upstreamReload()
+	}
+	http.Redirect(w, r, "/portal/settings#tab-upstreams", http.StatusFound)
+}
+
+func (a *Admin) handleUpstreamRemove(w http.ResponseWriter, r *http.Request) {
+	u := ctxGetUser(r)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	upstreamURL := r.FormValue("url")
+	if err := a.state.RemoveUpstreamRouter(upstreamURL); err != nil {
+		a.renderSettings(w, u, "", err.Error())
+		return
+	}
+	a.log.Info("admin: upstream router removed", "actor", u.Username, "url", upstreamURL)
+	if a.upstreamReload != nil {
+		a.upstreamReload()
+	}
+	http.Redirect(w, r, "/portal/settings#tab-upstreams", http.StatusFound)
 }
 
 func (a *Admin) handleChangePassword(w http.ResponseWriter, r *http.Request) {

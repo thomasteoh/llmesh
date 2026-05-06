@@ -20,11 +20,17 @@ func New() *Store {
 
 // Create registers a new result channel for requestID. The channel is buffered.
 // The caller is responsible for calling Delete when done.
+// If an entry for requestID already exists (e.g. a duplicate job from a misbehaving
+// upstream), the existing channel is returned rather than overwriting it, so the
+// first goroutine's channel is never orphaned.
 func (s *Store) Create(requestID string) <-chan types.ChunkMsg {
-	ch := make(chan types.ChunkMsg, 32)
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ch, exists := s.channels[requestID]; exists {
+		return ch
+	}
+	ch := make(chan types.ChunkMsg, 32)
 	s.channels[requestID] = ch
-	s.mu.Unlock()
 	return ch
 }
 
