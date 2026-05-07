@@ -2,6 +2,7 @@
 package correlation
 
 import (
+	"log/slog"
 	"sync"
 	"llmesh/pkg/types"
 )
@@ -10,11 +11,16 @@ import (
 type Store struct {
 	mu       sync.Mutex
 	channels map[string]chan types.ChunkMsg
+	log      *slog.Logger
 }
 
-func New() *Store {
+func New(log *slog.Logger) *Store {
+	if log == nil {
+		log = slog.Default()
+	}
 	return &Store{
 		channels: make(map[string]chan types.ChunkMsg),
+		log:      log,
 	}
 }
 
@@ -29,7 +35,7 @@ func (s *Store) Create(requestID string) <-chan types.ChunkMsg {
 	if ch, exists := s.channels[requestID]; exists {
 		return ch
 	}
-	ch := make(chan types.ChunkMsg, 32)
+	ch := make(chan types.ChunkMsg, 256)
 	s.channels[requestID] = ch
 	return ch
 }
@@ -52,6 +58,8 @@ func (s *Store) Send(msg types.ChunkMsg) (ok bool) {
 	case ch <- msg:
 		return true
 	default:
+		s.log.Warn("correlation: chunk dropped, handler not reading fast enough",
+			"request_id", msg.RequestID, "done", msg.Done)
 		return false
 	}
 }

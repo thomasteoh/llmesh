@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"llmesh/pkg/types"
 	"llmesh/router/internal/correlation"
+	"llmesh/router/internal/hub"
 	"llmesh/router/internal/queue"
 	"llmesh/router/internal/scheduler"
 	"llmesh/router/internal/translate"
@@ -298,10 +299,12 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 			flusher.Flush()
 		case <-queueTimer.C:
 			apiLogger().Error("api: stream timeout", "request_id", req.ID, "timeout", "15min")
+			h.cancelRequest(req.ID)
 			serviceUnavailable(w, "request timed out waiting for a worker")
 			return
 		case <-activityTimer.C:
 			apiLogger().Warn("api: stream worker silent", "request_id", req.ID, "timeout", "5min")
+			h.cancelRequest(req.ID)
 			fmt.Fprintf(w, "data: {\"error\":\"worker stopped responding\"}\n\n")
 			flusher.Flush()
 			return
@@ -348,7 +351,30 @@ func (h *Handler) batchResponse(w http.ResponseWriter, r *http.Request, req *typ
 				toolCalls = chunk.ToolCallsDelta
 			}
 		case <-timeout.C:
-			apiLogger().Error("api: batch timeout", "request_id", req.ID, "timeout", "10min")
+			req.Attempts++
+			if req.Attempts < hub.MaxAttempts {
+				apiLogger().Warn("api: batch timeout, requeuing",
+					"request_id", req.ID, "attempt", req.Attempts, "max_attempts", hub.MaxAttempts)
+				h.cancelRequest(req.ID)
+				// Drain any stale chunks from the cancelled dispatch.
+			drainStale:
+				for {
+					select {
+					case <-ch:
+					default:
+						break drainStale
+					}
+				}
+				sb.Reset()
+				toolCalls = nil
+				usage = nil
+				finishReason = "stop"
+				h.Queue.Push(*req)
+				h.Scheduler.Wake()
+				timeout.Reset(10 * time.Minute)
+				continue
+			}
+			apiLogger().Error("api: batch timeout", "request_id", req.ID, "timeout", "10min", "attempts", req.Attempts)
 			serviceUnavailable(w, "request timed out")
 			h.cancelRequest(req.ID)
 			return

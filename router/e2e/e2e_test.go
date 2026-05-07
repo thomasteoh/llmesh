@@ -88,13 +88,15 @@ func setupTestRouter(t *testing.T) (routerURL, apiKey, clientToken string, clean
 
 	// Wire components (same as main.go)
 	q := queue.New()
-	store := correlation.New()
 	testSink := logring.New(logring.DefaultCap)
+	store := correlation.New(slog.Default())
 	h := hub.New(slog.Default())
 	reqStats := stats.New()
 
 	h.OnChunk = func(msg types.ChunkMsg) {
-		store.Send(msg)
+		if !store.Send(msg) && !msg.Done {
+			t.Logf("chunk lost in test harness: request_id=%s", msg.RequestID)
+		}
 	}
 	h.OnError = func(msg types.ErrorMsg) {
 		store.Send(types.ChunkMsg{
@@ -1106,7 +1108,7 @@ func TestE2E_QueuePushPop(t *testing.T) {
 
 // TestE2E_CorrelationCreateSendDelete verifies correlation store.
 func TestE2E_CorrelationCreateSendDelete(t *testing.T) {
-	store := correlation.New()
+	store := correlation.New(slog.Default())
 	reqID := "corr-test-1"
 
 	ch := store.Create(reqID)

@@ -155,22 +155,26 @@ func main() {
 	}
 
 	q := queue.New()
-	store := correlation.New()
+	store := correlation.New(logring.NewLogger(sink, "correlation", slog.LevelInfo))
 	h := hub.New(logring.NewLogger(sink, "hub", slog.LevelInfo))
 	reqStats := stats.New()
 	api.SetLogger(logring.NewLogger(sink, "api", slog.LevelInfo))
 
 	h.OnChunk = func(msg types.ChunkMsg) {
-		store.Send(msg)
+		if !store.Send(msg) && !msg.Done {
+			log.Warn("chunk lost, no handler registered or buffer full", "request_id", msg.RequestID)
+		}
 	}
 	h.OnError = func(msg types.ErrorMsg) {
 		log.Error("client error for request", "request_id", msg.RequestID, "message", msg.Message)
-		store.Send(types.ChunkMsg{
+		if !store.Send(types.ChunkMsg{
 			Type:         "chunk",
 			RequestID:    msg.RequestID,
 			Done:         true,
 			FinishReason: "error",
-		})
+		}) {
+			log.Debug("error done-chunk dropped, handler already gone", "request_id", msg.RequestID)
+		}
 	}
 
 	// adminHandler must be created before scheduler so State() is available as AliasProvider.
