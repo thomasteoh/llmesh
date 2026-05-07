@@ -360,7 +360,11 @@ func (c *Connector) handleJob(ctx context.Context, send func(any) bool, req type
 			if !ok {
 				return
 			}
-			send(msg)
+			if !send(msg) {
+				c.log.Warn("upstream: failed to send chunk to upstream, cancelling job", "request_id", req.ID)
+				c.h.CancelRequest(req.ID)
+				return
+			}
 			if msg.Done {
 				return
 			}

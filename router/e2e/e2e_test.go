@@ -88,8 +88,8 @@ func setupTestRouter(t *testing.T) (routerURL, apiKey, clientToken string, clean
 
 	// Wire components (same as main.go)
 	q := queue.New()
-	store := correlation.New()
 	testSink := logring.New(logring.DefaultCap)
+	store := correlation.New(slog.Default())
 	h := hub.New(slog.Default())
 	reqStats := stats.New()
 
@@ -1106,7 +1106,7 @@ func TestE2E_QueuePushPop(t *testing.T) {
 
 // TestE2E_CorrelationCreateSendDelete verifies correlation store.
 func TestE2E_CorrelationCreateSendDelete(t *testing.T) {
-	store := correlation.New()
+	store := correlation.New(slog.Default())
 	reqID := "corr-test-1"
 
 	ch := store.Create(reqID)
