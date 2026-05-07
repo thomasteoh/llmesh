@@ -15,6 +15,9 @@ type Store struct {
 }
 
 func New(log *slog.Logger) *Store {
+	if log == nil {
+		log = slog.Default()
+	}
 	return &Store{
 		channels: make(map[string]chan types.ChunkMsg),
 		log:      log,

@@ -94,7 +94,9 @@ func setupTestRouter(t *testing.T) (routerURL, apiKey, clientToken string, clean
 	reqStats := stats.New()
 
 	h.OnChunk = func(msg types.ChunkMsg) {
-		store.Send(msg)
+		if !store.Send(msg) && !msg.Done {
+			t.Logf("chunk lost in test harness: request_id=%s", msg.RequestID)
+		}
 	}
 	h.OnError = func(msg types.ErrorMsg) {
 		store.Send(types.ChunkMsg{

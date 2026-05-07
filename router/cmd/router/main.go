@@ -173,7 +173,7 @@ func main() {
 			Done:         true,
 			FinishReason: "error",
 		}) {
-			log.Warn("error chunk lost, no handler registered or buffer full", "request_id", msg.RequestID)
+			log.Debug("error done-chunk dropped, handler already gone", "request_id", msg.RequestID)
 		}
 	}
 
