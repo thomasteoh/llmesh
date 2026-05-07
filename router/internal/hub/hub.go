@@ -19,10 +19,10 @@ import (
 // timeout: 15 min TTFT + 5 min activity = 20 min.
 const LeaseDuration = 20 * time.Minute
 
-// maxAttempts is the total number of times a request may be dispatched to a
+// MaxAttempts is the total number of times a request may be dispatched to a
 // client before being failed back to the caller. Counts the initial attempt
 // plus any retries triggered by client errors or disconnects.
-const maxAttempts = 3
+const MaxAttempts = 3
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
@@ -153,15 +153,15 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token
 		client.DecrInFlight()
 		req := rec.Req
 		req.Attempts++
-		if req.Attempts < maxAttempts && h.OnRelease != nil {
+		if req.Attempts < MaxAttempts && h.OnRelease != nil {
 			h.log.Warn("hub: client disconnected during inference, retrying",
 				"request_id", req.ID, "client_id", client.ID,
-				"attempt", req.Attempts, "max_attempts", maxAttempts)
+				"attempt", req.Attempts, "max_attempts", MaxAttempts)
 			h.OnRelease(req)
 		} else {
 			h.log.Warn("hub: failing orphaned job on disconnect",
 				"request_id", req.ID, "client_id", client.ID,
-				"attempt", req.Attempts, "max_attempts", maxAttempts)
+				"attempt", req.Attempts, "max_attempts", MaxAttempts)
 			if h.OnError != nil {
 				h.OnError(types.ErrorMsg{
 					Type:      "error",
@@ -267,11 +267,11 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 		if hasRec {
 			req := rec.Req
 			req.Attempts++
-			if req.Attempts < maxAttempts && h.OnRelease != nil {
+			if req.Attempts < MaxAttempts && h.OnRelease != nil {
 				h.log.Warn("hub: client inference error, retrying",
 					"request_id", req.ID, "client_id", client.ID,
 					"message", msg.Message,
-					"attempt", req.Attempts, "max_attempts", maxAttempts)
+					"attempt", req.Attempts, "max_attempts", MaxAttempts)
 				h.OnRelease(req)
 				return
 			}

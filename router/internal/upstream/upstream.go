@@ -180,9 +180,10 @@ func (c *Connector) connect(ctx context.Context, u admin.UpstreamRouter) error {
 		}
 	}()
 
-	// send marshals msg and queues it for the write goroutine.
-	// Returns false if the connection is closing or the buffer is full.
-	send := func(msg any) bool {
+	// send marshals msg and blocks until it is queued for the write goroutine,
+	// the connection is closing (connCtx cancelled), or the caller's context is
+	// cancelled (ctx). Returns false only when delivery is impossible.
+	send := func(ctx context.Context, msg any) bool {
 		data, err := json.Marshal(msg)
 		if err != nil {
 			return false
@@ -192,8 +193,7 @@ func (c *Connector) connect(ctx context.Context, u admin.UpstreamRouter) error {
 			return true
 		case <-connCtx.Done():
 			return false
-		default:
-			c.log.Warn("upstream: send buffer full, dropping message", "url", u.URL)
+		case <-ctx.Done():
 			return false
 		}
 	}
@@ -227,7 +227,7 @@ func (c *Connector) connect(ctx context.Context, u admin.UpstreamRouter) error {
 	if slots == 0 {
 		slots = 1 // always claim at least one slot; local queue handles overflow
 	}
-	if !send(types.RegisterMsg{
+	if !send(connCtx, types.RegisterMsg{
 		Type:          "register",
 		Models:        models,
 		MaxConcurrent: slots,
@@ -347,7 +347,7 @@ func (c *Connector) connect(ctx context.Context, u admin.UpstreamRouter) error {
 // handleJob processes a single job received from the upstream router.
 // It creates a correlation entry so local hub chunks are routed back here,
 // pushes the job to the local queue, and streams results back upstream.
-func (c *Connector) handleJob(ctx context.Context, send func(any) bool, req types.InferenceRequest) {
+func (c *Connector) handleJob(ctx context.Context, send func(context.Context, any) bool, req types.InferenceRequest) {
 	ch := c.store.Create(req.ID)
 	defer c.store.Delete(req.ID)
 
@@ -360,7 +360,7 @@ func (c *Connector) handleJob(ctx context.Context, send func(any) bool, req type
 			if !ok {
 				return
 			}
-			if !send(msg) {
+			if !send(ctx, msg) {
 				c.log.Warn("upstream: failed to send chunk to upstream, cancelling job", "request_id", req.ID)
 				c.h.CancelRequest(req.ID)
 				return
