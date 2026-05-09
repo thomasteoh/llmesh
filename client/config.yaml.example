@@ -1,6 +1,7 @@
 router_url: "wss://llmesh.example.com/ws/client"
 router_token: "change-me-client-secret"
 max_concurrent: 4
+# metrics_addr: ":9091"   # expose expvar metrics at http://<host>:9091/debug/vars; omit to disable
 models:
   - name: "llama3.2:3b"
     endpoint: "http://host.docker.internal:8080"

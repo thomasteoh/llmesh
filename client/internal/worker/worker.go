@@ -9,6 +9,7 @@ import (
 
 	clientPkg "llmesh/client"
 	"llmesh/client/internal/llamacpp"
+	"llmesh/client/internal/stats"
 	"llmesh/pkg/types"
 )
 
@@ -22,9 +23,10 @@ const keepAliveInterval = 60 * time.Second
 // SendFn sends a JSON-encodable message back to the router over WebSocket.
 type SendFn func(msg any) error
 
-// Handle processes a single job from the router.
+// Handle processes a single job from the router. Returns a non-nil error only
+// when inference itself failed (not when ctx was cancelled).
 // ctx is cancelled when the WS connection drops (so in-flight llama.cpp requests abort).
-func Handle(ctx context.Context, job types.JobMsg, cfg *clientPkg.Config, send SendFn) {
+func Handle(ctx context.Context, job types.JobMsg, cfg *clientPkg.Config, send SendFn, st *stats.Stats) error {
 	req := job.Request
 	endpoint := cfg.EndpointFor(req.Model)
 	if endpoint == "" {
@@ -34,7 +36,7 @@ func Handle(ctx context.Context, job types.JobMsg, cfg *clientPkg.Config, send S
 			RequestID: req.ID,
 			Message:   "model not available on this client",
 		})
-		return
+		return nil
 	}
 
 	// Send an empty chunk to the router every minute so its TTFT and activity
@@ -60,6 +62,9 @@ func Handle(ctx context.Context, job types.JobMsg, cfg *clientPkg.Config, send S
 	llmClient := llamacpp.New(endpoint)
 	chatTemplate := cfg.ChatTemplateFor(req.Model)
 	err := llmClient.Infer(ctx, req, chatTemplate, func(delta string, toolCallsDelta json.RawMessage, done bool, finishReason string, usage *types.UsageInfo) {
+		if done && usage != nil {
+			st.TotalTokens.Add(int64(usage.CompletionTokens))
+		}
 		chunk := types.ChunkMsg{
 			Type:           "chunk",
 			RequestID:      req.ID,
@@ -82,5 +87,7 @@ func Handle(ctx context.Context, job types.JobMsg, cfg *clientPkg.Config, send S
 			RequestID: req.ID,
 			Message:   err.Error(),
 		})
+		return err
 	}
+	return nil
 }
