@@ -11,6 +11,7 @@ import (
 	"github.com/gorilla/websocket"
 	clientPkg "llmesh/client"
 	"llmesh/client/internal/llamacpp"
+	"llmesh/client/internal/stats"
 	"llmesh/client/internal/worker"
 	"llmesh/pkg/types"
 )
@@ -26,6 +27,7 @@ var log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: sl
 type Conn struct {
 	cfg       *clientPkg.Config
 	version   string
+	st        *stats.Stats
 	sem       chan struct{} // limits concurrent jobs
 	mu        sync.Mutex
 	ws        *websocket.Conn
@@ -33,10 +35,11 @@ type Conn struct {
 	cancels   map[string]context.CancelFunc // requestID → cancel for in-flight jobs
 }
 
-func New(cfg *clientPkg.Config, version string) *Conn {
+func New(cfg *clientPkg.Config, version string, st *stats.Stats) *Conn {
 	return &Conn{
 		cfg:     cfg,
 		version: version,
+		st:      st,
 		sem:     make(chan struct{}, cfg.MaxConcurrent),
 		cancels: make(map[string]context.CancelFunc),
 	}
@@ -45,11 +48,17 @@ func New(cfg *clientPkg.Config, version string) *Conn {
 // Run connects to the router and reconnects on disconnect. Blocks until ctx is cancelled.
 func (c *Conn) Run(ctx context.Context) {
 	backoff := time.Second
+	first := true
 	for {
 		if ctx.Err() != nil {
 			return
 		}
+		if !first {
+			c.st.Reconnects.Add(1)
+		}
+		first = false
 		err := c.connect(ctx)
+		c.st.SetConnected(false)
 		if ctx.Err() != nil {
 			return // graceful shutdown completed
 		}
@@ -173,6 +182,7 @@ func (c *Conn) connect(outerCtx context.Context) error {
 	}); err != nil {
 		return err
 	}
+	c.st.SetConnected(true)
 	log.Info("ws: registered with router", "models", models, "max_concurrent", c.cfg.MaxConcurrent)
 
 	// Read loop
@@ -203,15 +213,20 @@ func (c *Conn) connect(outerCtx context.Context) error {
 			c.cancelsMu.Lock()
 			c.cancels[job.Request.ID] = jobCancel
 			c.cancelsMu.Unlock()
+			c.st.ActiveJobs.Add(1)
 			go func(j types.JobMsg, jCtx context.Context, jCancel context.CancelFunc) {
 				defer func() {
+					c.st.ActiveJobs.Add(-1)
+					c.st.TotalDone.Add(1)
 					<-c.sem
 					c.cancelsMu.Lock()
 					delete(c.cancels, j.Request.ID)
 					c.cancelsMu.Unlock()
 					jCancel()
 				}()
-				worker.Handle(jCtx, j, c.cfg, c.send)
+				if err := worker.Handle(jCtx, j, c.cfg, c.send, c.st); err != nil {
+					c.st.TotalErrors.Add(1)
+				}
 			}(job, jobCtx, jobCancel)
 		case "cancel":
 			var msg types.CancelMsg

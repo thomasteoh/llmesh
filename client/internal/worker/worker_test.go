@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	clientPkg "llmesh/client"
+	"llmesh/client/internal/stats"
 	"llmesh/pkg/types"
 )
 
@@ -50,7 +51,7 @@ func TestHandle_InferError_SendsErrorMsg(t *testing.T) {
 		return nil
 	})
 
-	Handle(context.Background(), job, cfg, sendFn)
+	Handle(context.Background(), job, cfg, sendFn, stats.New())
 
 	if len(sent) == 0 {
 		t.Fatal("expected at least one message sent")
@@ -90,7 +91,7 @@ func TestHandle_NoEndpoint_SendsErrorMsg(t *testing.T) {
 		return nil
 	})
 
-	Handle(context.Background(), job, cfg, sendFn)
+	Handle(context.Background(), job, cfg, sendFn, stats.New())
 
 	if len(sent) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(sent))

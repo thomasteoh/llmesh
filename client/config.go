@@ -18,6 +18,7 @@ type Config struct {
 	RouterToken   string        `yaml:"router_token"`
 	MaxConcurrent int           `yaml:"max_concurrent"`
 	Models        []ModelConfig `yaml:"models"`
+	MetricsAddr   string        `yaml:"metrics_addr"` // e.g. ":9091"; empty = disabled
 }
 
 func LoadConfig(path string) (*Config, error) {

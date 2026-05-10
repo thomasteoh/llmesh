@@ -258,6 +258,7 @@ func main() {
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"status":"ok","version":%q}`+"\n", version)
 	})
+	mux.HandleFunc("/metrics", metricsHandler(apiHandler, q, h, reqStats))
 	mux.Handle("/portal/", adminHandler)
 	mux.Handle("/portal", adminHandler)
 	// Backward-compat redirect: old /admin bookmarks → /portal
