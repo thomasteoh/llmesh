@@ -26,7 +26,7 @@ func main() {
 	configPath := flag.String("config", "/config.yaml", "path to config file")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: llm-client [options]\n\nOptions:\n")
+		fmt.Fprintf(os.Stderr, "Usage: llmesh-client [options]\n\nOptions:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, `
 Config file fields (YAML):
@@ -41,7 +41,7 @@ Config file fields (YAML):
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("llm-client %s\n", version)
+		fmt.Printf("llmesh-client %s\n", version)
 		os.Exit(0)
 	}
 
@@ -59,7 +59,7 @@ Config file fields (YAML):
 		os.Exit(1)
 	}
 
-	log.Info("llm-client starting", "router", cfg.RouterURL, "models", len(cfg.Models), "max_concurrent", cfg.MaxConcurrent)
+	log.Info("llmesh-client starting", "router", cfg.RouterURL, "models", len(cfg.Models), "max_concurrent", cfg.MaxConcurrent)
 
 	st := stats.New()
 	stats.Register(st)
@@ -85,7 +85,7 @@ Config file fields (YAML):
 
 	conn := ws.New(cfg, version, st)
 	conn.Run(ctx) // blocks until ctx cancelled, reconnects on disconnect
-	log.Info("llm-client: shut down")
+	log.Info("llmesh-client: shut down")
 }
 
 // isTerminal reports whether f is an interactive terminal.
@@ -118,7 +118,7 @@ func statusLine(st *stats.Stats, maxConcurrent int) string {
 		connSym = "●"
 	}
 	uptime := time.Since(st.StartTime).Round(time.Second)
-	return fmt.Sprintf("\033[2K\r[llm-client] %s | jobs %d/%d | done %d | err %d | tok %d | up %s",
+	return fmt.Sprintf("\033[2K\r[llmesh-client] %s | jobs %d/%d | done %d | err %d | tok %d | up %s",
 		connSym,
 		st.ActiveJobs.Load(), maxConcurrent,
 		st.TotalDone.Load(),

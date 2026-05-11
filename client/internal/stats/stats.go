@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// Stats holds runtime counters for the llm-client. All fields are safe for
+// Stats holds runtime counters for the llmesh-client. All fields are safe for
 // concurrent use. Register must be called once to publish them to expvar.
 type Stats struct {
 	ActiveJobs  atomic.Int64

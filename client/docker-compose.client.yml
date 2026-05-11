@@ -1,9 +1,9 @@
 services:
-  llm-client:
+  llmesh-client:
     build:
       context: .
       dockerfile: client/Dockerfile
-    image: llm-client
+    image: llmesh-client
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

@@ -173,7 +173,7 @@
 
 <div class="card" style="margin-top:24px;">
   <div class="card-title">Downloads</div>
-  <div class="docs-subtitle" style="margin-top:4px;margin-bottom:16px;">Pre-built binaries for llm-client</div>
+  <div class="docs-subtitle" style="margin-top:4px;margin-bottom:16px;">Pre-built binaries for llmesh-client</div>
 
   <div id="os-tab-group" class="tab-container">
     <div class="tab-bar">
@@ -185,19 +185,19 @@
     <div class="tab-content">
       <div class="tab-panel active" id="os-linux-amd64">
         <p class="field-desc">Linux x86-64. Most servers, WSL2.</p>
-        <a class="btn-download" href="/downloads/llm-client-linux-amd64" download="llm-client">Download</a>
+        <a class="btn-download" href="/downloads/llmesh-client-linux-amd64" download="llmesh-client">Download</a>
       </div>
       <div class="tab-panel" id="os-linux-arm64">
         <p class="field-desc">Raspberry Pi 4/5, Graviton.</p>
-        <a class="btn-download" href="/downloads/llm-client-linux-arm64" download="llm-client">Download</a>
+        <a class="btn-download" href="/downloads/llmesh-client-linux-arm64" download="llmesh-client">Download</a>
       </div>
       <div class="tab-panel" id="os-darwin-amd64">
         <p class="field-desc">Intel Mac.</p>
-        <a class="btn-download" href="/downloads/llm-client-darwin-amd64" download="llm-client">Download</a>
+        <a class="btn-download" href="/downloads/llmesh-client-darwin-amd64" download="llmesh-client">Download</a>
       </div>
       <div class="tab-panel" id="os-darwin-arm64">
         <p class="field-desc">Apple Silicon (M1&ndash;M4).</p>
-        <a class="btn-download" href="/downloads/llm-client-darwin-arm64" download="llm-client">Download</a>
+        <a class="btn-download" href="/downloads/llmesh-client-darwin-arm64" download="llmesh-client">Download</a>
       </div>
     </div>
   </div>
@@ -208,10 +208,10 @@
     </div>
     <div class="collapsible-body" id="client-run-section">
       <div class="docs-label">Run</div>
-      <div class="docs-code">chmod +x llm-client
-./llm-client -config ./config.yaml</div>
+      <div class="docs-code">chmod +x llmesh-client
+./llmesh-client -config ./config.yaml</div>
       <p class="field-desc" style="margin-top:12px;">macOS: remove quarantine before first run</p>
-      <div class="docs-code">xattr -cr llm-client</div>
+      <div class="docs-code">xattr -cr llmesh-client</div>
       <div class="docs-label" style="margin-top:16px;">Config file</div>
       <p class="field-desc">Create a <mono>config.yaml</mono> alongside the binary. A pre-filled file with your token is available above after generating a token.</p>
       <div class="docs-code">router_url: "wss://{{.Host}}/ws/client"
@@ -225,9 +225,9 @@ models:
     chat_template: "qwen2.5"            # optional template override
 # Aliases are managed server-side in the admin UI &mdash; Clients page.</div>
       <p class="field-desc" style="margin-top:12px;">
-        Man page: <a href="/downloads/llm-client.1" download style="color:var(--text-muted);">llm-client.1</a>
+        Man page: <a href="/downloads/llmesh-client.1" download style="color:var(--text-muted);">llmesh-client.1</a>
         &nbsp;&mdash;&nbsp;
-        install with <mono>sudo install -m644 llm-client.1 /usr/local/share/man/man1/</mono>
+        install with <mono>sudo install -m644 llmesh-client.1 /usr/local/share/man/man1/</mono>
       </p>
     </div>
   </div>

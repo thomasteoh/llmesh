@@ -1,9 +1,9 @@
 services:
-  llm-router:
+  llmesh-router:
     build:
       context: .
       dockerfile: router/Dockerfile
-    image: llm-router
+    image: llmesh-router
     ports:
       - "53002:53002"
     volumes:

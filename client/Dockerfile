@@ -9,6 +9,6 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w -X main.version=${VERSION}
 FROM alpine:3.19
 RUN apk add --no-cache ca-certificates man-db less
 COPY --from=builder /client /client
-COPY client/man/llm-client.1 /usr/share/man/man1/llm-client.1
-RUN gzip /usr/share/man/man1/llm-client.1
+COPY client/man/llmesh-client.1 /usr/share/man/man1/llmesh-client.1
+RUN gzip /usr/share/man/man1/llmesh-client.1
 ENTRYPOINT ["/client"]

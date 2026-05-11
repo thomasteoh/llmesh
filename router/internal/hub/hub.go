@@ -28,7 +28,7 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-// Client represents a connected llm-client node.
+// Client represents a connected llmesh-client node.
 type Client struct {
 	ID                string
 	conn              *websocket.Conn

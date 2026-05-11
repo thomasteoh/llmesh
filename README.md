@@ -34,7 +34,7 @@ The router does not run inference and is deliberately lightweight.
 - **Runtime:** Docker (for the published image), or Go 1.26+ to build from source
 - **Network:** Reachable by both callers and client machines; TLS termination recommended (e.g. via a reverse proxy)
 
-### Client (llm-client)
+### Client (llmesh-client)
 
 The client is a small binary that runs alongside your llama.cpp instance.
 
@@ -60,7 +60,7 @@ Callers only need to know the router URL. Inference runs on local llama.cpp node
 sequenceDiagram
     participant C as Caller
     participant R as Router
-    participant W as llm-client
+    participant W as llmesh-client
     participant L as llama.cpp
 
     C->>R: POST /v1/chat/completions
@@ -126,7 +126,7 @@ The `state.json` file (admin users, API keys, client tokens) is created automati
 Navigate to `http://[HOST]:[PORT]/portal`. On first run you are redirected to the setup wizard to create the initial admin account. All credentials are managed via this UI — there are no credentials in `config.yaml`.
 
 From the admin dashboard you can:
-- **Clients** → Create client tokens (needed to configure each `llm-client`)
+- **Clients** → Create client tokens (needed to configure each `llmesh-client`)
 - **API Keys** → Create API keys (needed by callers to authenticate requests)
 - **Settings** → Configure model aliases
 
@@ -227,7 +227,7 @@ To use the published image instead of building from source, replace the `build:`
 
 ```yaml
 services:
-  llm-router:
+  llmesh-router:
     image: ghcr.io/thomasteoh/llmesh:latest
 ```
 

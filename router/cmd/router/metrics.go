@@ -31,7 +31,7 @@ func metricsHandler(ah *api.Handler, q *queue.Queue, h *hub.Hub, s *stats.Stats)
 			float64(q.Len()))
 
 		writeGauge(&b, "llmrouter_clients_connected",
-			"Number of llm-client instances currently connected",
+			"Number of llmesh-client instances currently connected",
 			float64(h.ActiveClientCount()))
 
 		writeGauge(&b, "llmrouter_slots_total",

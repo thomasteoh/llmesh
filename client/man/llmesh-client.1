@@ -1,12 +1,12 @@
-.TH LLM\-CLIENT 1 "April 2026" "llmesh" "llmesh Manual"
+.TH LLMESH\-CLIENT 1 "April 2026" "llmesh" "llmesh Manual"
 .SH NAME
-llm\-client \- connect a local llama.cpp server to the llmesh router
+llmesh\-client \- connect a local llama.cpp server to the llmesh router
 .SH SYNOPSIS
-.B llm\-client
+.B llmesh\-client
 [\fB\-config\fR\ \fIpath\fR]
 [\fB\-version\fR]
 .SH DESCRIPTION
-.B llm\-client
+.B llmesh\-client
 is the worker component of the llmesh system.
 It establishes a persistent WebSocket connection to an llmesh router,
 advertises the models the local
@@ -91,7 +91,7 @@ when forwarding jobs.
 .SH EXAMPLES
 .SS Run with a custom config file
 .nf
-llm\-client \-config /etc/llmesh/client.yaml
+llmesh\-client \-config /etc/llmesh/client.yaml
 .fi
 .SS Run inside Docker (recommended)
 Download
@@ -111,7 +111,7 @@ llama\-server \-m ./models/llama3.2\-3b.gguf \-\-port 8080
 .fi
 Start the client:
 .nf
-llm\-client \-config ./config.yaml
+llmesh\-client \-config ./config.yaml
 .fi
 .SS Multiple models on one host
 Run a separate llama.cpp instance on a distinct port for each model:
@@ -141,7 +141,7 @@ The client logs to standard output in the following format:
 .PP
 .RS 4
 .nf
-2026/04/16 12:00:00 llm\-client starting, router=wss://... models=2 max_concurrent=4
+2026/04/16 12:00:00 llmesh\-client starting, router=wss://... models=2 max_concurrent=4
 2026/04/16 12:00:01 ws: connected
 2026/04/16 12:00:01 ws: registered 2 model(s)
 .fi

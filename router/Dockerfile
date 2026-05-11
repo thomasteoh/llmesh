@@ -15,16 +15,16 @@ RUN mkdir -p /dist
 
 # Build client binaries for multiple platforms (only when INCLUDE_CLIENTS is true)
 RUN if [ "${INCLUDE_CLIENTS}" = "true" ]; then \
-      CGO_ENABLED=0 GOOS=linux  GOARCH=amd64 go build -ldflags="-s -w -X main.version=${VERSION}" -o /dist/llm-client-linux-amd64  ./client/cmd/client/ && \
-      CGO_ENABLED=0 GOOS=linux  GOARCH=arm64 go build -ldflags="-s -w -X main.version=${VERSION}" -o /dist/llm-client-linux-arm64  ./client/cmd/client/ && \
-      CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w -X main.version=${VERSION}" -o /dist/llm-client-darwin-amd64 ./client/cmd/client/ && \
-      CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w -X main.version=${VERSION}" -o /dist/llm-client-darwin-arm64 ./client/cmd/client/; \
+      CGO_ENABLED=0 GOOS=linux  GOARCH=amd64 go build -ldflags="-s -w -X main.version=${VERSION}" -o /dist/llmesh-client-linux-amd64  ./client/cmd/client/ && \
+      CGO_ENABLED=0 GOOS=linux  GOARCH=arm64 go build -ldflags="-s -w -X main.version=${VERSION}" -o /dist/llmesh-client-linux-arm64  ./client/cmd/client/ && \
+      CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w -X main.version=${VERSION}" -o /dist/llmesh-client-darwin-amd64 ./client/cmd/client/ && \
+      CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w -X main.version=${VERSION}" -o /dist/llmesh-client-darwin-arm64 ./client/cmd/client/; \
     fi
 
 # Prepare /downloads with client ancillary files (only when INCLUDE_CLIENTS is true)
 RUN if [ "${INCLUDE_CLIENTS}" = "true" ]; then \
       mkdir -p /downloads && \
-      cp client/man/llm-client.1 /downloads/ && \
+      cp client/man/llmesh-client.1 /downloads/ && \
       cp client/docker-compose.client.yml /downloads/ && \
       cp router/config.yaml.example /downloads/; \
     fi

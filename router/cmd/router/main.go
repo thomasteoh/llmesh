@@ -271,7 +271,7 @@ func main() {
 	})
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
-	log.Info("llm-router listening on", "version", version, "addr", addr)
+	log.Info("llmesh-router listening on", "version", version, "addr", addr)
 	srv := &http.Server{
 		Addr:        addr,
 		Handler:     secureHeaders(mux),
