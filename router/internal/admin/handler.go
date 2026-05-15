@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"llmesh/router/internal/hub"
 	"llmesh/router/internal/logring"
@@ -32,6 +33,7 @@ type Admin struct {
 	mux           *http.ServeMux
 	log           *slog.Logger
 	sink          *logring.Sink
+	rateLimiter   *rateLimiter
 
 	// upstreamReload is called after any upstream router add/remove.
 	// Wired by main.go to connector.Reload after the connector is created.
@@ -68,6 +70,7 @@ func New(statePath string, h *hub.Hub, q *queue.Queue, reqCount func() int64, s 
 		sessions:      newSessionStore(),
 		log:           logring.NewLogger(sink, "admin", slog.LevelInfo),
 		sink:          sink,
+		rateLimiter:   newRateLimiter(1*time.Minute, 5*time.Minute),
 	}
 	if err := a.parseTemplates(); err != nil {
 		return nil, err
@@ -122,8 +125,8 @@ func (a *Admin) registerRoutes() {
 	mux.Handle("/portal/static/", http.StripPrefix("/portal", http.FileServer(http.FS(adminFS))))
 
 	// Auth (no session required)
-	mux.HandleFunc("/portal/login", a.handleLogin)
-	mux.HandleFunc("/portal/setup", a.handleSetup)
+	mux.HandleFunc("/portal/login", a.requireRateLimit(a.handleLogin, 5))
+	mux.HandleFunc("/portal/setup", a.requireRateLimit(a.handleSetup, 5))
 
 	// Logout requires auth + CSRF
 	mux.HandleFunc("/portal/logout", a.requireAuth(a.postWithCSRF(a.handleLogout)))

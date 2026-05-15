@@ -289,6 +289,72 @@ func TestDispatch_Release_CallsOnRelease(t *testing.T) {
 	}
 }
 
+func TestIsValidOrigin(t *testing.T) {
+	tests := []struct {
+		name   string
+		origin string
+		host   string
+		want   bool
+	}{
+		{
+			name:   "empty origin returns true",
+			origin: "",
+			host:   "localhost:8080",
+			want:   true,
+		},
+		{
+			name:   "matching origin returns true",
+			origin: "http://localhost:8080",
+			host:   "localhost:8080",
+			want:   true,
+		},
+		{
+			name:   "different origin returns false",
+			origin: "http://evil.com",
+			host:   "localhost:8080",
+			want:   false,
+		},
+		{
+			name:   "malformed origin returns false",
+			origin: "not-a-url",
+			host:   "localhost:8080",
+			want:   false,
+		},
+		{
+			name:   "missing scheme returns false",
+			origin: "//localhost:8080",
+			host:   "localhost:8080",
+			want:   false,
+		},
+		{
+			name:   "port mismatch returns false",
+			origin: "http://localhost:9090",
+			host:   "localhost:8080",
+			want:   false,
+		},
+		{
+			name:   "https origin with http host match returns true",
+			origin: "https://example.com",
+			host:   "example.com",
+			want:   true,
+		},
+		{
+			name:   "subdomain mismatch returns false",
+			origin: "http://sub.example.com",
+			host:   "example.com",
+			want:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isValidOrigin(tt.origin, tt.host); got != tt.want {
+				t.Errorf("isValidOrigin(%q, %q) = %v, want %v", tt.origin, tt.host, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDispatch_Release_UnknownID_IsIgnored(t *testing.T) {
 	h := New(slog.Default())
 	called := false

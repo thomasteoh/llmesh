@@ -123,7 +123,10 @@ func (s *Scheduler) drainQueue() {
 
 		req := s.queue.PopByID(best.req.ID)
 		if req == nil {
-			return // race: request already consumed; scheduler will be re-woken
+			// Request was already consumed by another iteration.
+			// Continue to check remaining clients — they may have their own best request.
+			s.log.Debug("scheduler: request already consumed by another client", "request_id", best.req.ID)
+			continue
 		}
 
 		// Rewrite alias → the specific model name the selected client serves.
