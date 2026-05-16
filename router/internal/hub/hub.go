@@ -86,6 +86,8 @@ type Client struct {
 	ExclusiveOwner   bool   // if true, only dispatch jobs from this client's owner
 	wg               sync.WaitGroup // tracks writeLoop + readLoop goroutines
 	closeOnce        sync.Once      // ensures conn.Close() happens exactly once
+	sendMu           sync.Mutex     // guards send channel close/send to prevent data race
+	sendClosed       bool
 }
 
 // ClientSummary is a snapshot of an available client used by the scheduler.
@@ -111,6 +113,16 @@ func (c *Client) DecrInFlight() {
 // close safely closes the WebSocket connection exactly once.
 func (c *Client) close() {
 	c.closeOnce.Do(func() { c.conn.Close() })
+}
+
+// closeSend closes the send channel exactly once, guarded by sendMu.
+func (c *Client) closeSend() {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if !c.sendClosed {
+		c.sendClosed = true
+		close(c.send)
+	}
 }
 
 // InFlightRecord is a snapshot of a job currently being processed by a client.
@@ -186,7 +198,7 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token
 	go h.writeLoop(client)
 	h.readLoop(client)
 
-	close(client.send)
+	client.closeSend()
 	client.wg.Wait()
 
 	// Collect in-flight jobs before removing the client so we can fail them immediately.
@@ -376,11 +388,13 @@ func (h *Hub) SendToClient(clientID string, msg any) bool {
 	if !ok {
 		return false
 	}
-	if client.send == nil {
-		return false
-	}
 	data, err := json.Marshal(msg)
 	if err != nil {
+		return false
+	}
+	client.sendMu.Lock()
+	defer client.sendMu.Unlock()
+	if client.sendClosed {
 		return false
 	}
 	select {
