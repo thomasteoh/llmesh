@@ -2,6 +2,7 @@ package hub
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -24,8 +25,49 @@ const LeaseDuration = 20 * time.Minute
 // plus any retries triggered by client errors or disconnects.
 const MaxAttempts = 3
 
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+// isValidOrigin validates the Origin header against the Host header.
+// It allows empty origin (non-browser clients) and host-based matching
+// (scheme+host from Origin must match Host).
+func isValidOrigin(origin, host string) bool {
+	if origin == "" {
+		return true // non-browser clients (curl, SDK) may not send Origin
+	}
+	u, err := parseOrigin(origin)
+	if err != nil {
+		return false // malformed origin
+	}
+	return u.Host == host
+}
+
+// parseOrigin extracts scheme and host from an origin string.
+func parseOrigin(origin string) (schemeHost, error) {
+	const sep = "://"
+	idx := indexStr(origin, sep)
+	if idx < 0 {
+		return schemeHost{}, errMalformedOrigin
+	}
+	scheme := origin[:idx]
+	rest := origin[idx+len(sep):]
+	if scheme == "" || rest == "" {
+		return schemeHost{}, errMalformedOrigin
+	}
+	return schemeHost{Scheme: scheme, Host: rest}, nil
+}
+
+type schemeHost struct {
+	Scheme string
+	Host   string
+}
+
+var errMalformedOrigin = fmt.Errorf("malformed origin")
+
+func indexStr(s, substr string) int {
+	for i := 0; i+len(substr) <= len(s); i++ {
+		if s[i:i+len(substr)] == substr {
+			return i
+		}
+	}
+	return -1
 }
 
 // Client represents a connected llmesh-client node.
@@ -37,11 +79,15 @@ type Client struct {
 	ModelContextSizes map[string]int  // model name → context size in tokens (0 = unknown)
 	MaxConcurrent     int             // 0 until "register" message received
 	inFlight          atomic.Int32
-	Name           string
-	Owner          string
-	Token          string
-	Version        string // client version from register message
-	ExclusiveOwner bool   // if true, only dispatch jobs from this client's owner
+	Name             string
+	Owner            string
+	Token            string
+	Version          string // client version from register message
+	ExclusiveOwner   bool   // if true, only dispatch jobs from this client's owner
+	wg               sync.WaitGroup // tracks writeLoop + readLoop goroutines
+	closeOnce        sync.Once      // ensures conn.Close() happens exactly once
+	sendMu           sync.Mutex     // guards send channel close/send to prevent data race
+	sendClosed       bool
 }
 
 // ClientSummary is a snapshot of an available client used by the scheduler.
@@ -62,6 +108,21 @@ func (c *Client) IncrInFlight() {
 
 func (c *Client) DecrInFlight() {
 	c.inFlight.Add(-1)
+}
+
+// close safely closes the WebSocket connection exactly once.
+func (c *Client) close() {
+	c.closeOnce.Do(func() { c.conn.Close() })
+}
+
+// closeSend closes the send channel exactly once, guarded by sendMu.
+func (c *Client) closeSend() {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if !c.sendClosed {
+		c.sendClosed = true
+		close(c.send)
+	}
 }
 
 // InFlightRecord is a snapshot of a job currently being processed by a client.
@@ -105,7 +166,13 @@ func New(logger *slog.Logger) *Hub {
 // ServeWS upgrades an HTTP connection to WebSocket and registers the client.
 // The caller should have already validated auth.
 func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token string, exclusiveOwner bool) {
-	conn, err := upgrader.Upgrade(w, r, nil)
+	origin := r.Header.Get("Origin")
+	if !isValidOrigin(origin, r.Host) {
+		h.log.Warn("hub: ws origin rejected", "origin", origin, "host", r.Host)
+		http.Error(w, "origin not allowed", http.StatusForbidden)
+		return
+	}
+	conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
 	if err != nil {
 		h.log.Error("hub: ws upgrade error", "error", err)
 		return
@@ -127,8 +194,12 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token
 
 	h.log.Info("hub: client connected", "id", client.ID, "name", name, "owner", owner)
 
+	client.wg.Add(2)
 	go h.writeLoop(client)
 	h.readLoop(client)
+
+	client.closeSend()
+	client.wg.Wait()
 
 	// Collect in-flight jobs before removing the client so we can fail them immediately.
 	// dispatch() only runs from within readLoop (which has already returned), so there
@@ -141,7 +212,6 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token
 		h.lastSeen[token] = time.Now()
 	}
 	h.mu.Unlock()
-	close(client.send)
 	h.log.Info("hub: client disconnected", "id", client.ID)
 
 	// Immediately fail (or retry) any jobs that were in-flight when the client disconnected.
@@ -181,7 +251,8 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token
 }
 
 func (h *Hub) readLoop(client *Client) {
-	defer client.conn.Close()
+	defer client.wg.Done()
+	defer client.close()
 	for {
 		_, data, err := client.conn.ReadMessage()
 		if err != nil {
@@ -192,10 +263,11 @@ func (h *Hub) readLoop(client *Client) {
 }
 
 func (h *Hub) writeLoop(client *Client) {
+	defer client.wg.Done()
 	for msg := range client.send {
 		if err := client.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
 			h.log.Error("hub: write error", "id", client.ID, "error", err)
-			client.conn.Close() // force readLoop to exit immediately
+			client.close() // force readLoop to exit immediately
 			return
 		}
 	}
@@ -318,6 +390,11 @@ func (h *Hub) SendToClient(clientID string, msg any) bool {
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {
+		return false
+	}
+	client.sendMu.Lock()
+	defer client.sendMu.Unlock()
+	if client.sendClosed {
 		return false
 	}
 	select {
@@ -507,6 +584,9 @@ func (h *Hub) CancelRequest(requestID string) {
 	}
 	h.mu.RLock()
 	for _, c := range h.clients {
+		if c.send == nil {
+			continue
+		}
 		select {
 		case c.send <- data:
 		default:
@@ -585,7 +665,7 @@ func (h *Hub) CloseByToken(token string) {
 	}
 	h.mu.RUnlock()
 	for _, c := range targets {
-		c.conn.Close()
+		c.close()
 	}
 }
 

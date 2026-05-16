@@ -127,6 +127,37 @@ func (a *Admin) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	})
 }
 
+// requireCSRF wraps a handler, validating the CSRF token on POST requests.
+// Token is extracted from the "csrf_token" form value or "X-CSRF-Token" header.
+// Returns 403 if the token is missing or invalid, then short-circuits.
+func (a *Admin) requireCSRF(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			next(w, r)
+			return
+		}
+		u := ctxGetUser(r)
+		// Extract token from form value or header
+		token := r.Header.Get("X-CSRF-Token")
+		if token == "" {
+			_ = r.ParseForm()
+			token = r.FormValue("csrf_token")
+		}
+		if !a.state.ConsumeCSRF(u.Username, token) {
+			// Refresh a new token so the page can re-render with a fresh one.
+			newToken, err := a.state.RefreshCSRFToken(u.Username)
+			if err == nil && newToken != "" {
+				if c, err := r.Cookie(sessionCookie); err == nil {
+					a.sessions.setCSRF(c.Value, newToken)
+				}
+			}
+			http.Error(w, "forbidden: invalid CSRF token", http.StatusForbidden)
+			return
+		}
+		next(w, r)
+	}
+}
+
 // ctxGetUser retrieves the authenticated User from the request context.
 // Only valid inside a requireAuth-wrapped handler.
 func ctxGetUser(r *http.Request) User {

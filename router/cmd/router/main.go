@@ -1,15 +1,17 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"html/template"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
-
-	"context"
+	"syscall"
+	"time"
 
 	"llmesh/pkg/types"
 	routerPkg "llmesh/router"
@@ -277,8 +279,23 @@ func main() {
 		Handler:     secureHeaders(mux),
 		IdleTimeout: 0, // disabled: SSE streams must not be closed for inactivity
 	}
-	if err := srv.ListenAndServe(); err != nil {
-		log.Error("listen and serve", "error", err)
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+
+	go func() {
+		<-sigCh
+		log.Info("shutting down...")
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		sched.Stop()
+		if err := srv.Shutdown(ctx); err != nil {
+			log.Error("shutdown error", "error", err)
+		}
+	}()
+
+	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+		log.Error("server", "error", err)
 		os.Exit(1)
 	}
 }
