@@ -574,9 +574,39 @@ func (h *Hub) AllInFlightJobs() []InFlightRecord {
 	return out
 }
 
-// CancelRequest broadcasts a cancel message to all connected clients for the given requestID.
-// Clients not currently processing that request silently ignore it.
+// CancelRequest untracks the in-flight job and sends a cancel message to the
+// llmesh-client holding it. The slot is freed immediately rather than waiting
+// for the 20-minute lease — this is the correct behaviour when the HTTP client
+// has already given up (timeout or disconnect).
+//
+// If the request is not currently in-flight (already completed, expired, or
+// never dispatched) the cancel message is still broadcast so any stale
+// processing is stopped, but there is nothing to untrack.
 func (h *Hub) CancelRequest(requestID string) {
+	// Atomically remove the job record so we get the clientID for the decrement.
+	h.mu.Lock()
+	rec, existed := h.jobs[requestID]
+	if existed {
+		delete(h.jobs, requestID)
+	}
+	h.mu.Unlock()
+
+	if existed {
+		// Free the client slot immediately.
+		h.mu.RLock()
+		client, ok := h.clients[rec.ClientID]
+		h.mu.RUnlock()
+		if ok {
+			client.DecrInFlight()
+		}
+		h.log.Info("hub: cancel freed slot", "request_id", requestID, "client_id", rec.ClientID)
+		if h.OnAvailable != nil {
+			h.OnAvailable()
+		}
+	}
+
+	// Broadcast cancel so the llmesh-client stops processing (saves compute).
+	// Clients not holding this request ID silently ignore it.
 	msg := types.CancelMsg{Type: "cancel", RequestID: requestID}
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -584,13 +614,14 @@ func (h *Hub) CancelRequest(requestID string) {
 	}
 	h.mu.RLock()
 	for _, c := range h.clients {
-		if c.send == nil {
-			continue
+		c.sendMu.Lock()
+		if !c.sendClosed {
+			select {
+			case c.send <- data:
+			default:
+			}
 		}
-		select {
-		case c.send <- data:
-		default:
-		}
+		c.sendMu.Unlock()
 	}
 	h.mu.RUnlock()
 }
