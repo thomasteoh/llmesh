@@ -374,3 +374,106 @@ func TestDispatch_Release_UnknownID_IsIgnored(t *testing.T) {
 		t.Error("OnRelease should not be called for unknown request ID")
 	}
 }
+
+// TestCancelRequest_FreesSlot verifies that CancelRequest untracks the job and
+// decrements the in-flight counter immediately — not after the 20-min lease.
+// This is the fix for the orphaned-lease bug where an app client that times out
+// and disconnects leaves the llmesh-client slot occupied until the lease reaper runs.
+func TestCancelRequest_FreesSlot(t *testing.T) {
+	h := New(slog.Default())
+
+	// Set OnAvailable before any connections so dispatch() never races on the field.
+	// Use a large buffer so registration-triggered wakes don't block.
+	available := make(chan struct{}, 10)
+	h.OnAvailable = func() { available <- struct{}{} }
+
+	// Connect and register a client.
+	conn := dialHub(t, h, "mac", "alice", "ct-cancel-slot")
+	defer conn.Close()
+	time.Sleep(20 * time.Millisecond)
+
+	reg := `{"type":"register","models":[{"name":"llama3"}],"max_concurrent":1}`
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(reg)); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	time.Sleep(30 * time.Millisecond)
+
+	h.mu.RLock()
+	var clientID string
+	for id := range h.clients {
+		clientID = id
+	}
+	h.mu.RUnlock()
+	if clientID == "" {
+		t.Fatal("no client registered")
+	}
+
+	// Drain registration-triggered wakes so the post-cancel check is unambiguous.
+	for len(available) > 0 {
+		<-available
+	}
+
+	// Simulate a dispatched job: increment in-flight and track.
+	req := types.InferenceRequest{ID: "req-cancel-1", Model: "llama3"}
+	h.IncrInFlight(clientID)
+	h.TrackJob(clientID, req)
+
+	// App client disconnects — router calls CancelRequest.
+	h.CancelRequest(req.ID)
+
+	// Job must be untracked immediately.
+	h.mu.RLock()
+	_, stillTracked := h.jobs[req.ID]
+	h.mu.RUnlock()
+	if stillTracked {
+		t.Error("job should be untracked after CancelRequest")
+	}
+
+	// Client in-flight counter must be back to zero.
+	h.mu.RLock()
+	client := h.clients[clientID]
+	h.mu.RUnlock()
+	if client.InFlight() != 0 {
+		t.Errorf("InFlight = %d after CancelRequest, want 0", client.InFlight())
+	}
+
+	// Scheduler must have been woken (CancelRequest calls OnAvailable synchronously).
+	select {
+	case <-available:
+	default:
+		t.Error("OnAvailable should have been called after CancelRequest")
+	}
+}
+
+// TestCancelRequest_NoopForUnknown verifies that CancelRequest on an already-completed
+// or never-dispatched request does not panic and does not double-decrement.
+func TestCancelRequest_NoopForUnknown(t *testing.T) {
+	h := New(slog.Default())
+	conn := dialHub(t, h, "mac", "alice", "ct-cancel-noop")
+	defer conn.Close()
+	time.Sleep(20 * time.Millisecond)
+
+	reg := `{"type":"register","models":[{"name":"llama3"}],"max_concurrent":2}`
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(reg)); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	time.Sleep(30 * time.Millisecond)
+
+	h.mu.RLock()
+	var clientID string
+	for id := range h.clients {
+		clientID = id
+	}
+	h.mu.RUnlock()
+
+	// InFlight is currently 0. Calling CancelRequest for an unknown ID must not
+	// decrement it below 0.
+	h.CancelRequest("req-does-not-exist")
+
+	h.mu.RLock()
+	client := h.clients[clientID]
+	h.mu.RUnlock()
+	if client.InFlight() != 0 {
+		t.Errorf("InFlight = %d, want 0 after CancelRequest on unknown ID", client.InFlight())
+	}
+}
