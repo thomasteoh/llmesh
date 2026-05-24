@@ -8,9 +8,10 @@ import (
 // Queue is a thread-safe priority queue.
 // Requests are ordered by priority (lower = higher priority), then by EnqueuedAt (FIFO within tier).
 type Queue struct {
-	mu    sync.Mutex
-	cond  *sync.Cond
-	items []types.InferenceRequest
+	mu       sync.Mutex
+	cond     *sync.Cond
+	items    []types.InferenceRequest
+	MaxDepth int // 0 = unlimited
 }
 
 // New creates and returns an empty Queue.
@@ -20,12 +21,26 @@ func New() *Queue {
 	return q
 }
 
-// Push adds a request to the queue and signals waiting goroutines.
+// Push adds a request unconditionally (used for internal re-queues).
 func (q *Queue) Push(req types.InferenceRequest) {
 	q.mu.Lock()
 	q.items = append(q.items, req)
 	q.cond.Signal()
 	q.mu.Unlock()
+}
+
+// TryPush adds a request and returns true, or returns false without adding if
+// MaxDepth > 0 and the queue is at capacity. Used for new API requests.
+func (q *Queue) TryPush(req types.InferenceRequest) bool {
+	q.mu.Lock()
+	if q.MaxDepth > 0 && len(q.items) >= q.MaxDepth {
+		q.mu.Unlock()
+		return false
+	}
+	q.items = append(q.items, req)
+	q.cond.Signal()
+	q.mu.Unlock()
+	return true
 }
 
 // Len returns the number of items in the queue.

@@ -99,3 +99,49 @@ func TestLen(t *testing.T) {
 		t.Fatal("expected 1")
 	}
 }
+
+func TestTryPush_AcceptsWhenUnderCap(t *testing.T) {
+	q := New()
+	q.MaxDepth = 2
+	if !q.TryPush(req("llama", types.PriorityNormal, 0)) {
+		t.Fatal("expected TryPush to succeed under cap")
+	}
+	if !q.TryPush(req("llama", types.PriorityNormal, 0)) {
+		t.Fatal("expected TryPush to succeed at cap boundary")
+	}
+}
+
+func TestTryPush_RejectsWhenFull(t *testing.T) {
+	q := New()
+	q.MaxDepth = 1
+	if !q.TryPush(req("llama", types.PriorityNormal, 0)) {
+		t.Fatal("first push should succeed")
+	}
+	if q.TryPush(req("llama", types.PriorityNormal, 0)) {
+		t.Fatal("second push should be rejected when queue is full")
+	}
+	if q.Len() != 1 {
+		t.Fatalf("queue length should be 1 after rejected push, got %d", q.Len())
+	}
+}
+
+func TestTryPush_UnlimitedWhenZero(t *testing.T) {
+	q := New()
+	// MaxDepth == 0 means unlimited; TryPush should always succeed.
+	for i := 0; i < 100; i++ {
+		if !q.TryPush(req("llama", types.PriorityNormal, 0)) {
+			t.Fatalf("TryPush should not reject when MaxDepth == 0 (unlimited)")
+		}
+	}
+}
+
+// Push (unconditional, for re-queues) must bypass the cap.
+func TestPush_BypassesCap(t *testing.T) {
+	q := New()
+	q.MaxDepth = 1
+	q.Push(req("llama", types.PriorityNormal, 0))
+	q.Push(req("llama", types.PriorityNormal, 0)) // should not panic or drop
+	if q.Len() != 2 {
+		t.Fatalf("Push should bypass cap, got len=%d", q.Len())
+	}
+}

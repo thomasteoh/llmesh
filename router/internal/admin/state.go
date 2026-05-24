@@ -119,13 +119,17 @@ func LoadState(path string) (*State, error) {
 	return s, nil
 }
 
-// save writes state to disk. Caller must hold write lock.
+// save writes state to disk atomically. Caller must hold write lock.
 func (s *State) save() error {
 	data, err := json.MarshalIndent(s.data, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path, data, 0600)
+	tmp := s.path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.path)
 }
 
 func (s *State) NeedsSetup() bool {

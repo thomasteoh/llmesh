@@ -16,9 +16,9 @@ import (
 )
 
 // LeaseDuration is the maximum time a dispatched job may remain in-flight
-// before the lease reaper reclaims the slot. Matches the worst-case HTTP handler
-// timeout: 15 min TTFT + 5 min activity = 20 min.
-const LeaseDuration = 20 * time.Minute
+// before the lease reaper reclaims the slot. Should be >= TTFT + activity timeouts.
+// Configurable via config.yaml (timeouts.lease_minutes); default 20 min.
+var LeaseDuration = 20 * time.Minute
 
 // MaxAttempts is the total number of times a request may be dispatched to a
 // client before being failed back to the caller. Counts the initial attempt

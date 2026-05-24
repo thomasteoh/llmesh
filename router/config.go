@@ -3,6 +3,7 @@ package router
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -12,8 +13,67 @@ type Config struct {
 	Server struct {
 		Port int `yaml:"port"`
 	} `yaml:"server"`
-	Name string `yaml:"name"` // brand name shown on landing page
-	Host   string `yaml:"host"`   // hostname clients use to connect
+	Name     string `yaml:"name"` // brand name shown on landing page
+	Host     string `yaml:"host"` // hostname clients use to connect
+	Timeouts struct {
+		// TTFTMinutes is the time allowed from enqueue to first token (covers queue wait +
+		// prompt eval on slow hardware). Default: 15.
+		TTFTMinutes int `yaml:"ttft_minutes"`
+		// ActivityMinutes is the maximum silence between tokens before a stream is aborted.
+		// Default: 5.
+		ActivityMinutes int `yaml:"activity_minutes"`
+		// BatchMinutes is the total timeout for non-streaming requests per attempt. Default: 10.
+		BatchMinutes int `yaml:"batch_minutes"`
+		// KeepAliveSeconds is the SSE keep-alive comment interval. Default: 15.
+		KeepAliveSeconds int `yaml:"keep_alive_seconds"`
+		// LeaseMinutes is how long a dispatched job may remain in-flight before the slot
+		// is reclaimed. Should be >= TTFTMinutes + ActivityMinutes. Default: 20.
+		LeaseMinutes int `yaml:"lease_minutes"`
+		// QueueMaxDepth is the maximum number of requests held in the queue before new
+		// requests are rejected with HTTP 429. 0 means unlimited. Default: 0.
+		QueueMaxDepth int `yaml:"queue_max_depth"`
+	} `yaml:"timeouts"`
+}
+
+// Timeouts returns resolved time.Duration values, applying defaults for any zero fields.
+func (c *Config) ResolvedTimeouts() Timeouts {
+	t := Timeouts{
+		TTFT:          15 * time.Minute,
+		Activity:      5 * time.Minute,
+		Batch:         10 * time.Minute,
+		KeepAlive:     15 * time.Second,
+		Lease:         20 * time.Minute,
+		QueueMaxDepth: 0,
+	}
+	if v := c.Timeouts.TTFTMinutes; v > 0 {
+		t.TTFT = time.Duration(v) * time.Minute
+	}
+	if v := c.Timeouts.ActivityMinutes; v > 0 {
+		t.Activity = time.Duration(v) * time.Minute
+	}
+	if v := c.Timeouts.BatchMinutes; v > 0 {
+		t.Batch = time.Duration(v) * time.Minute
+	}
+	if v := c.Timeouts.KeepAliveSeconds; v > 0 {
+		t.KeepAlive = time.Duration(v) * time.Second
+	}
+	if v := c.Timeouts.LeaseMinutes; v > 0 {
+		t.Lease = time.Duration(v) * time.Minute
+	}
+	if v := c.Timeouts.QueueMaxDepth; v > 0 {
+		t.QueueMaxDepth = v
+	}
+	return t
+}
+
+// Timeouts holds resolved duration values for use by handler and hub.
+type Timeouts struct {
+	TTFT          time.Duration
+	Activity      time.Duration
+	Batch         time.Duration
+	KeepAlive     time.Duration
+	Lease         time.Duration
+	QueueMaxDepth int
 }
 
 // LoadConfig reads a YAML config file at path.
