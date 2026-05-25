@@ -63,15 +63,47 @@ type Canceller interface {
 }
 
 type Handler struct {
-	Keys         APIKeyStore
-	Models       ModelStore
-	Aliases      AliasStore
-	Stats        StatsRecorder
-	Queue        *queue.Queue
-	Correlation  *correlation.Store
-	Scheduler    *scheduler.Scheduler
-	Canceller    Canceller // optional; nil = no cancellation
-	requestCount atomic.Int64
+	Keys              APIKeyStore
+	Models            ModelStore
+	Aliases           AliasStore
+	Stats             StatsRecorder
+	Queue             *queue.Queue
+	Correlation       *correlation.Store
+	Scheduler         *scheduler.Scheduler
+	Canceller         Canceller // optional; nil = no cancellation
+	TTFTTimeout       time.Duration
+	ActivityTimeout   time.Duration
+	BatchTimeout      time.Duration
+	KeepAliveInterval time.Duration
+	requestCount      atomic.Int64
+}
+
+func (h *Handler) ttftTimeout() time.Duration {
+	if h.TTFTTimeout > 0 {
+		return h.TTFTTimeout
+	}
+	return 15 * time.Minute
+}
+
+func (h *Handler) activityTimeout() time.Duration {
+	if h.ActivityTimeout > 0 {
+		return h.ActivityTimeout
+	}
+	return 5 * time.Minute
+}
+
+func (h *Handler) batchTimeout() time.Duration {
+	if h.BatchTimeout > 0 {
+		return h.BatchTimeout
+	}
+	return 10 * time.Minute
+}
+
+func (h *Handler) keepAliveInterval() time.Duration {
+	if h.KeepAliveInterval > 0 {
+		return h.KeepAliveInterval
+	}
+	return 15 * time.Second
 }
 
 // Count returns the total number of API requests handled since startup.
@@ -175,12 +207,18 @@ func (h *Handler) enqueue(
 	h.requestCount.Add(1)
 	req.EnqueuedAt = time.Now()
 
-	apiLogger().Info("api: request enqueued", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "key_label", req.APIKeyLabel, "priority", priorityName(int(req.Priority)), "stream", req.Stream, "word_count", req.WordCount, "ip", clientIP(r))
-
 	ch := h.Correlation.Create(req.ID)
 	defer h.Correlation.Delete(req.ID)
 
-	h.Queue.Push(*req)
+	if !h.Queue.TryPush(*req) {
+		apiLogger().Warn("api: queue full, rejecting request", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "queue_depth", h.Queue.Len())
+		h.Correlation.Delete(req.ID)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"error":{"message":"server busy, queue is full — try again shortly","type":"server_error"}}` + "\n"))
+		return
+	}
+	apiLogger().Info("api: request enqueued", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "key_label", req.APIKeyLabel, "priority", priorityName(int(req.Priority)), "stream", req.Stream, "word_count", req.WordCount, "ip", clientIP(r), "queue_depth", h.Queue.Len())
 	h.Scheduler.Wake()
 
 	if req.Stream {
@@ -200,18 +238,18 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 		return
 	}
 
-	// Phase 1 — queue + TTFT timer: 15min to receive the first chunk.
-	// Covers queue wait, prompt evaluation, and time-to-first-token.
-	// Generous because large-context prompt eval on slow local hardware can take
-	// many minutes before producing the first output token.
-	queueTimer := time.NewTimer(15 * time.Minute)
+	ttft := h.ttftTimeout()
+	activity := h.activityTimeout()
+
+	// Phase 1 — queue + TTFT timer: covers queue wait, prompt evaluation, and
+	// time-to-first-token. Generous because large-context prompt eval on slow
+	// local hardware can take many minutes before producing the first output token.
+	queueTimer := time.NewTimer(ttft)
 	defer queueTimer.Stop()
 
 	// Phase 2 — activity timer: resets on every chunk. Fires only if the worker
-	// goes silent for 5min, indicating a crash or stuck inference.
-	// Generous enough for slow local hardware while avoiding long waits on
-	// genuinely stuck inference.
-	activityTimer := time.NewTimer(5 * time.Minute)
+	// goes silent, indicating a crash or stuck inference.
+	activityTimer := time.NewTimer(activity)
 	activityTimer.Stop() // activated when first chunk arrives
 	defer activityTimer.Stop()
 
@@ -222,12 +260,12 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 			default:
 			}
 		}
-		activityTimer.Reset(5 * time.Minute)
+		activityTimer.Reset(activity)
 	}
 
-	// SSE keep-alive: send a comment line every 15s while waiting for first chunk.
+	// SSE keep-alive: send a comment line periodically while waiting for first chunk.
 	// Prevents HTTP clients from treating an idle connection as timed out.
-	keepAlive := time.NewTicker(15 * time.Second)
+	keepAlive := time.NewTicker(h.keepAliveInterval())
 	defer keepAlive.Stop()
 
 	started := false
@@ -298,12 +336,12 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 			fmt.Fprintf(w, ": ping\n\n")
 			flusher.Flush()
 		case <-queueTimer.C:
-			apiLogger().Error("api: stream timeout", "request_id", req.ID, "timeout", "15min")
+			apiLogger().Error("api: stream timeout", "request_id", req.ID, "timeout", ttft.String())
 			h.cancelRequest(req.ID)
 			serviceUnavailable(w, "request timed out waiting for a worker")
 			return
 		case <-activityTimer.C:
-			apiLogger().Warn("api: stream worker silent", "request_id", req.ID, "timeout", "5min")
+			apiLogger().Warn("api: stream worker silent", "request_id", req.ID, "timeout", activity.String())
 			h.cancelRequest(req.ID)
 			fmt.Fprintf(w, "data: {\"error\":\"worker stopped responding\"}\n\n")
 			flusher.Flush()
@@ -317,8 +355,8 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 }
 
 func (h *Handler) batchResponse(w http.ResponseWriter, r *http.Request, req *types.InferenceRequest, ch <-chan types.ChunkMsg) {
-	// 10min covers queue wait + full inference for large coding requests.
-	timeout := time.NewTimer(10 * time.Minute)
+	batch := h.batchTimeout()
+	timeout := time.NewTimer(batch)
 	defer timeout.Stop()
 
 	var sb strings.Builder
@@ -371,10 +409,10 @@ func (h *Handler) batchResponse(w http.ResponseWriter, r *http.Request, req *typ
 				finishReason = "stop"
 				h.Queue.Push(*req)
 				h.Scheduler.Wake()
-				timeout.Reset(10 * time.Minute)
+				timeout.Reset(batch)
 				continue
 			}
-			apiLogger().Error("api: batch timeout", "request_id", req.ID, "timeout", "10min", "attempts", req.Attempts)
+			apiLogger().Error("api: batch timeout", "request_id", req.ID, "timeout", batch.String(), "attempts", req.Attempts)
 			serviceUnavailable(w, "request timed out")
 			h.cancelRequest(req.ID)
 			return

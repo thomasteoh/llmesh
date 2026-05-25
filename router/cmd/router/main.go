@@ -156,7 +156,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	timeouts := cfg.ResolvedTimeouts()
+	hub.LeaseDuration = timeouts.Lease
+
 	q := queue.New()
+	q.MaxDepth = timeouts.QueueMaxDepth
 	store := correlation.New(logring.NewLogger(sink, "correlation", slog.LevelInfo))
 	h := hub.New(logring.NewLogger(sink, "hub", slog.LevelInfo))
 	reqStats := stats.New()
@@ -210,14 +214,18 @@ func main() {
 	adminHandler.SetConnectorStatus(conn.Connected)
 
 	apiHandler = &api.Handler{
-		Keys:        adminHandler.State(),
-		Models:      h,
-		Aliases:     adminHandler.State(),
-		Stats:       reqStats,
-		Queue:       q,
-		Correlation: store,
-		Scheduler:   sched,
-		Canceller:   h,
+		Keys:              adminHandler.State(),
+		Models:            h,
+		Aliases:           adminHandler.State(),
+		Stats:             reqStats,
+		Queue:             q,
+		Correlation:       store,
+		Scheduler:         sched,
+		Canceller:         h,
+		TTFTTimeout:       timeouts.TTFT,
+		ActivityTimeout:   timeouts.Activity,
+		BatchTimeout:      timeouts.Batch,
+		KeepAliveInterval: timeouts.KeepAlive,
 	}
 
 	mux := http.NewServeMux()
