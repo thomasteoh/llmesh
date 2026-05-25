@@ -135,9 +135,28 @@ server:
 | `host` | `llmesh.example.com` | Public hostname used in admin UI when generating client config |
 | `server.port` | `53002` | Port the router listens on |
 
+### Model Routing
+
+Requests are matched to clients using the `model` field in three ways:
+
+| `model` value | Behaviour |
+|---------------|-----------|
+| Canonical name (e.g. `llama3.2:3b`) | Must exactly match a model the client has registered |
+| Alias (e.g. `qwen`) | Resolved via the alias map in admin Settings; the scheduler rewrites the field to the canonical name before dispatch |
+| `any` (pseudo-model) | Matches any client with at least one model loaded; the scheduler rewrites the field to the client's actual model name before dispatch |
+
+**Alias configuration** — Portal → Settings → Model Aliases. Each alias maps to one or more canonical model names. If multiple targets are listed, the first one the selected client supports is used.
+
+**`any` pseudo-model** — useful when the caller doesn't care which model handles the request (e.g. internal tooling, health probes, load tests). All normal dispatch constraints still apply:
+- Exclusive clients only serve their own owner's requests — an `any` request from a different owner will not be dispatched to an exclusive client.
+- Priority and FIFO ordering are unchanged.
+- The `model` field in the forwarded job is always a concrete model name; the client never sees `"any"`.
+
 ### Priority Queue (`router/internal/queue`)
 
-Flat-slice with O(n) linear scan. `PopBest(availableModels)` returns the highest-priority request whose model has an available client. Within the same priority tier, oldest enqueue time wins (FIFO).
+Flat-slice with O(n) linear scan. `PopBest(availableModels)` returns the highest-priority request whose model (or alias, or `any`) has an available client. Within the same priority tier, oldest enqueue time wins (FIFO).
+
+A configurable `MaxDepth` cap limits queue size. New API requests use `TryPush` (returns HTTP 429 when full); internal re-queues (retries, lease releases) use `Push` and bypass the cap.
 
 ### Hub (`router/internal/hub`)
 
@@ -145,6 +164,7 @@ WebSocket hub + client registry. Each connected client tracks:
 - Supported models (`map[string]bool`)
 - Max concurrent jobs
 - In-flight count (atomic)
+- `ExclusiveOwner bool` — when true, the client only receives jobs from its own owner (configured per-client in the portal)
 
 `FindAvailable(model)` returns a client ID with capacity. `OnChunk` / `OnError` callbacks wire to the correlation store.
 
@@ -154,7 +174,7 @@ Single-goroutine dispatch loop. Woken by:
 1. New request enqueued (`Wake()`)
 2. Client finishes a job (`hub.OnAvailable` callback)
 
-On each wake: calls `AvailableModels()`, `PopBest`, `FindAvailable`, increments in-flight, sends `JobMsg` over WS.
+On each wake: for each available client, finds the best matching request (affinity > priority > FIFO), picks the globally best (client, request) pair, rewrites alias/`any` to the concrete model name, and sends a `JobMsg` over WS.
 
 ### Correlation Store (`router/internal/correlation`)
 

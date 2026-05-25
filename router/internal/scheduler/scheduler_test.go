@@ -153,6 +153,62 @@ func TestDrainQueue_SharedClient_DispatchesAnyOwnerJob(t *testing.T) {
 	}
 }
 
+func TestDrainQueue_AnyModel_ExclusiveClient_SkipsNonOwner(t *testing.T) {
+	h := hub.New(slog.Default())
+	q := queue.New()
+	s := New(q, h, noAlias{}, slog.Default())
+
+	// Exclusive client owned by alice — must not accept bob's "any" request.
+	conn := dialClient(t, h, "alice", "ct-alice-any-excl", true)
+	registerModels(t, conn, "llama3")
+
+	q.Push(types.InferenceRequest{
+		ID:         "req-bob-any",
+		Model:      "any",
+		Owner:      "bob",
+		EnqueuedAt: time.Now(),
+	})
+
+	s.drainQueue()
+
+	if q.Len() == 0 {
+		t.Error("exclusive client should not dispatch non-owner 'any' request; job must remain in queue")
+	}
+	if job := readJob(t, conn, 100*time.Millisecond); job != nil {
+		t.Errorf("exclusive client received non-owner 'any' request: %s", job.Request.ID)
+	}
+}
+
+func TestDrainQueue_AnyModel_SharedClient_RewritesModel(t *testing.T) {
+	h := hub.New(slog.Default())
+	q := queue.New()
+	s := New(q, h, noAlias{}, slog.Default())
+
+	// Shared client — should accept "any" and receive job with rewritten model name.
+	conn := dialClient(t, h, "alice", "ct-alice-any-shared", false)
+	registerModels(t, conn, "llama3")
+
+	q.Push(types.InferenceRequest{
+		ID:         "req-bob-any-shared",
+		Model:      "any",
+		Owner:      "bob",
+		EnqueuedAt: time.Now(),
+	})
+
+	s.drainQueue()
+
+	job := readJob(t, conn, 300*time.Millisecond)
+	if job == nil {
+		t.Fatal("shared client should dispatch 'any' request")
+	}
+	if job.Request.Model == "any" {
+		t.Error("scheduler should rewrite 'any' to the client's actual model before dispatch")
+	}
+	if job.Request.Model != "llama3" {
+		t.Errorf("expected model rewritten to 'llama3', got %q", job.Request.Model)
+	}
+}
+
 func TestSetClientExclusive_UpdatesInMemoryClient(t *testing.T) {
 	h := hub.New(slog.Default())
 
