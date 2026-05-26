@@ -18,6 +18,7 @@ import (
 	"llmesh/router/internal/admin"
 	"llmesh/router/internal/api"
 	"llmesh/router/internal/correlation"
+	"llmesh/router/internal/dedup"
 	"llmesh/router/internal/hub"
 	"llmesh/router/internal/logring"
 	"llmesh/router/internal/queue"
@@ -222,6 +223,7 @@ func main() {
 		Correlation:       store,
 		Scheduler:         sched,
 		Canceller:         h,
+		Dedup:             dedup.New(),
 		TTFTTimeout:       timeouts.TTFT,
 		ActivityTimeout:   timeouts.Activity,
 		BatchTimeout:      timeouts.Batch,
