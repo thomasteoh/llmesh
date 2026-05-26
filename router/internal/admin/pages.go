@@ -150,6 +150,20 @@ type UserRow struct {
 	IsSelf bool
 }
 
+// invertAliasMap returns model→[]aliases from an alias→[]models map, with each alias list sorted.
+func invertAliasMap(aliasMap map[string][]string) map[string][]string {
+	inv := make(map[string][]string, len(aliasMap))
+	for alias, targets := range aliasMap {
+		for _, model := range targets {
+			inv[model] = append(inv[model], alias)
+		}
+	}
+	for m := range inv {
+		sort.Strings(inv[m])
+	}
+	return inv
+}
+
 func (a *Admin) newBasePage(page string, u User) basePage {
 	bp := basePage{
 		Page:          page,
@@ -223,16 +237,7 @@ func (a *Admin) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	activeModels := a.hub.ActiveModels()
 	sort.Strings(activeModels)
 	activeAliases := a.state.AliasMap()
-	// Build inverted map: model → []aliases pointing to it
-	modelAliases := make(map[string][]string)
-	for alias, targets := range activeAliases {
-		for _, t := range targets {
-			modelAliases[t] = append(modelAliases[t], alias)
-		}
-	}
-	for m := range modelAliases {
-		sort.Strings(modelAliases[m])
-	}
+	modelAliases := invertAliasMap(activeAliases)
 	data := DashboardPage{
 		basePage:      a.newBasePage("dashboard", u),
 		TotalRequests: a.reqCount(),
@@ -342,17 +347,7 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, u User, newToken, form
 
 	rawTokens := a.state.ClientTokensFor(u.Username, u.Role == "admin")
 
-	// Build inverted alias map: model name → []aliases
-	aliasMap := a.state.AliasMap()
-	modelAliases := make(map[string][]string)
-	for alias, targets := range aliasMap {
-		for _, model := range targets {
-			modelAliases[model] = append(modelAliases[model], alias)
-		}
-	}
-	for m := range modelAliases {
-		sort.Strings(modelAliases[m])
-	}
+	modelAliases := invertAliasMap(a.state.AliasMap())
 
 	rows := make([]ClientTokenRow, 0, len(rawTokens))
 	for _, t := range rawTokens {

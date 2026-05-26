@@ -80,13 +80,12 @@ func (s *Scheduler) loop() {
 // req.Model may be an alias; it is rewritten to the canonical model name before
 // the job is sent to the client.
 func (s *Scheduler) drainQueue() {
+	aliases := s.aliases.AliasMap()
 	for {
 		clients := s.hub.AvailableClientList()
 		if len(clients) == 0 {
 			return
 		}
-
-		aliases := s.aliases.AliasMap()
 
 		type candidate struct {
 			clientID       string
