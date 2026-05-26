@@ -638,6 +638,24 @@ mono, code { font-family: monospace; font-size: 11px; }
 }
 .job-elapsed  { opacity: 0.85; }
 .job-stats-live { opacity: 0.7; }
+.job-badge-priority {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 8px;
+  line-height: 1.6;
+  flex-shrink: 0;
+}
+.job-badge-priority.high { background: #f59e0b1a; color: var(--warning); }
+.job-badge-priority.low  { background: #6b72801a; color: var(--text-muted); }
+.job-badge-retry {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 8px;
+  line-height: 1.6;
+  flex-shrink: 0;
+  background: #ef44441a;
+  color: var(--danger);
+}
 .btn-xs {
   padding: 1px 6px;
   font-size: 10px;

@@ -176,15 +176,16 @@ func (a *Admin) handleJobsJSON(w http.ResponseWriter, r *http.Request) {
 		stat := jobStatJSON{
 			ID:         rec.Req.ID,
 			Phase:      "processing",
-			DeltaCount: rec.DeltaCount,
+			DeltaCount: rec.DeltaCount(),
 		}
-		if rec.FirstChunkAt != nil {
+		if fc := rec.FirstChunkAt(); fc != nil {
 			stat.Phase = "generating"
-			stat.TTFTMs = rec.FirstChunkAt.Sub(rec.DispatchedAt).Milliseconds()
-			stat.FirstChunkAtISO = rec.FirstChunkAt.UTC().Format("2006-01-02T15:04:05Z07:00")
+			stat.TTFTMs = fc.Sub(rec.DispatchedAt).Milliseconds()
+			stat.FirstChunkAtISO = fc.UTC().Format("2006-01-02T15:04:05Z07:00")
 		}
 		out = append(out, stat)
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
 	json.NewEncoder(w).Encode(out)
 }

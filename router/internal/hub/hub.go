@@ -125,16 +125,38 @@ func (c *Client) closeSend() {
 	}
 }
 
+// jobLiveStats holds per-job counters updated atomically under read lock,
+// avoiding write-lock contention on the hub mutex for every streamed chunk.
+type jobLiveStats struct {
+	firstChunkAt atomic.Pointer[time.Time]
+	deltaCount   atomic.Int64
+}
+
 // InFlightRecord is a snapshot of a job currently being processed by a client.
 type InFlightRecord struct {
 	ClientID     string
 	ClientToken  string
 	ClientOwner  string // owner of the client that holds this job
 	Req          types.InferenceRequest
-	DispatchedAt time.Time  // when the job was dispatched to this client
-	LeaseExpiry  time.Time  // DispatchedAt + LeaseDuration; slot reclaimed after this
-	FirstChunkAt *time.Time // when the first non-empty delta arrived; nil until then
-	DeltaCount   int64      // number of non-empty deltas received (≈ tokens generated)
+	DispatchedAt time.Time // when the job was dispatched to this client
+	LeaseExpiry  time.Time // DispatchedAt + LeaseDuration; slot reclaimed after this
+	live         *jobLiveStats
+}
+
+// FirstChunkAt returns when the first non-empty delta arrived, or nil if not yet.
+func (r InFlightRecord) FirstChunkAt() *time.Time {
+	if r.live == nil {
+		return nil
+	}
+	return r.live.firstChunkAt.Load()
+}
+
+// DeltaCount returns the number of non-empty deltas received (≈ tokens generated).
+func (r InFlightRecord) DeltaCount() int64 {
+	if r.live == nil {
+		return 0
+	}
+	return r.live.deltaCount.Load()
 }
 
 // Hub manages WebSocket client connections and acts as the client registry.
@@ -318,16 +340,16 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 			return
 		}
 		if msg.Delta != "" {
-			h.mu.Lock()
-			if rec, ok := h.jobs[msg.RequestID]; ok {
-				if rec.FirstChunkAt == nil {
+			h.mu.RLock()
+			rec, ok := h.jobs[msg.RequestID]
+			h.mu.RUnlock()
+			if ok && rec.live != nil {
+				rec.live.deltaCount.Add(1)
+				if rec.live.firstChunkAt.Load() == nil {
 					now := time.Now()
-					rec.FirstChunkAt = &now
+					rec.live.firstChunkAt.CompareAndSwap(nil, &now)
 				}
-				rec.DeltaCount++
-				h.jobs[msg.RequestID] = rec
 			}
-			h.mu.Unlock()
 		}
 		if msg.Done {
 			if h.untrackJob(msg.RequestID) {
@@ -550,6 +572,7 @@ func (h *Hub) TrackJob(clientID string, req types.InferenceRequest) {
 		Req:          req,
 		DispatchedAt: now,
 		LeaseExpiry:  now.Add(LeaseDuration),
+		live:         &jobLiveStats{},
 	}
 	if _, ok := h.jobsByClient[clientID]; !ok {
 		h.jobsByClient[clientID] = make(map[string]struct{})

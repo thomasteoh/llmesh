@@ -105,6 +105,8 @@ type InFlightJobRow struct {
 	TTFTMs          int    // time-to-first-token in ms; 0 while processing
 	DeltaCount      int    // tokens generated so far
 	WordCount       int
+	Priority        string // "high" | "low" | "" (normal — no badge)
+	Attempts        int    // > 1 means job has been retried
 	StatsStr        string // pre-rendered static stats for initial display
 	Phase           string // "processing" | "generating"
 	CanCancel       bool
@@ -384,17 +386,17 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, u User, newToken, form
 					phase := "processing"
 					var firstChunkAtISO string
 					var ttftMs int
-					if rec.FirstChunkAt != nil {
+					if fc := rec.FirstChunkAt(); fc != nil {
 						phase = "generating"
-						ttftMs = int(rec.FirstChunkAt.Sub(rec.DispatchedAt).Milliseconds())
-						firstChunkAtISO = rec.FirstChunkAt.UTC().Format(time.RFC3339)
+						ttftMs = int(fc.Sub(rec.DispatchedAt).Milliseconds())
+						firstChunkAtISO = fc.UTC().Format(time.RFC3339)
 					}
 					var statParts []string
 					if ttftMs > 0 {
 						statParts = append(statParts, fmt.Sprintf("ttft %.1fs", float64(ttftMs)/1000))
 					}
-					if rec.DeltaCount > 0 {
-						statParts = append(statParts, fmt.Sprintf("%d tok", rec.DeltaCount))
+					if dc := rec.DeltaCount(); dc > 0 {
+						statParts = append(statParts, fmt.Sprintf("%d tok", dc))
 					}
 					if rec.Req.WordCount > 0 {
 						statParts = append(statParts, fmt.Sprintf("%dw in", rec.Req.WordCount))
@@ -402,6 +404,13 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, u User, newToken, form
 					statsStr := ""
 					if len(statParts) > 0 {
 						statsStr = " · " + strings.Join(statParts, " · ")
+					}
+					priority := ""
+					switch rec.Req.Priority {
+					case types.PriorityHigh:
+						priority = "high"
+					case types.PriorityLow:
+						priority = "low"
 					}
 					jobs = append(jobs, InFlightJobRow{
 						ID:              rec.Req.ID,
@@ -412,8 +421,10 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, u User, newToken, form
 						DispatchedAtISO: rec.DispatchedAt.UTC().Format(time.RFC3339),
 						FirstChunkAtISO: firstChunkAtISO,
 						TTFTMs:          ttftMs,
-						DeltaCount:      int(rec.DeltaCount),
+						DeltaCount:      int(rec.DeltaCount()),
 						WordCount:       rec.Req.WordCount,
+						Priority:        priority,
+						Attempts:        rec.Req.Attempts,
 						StatsStr:        statsStr,
 						Phase:           phase,
 						CanCancel:       isAdmin || rec.Req.Owner == u.Username || isTokenOwner,

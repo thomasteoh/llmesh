@@ -41,6 +41,9 @@
           <div class="job-row-header">
             <span class="job-phase-dot"></span>
             <span class="job-model">{{.Model}}</span>
+            {{if eq .Priority "high"}}<span class="badge job-badge-priority high" title="high priority">high</span>{{end}}
+            {{if eq .Priority "low"}}<span class="badge job-badge-priority low" title="low priority">low</span>{{end}}
+            {{if gt .Attempts 1}}<span class="badge job-badge-retry" title="{{.Attempts}} dispatch attempts">&#x21BA;{{.Attempts}}</span>{{end}}
             <span class="job-owner">{{if .APIKeyLabel}}{{.APIKeyLabel}}{{else}}{{.Owner}}{{end}}</span>
             {{if .CanCancel}}
             <form method="POST" action="/portal/jobs/cancel" class="form-inline" onsubmit="return confirm('Cancel this job?')">
@@ -51,7 +54,7 @@
             {{end}}
           </div>
           <div class="job-row-stats">
-            {{if .DispatchedAtISO}}<span class="job-elapsed" data-since="{{.DispatchedAtISO}}" title="dispatched {{.EnqueuedAt}}">—</span>{{end}}<span class="job-stats-live"{{if .FirstChunkAtISO}} data-first-chunk="{{.FirstChunkAtISO}}"{{end}} data-delta="{{.DeltaCount}}"{{if .WordCount}} data-words="{{.WordCount}}"{{end}}>{{.StatsStr}}</span>
+            {{if .DispatchedAtISO}}<span class="job-elapsed" data-since="{{.DispatchedAtISO}}" title="dispatched {{.EnqueuedAt}}">—</span>{{end}}<span class="job-stats-live"{{if .FirstChunkAtISO}} data-first-chunk="{{.FirstChunkAtISO}}"{{end}}{{if .WordCount}} data-words="{{.WordCount}}"{{end}}>{{.StatsStr}}</span>
           </div>
         </div>
         {{end}}
