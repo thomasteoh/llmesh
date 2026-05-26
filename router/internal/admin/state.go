@@ -153,9 +153,11 @@ func (s *State) save() error {
 	if err != nil {
 		return err
 	}
-	// Write directly; atomic rename doesn't work when state.json is a
-	// single-file bind mount (rename over a mount point returns EBUSY).
-	return os.WriteFile(s.path, data, 0600)
+	tmp := s.path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.path)
 }
 
 func (s *State) NeedsSetup() bool {
