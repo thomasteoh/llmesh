@@ -601,6 +601,9 @@ mono, code { font-family: monospace; font-size: 11px; }
 }
 .job-words { white-space: nowrap; }
 .job-time { white-space: nowrap; }
+.job-phase { font-size: 10px; white-space: nowrap; opacity: 0.7; }
+.job-phase-processing { color: var(--text-muted); }
+.job-phase-generating { color: var(--accent, #4a9eff); }
 .btn-xs {
   padding: 1px 6px;
   font-size: 10px;

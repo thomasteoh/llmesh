@@ -102,6 +102,7 @@ type InFlightJobRow struct {
 	EnqueuedAt      string
 	DispatchedAtISO string // RFC3339, for JS elapsed computation
 	WordCount       int
+	Phase           string // "processing" | "generating"
 	CanCancel       bool
 }
 
@@ -376,6 +377,10 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, u User, newToken, form
 			for _, ci := range connInfos {
 				var jobs []InFlightJobRow
 				for _, rec := range a.hub.InFlightJobsByClientID(ci.ID) {
+					phase := "processing"
+					if rec.FirstChunkAt != nil {
+						phase = "generating"
+					}
 					jobs = append(jobs, InFlightJobRow{
 						ID:              rec.Req.ID,
 						Owner:           rec.Req.Owner,
@@ -384,6 +389,7 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, u User, newToken, form
 						EnqueuedAt:      humanTime(rec.Req.EnqueuedAt),
 						DispatchedAtISO: rec.DispatchedAt.UTC().Format(time.RFC3339),
 						WordCount:       rec.Req.WordCount,
+						Phase:           phase,
 						CanCancel:       isAdmin || rec.Req.Owner == u.Username || isTokenOwner,
 					})
 				}

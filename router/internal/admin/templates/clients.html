@@ -42,6 +42,7 @@
           {{if .APIKeyLabel}}<span class="job-key muted">{{.APIKeyLabel}}</span>{{else}}<span class="job-key muted">{{.Owner}}</span>{{end}}
           {{if .WordCount}}<span class="job-words muted">{{.WordCount}}w</span>{{end}}
           {{if .DispatchedAtISO}}<span class="job-elapsed muted" data-since="{{.DispatchedAtISO}}" title="dispatched {{.EnqueuedAt}}">—</span>{{end}}
+          <span class="job-phase job-phase-{{.Phase}}" title="{{if eq .Phase "processing"}}processing prompt{{else}}generating tokens{{end}}">{{if eq .Phase "processing"}}&#x23F3;{{else}}&#x25B6;{{end}}</span>
           {{if .CanCancel}}
           <form method="POST" action="/portal/jobs/cancel" class="form-inline" onsubmit="return confirm('Cancel this job? The request will be aborted.')">
             <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">

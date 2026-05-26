@@ -127,12 +127,13 @@ func (c *Client) closeSend() {
 
 // InFlightRecord is a snapshot of a job currently being processed by a client.
 type InFlightRecord struct {
-	ClientID    string
-	ClientToken string
-	ClientOwner string // owner of the client that holds this job
-	Req         types.InferenceRequest
-	DispatchedAt time.Time // when the job was dispatched to this client
-	LeaseExpiry  time.Time // DispatchedAt + LeaseDuration; slot reclaimed after this
+	ClientID     string
+	ClientToken  string
+	ClientOwner  string // owner of the client that holds this job
+	Req          types.InferenceRequest
+	DispatchedAt time.Time  // when the job was dispatched to this client
+	LeaseExpiry  time.Time  // DispatchedAt + LeaseDuration; slot reclaimed after this
+	FirstChunkAt *time.Time // when the first non-empty delta arrived; nil until then
 }
 
 // Hub manages WebSocket client connections and acts as the client registry.
@@ -314,6 +315,15 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 		var msg types.ChunkMsg
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return
+		}
+		if msg.Delta != "" {
+			h.mu.Lock()
+			if rec, ok := h.jobs[msg.RequestID]; ok && rec.FirstChunkAt == nil {
+				now := time.Now()
+				rec.FirstChunkAt = &now
+				h.jobs[msg.RequestID] = rec
+			}
+			h.mu.Unlock()
 		}
 		if msg.Done {
 			if h.untrackJob(msg.RequestID) {
