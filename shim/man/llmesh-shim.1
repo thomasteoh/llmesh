@@ -1,0 +1,338 @@
+.TH LLMESH\-SHIM 1 "May 2026" "llmesh" "llmesh Manual"
+.SH NAME
+llmesh\-shim \- connect cloud LLM APIs or local command adapters to the llmesh router
+.SH SYNOPSIS
+.B llmesh\-shim
+[\fB\-config\fR\ \fIpath\fR]
+[\fB\-version\fR]
+.SH DESCRIPTION
+.B llmesh\-shim
+is a worker component of the llmesh system that dispatches inference jobs to
+external HTTP APIs (OpenAI, Anthropic, or any OpenAI-compatible endpoint) or
+to arbitrary shell command adapters, rather than to a local
+.B llama.cpp
+server.
+.PP
+The shim establishes a persistent WebSocket connection to an llmesh router,
+advertises the models listed in its configuration, and processes inference
+jobs dispatched by the router.
+No local GPU is required.
+.PP
+Streaming token deltas are forwarded back to the router in real time,
+which proxies them to the waiting HTTP caller.
+.PP
+On disconnect the shim reconnects automatically using exponential back\-off:
+1\ s, 2\ s, 4\ s, 8\ s, 16\ s, 32\ s, 60\ s maximum.
+.SH OPTIONS
+.TP
+.BI \-config " path"
+Path to the YAML configuration file.
+Defaults to
+.IR /config.yaml .
+.TP
+.B \-version
+Print version information and exit.
+.SH CONFIGURATION
+The configuration file is a YAML document.
+A minimal example using an OpenAI backend:
+.PP
+.RS 4
+.nf
+router_url: "wss://llm.example.com/ws/client"
+router_token: "ct-your-token-here"
+max_concurrent: 4
+models:
+  - name: "gpt-4o"
+    context_size: 128000
+    backend:
+      type: http
+      url: "https://api.openai.com"
+      format: openai
+      auth_type: bearer
+      auth_value: "${OPENAI_API_KEY}"
+.fi
+.RE
+.SS Top-level Fields
+.TP
+.B router_url
+WebSocket URL of the llmesh router.
+Use
+.B wss://
+for TLS-encrypted connections (recommended in production) or
+.B ws://
+for unencrypted local connections.
+The path component must be
+.IR /ws/client .
+.TP
+.B router_token
+Client token created via the router admin UI (Client Tokens page).
+Tokens begin with
+.IR ct\- .
+Keep it secret; it grants the ability to receive and process jobs.
+.TP
+.B max_concurrent
+Maximum number of inference requests processed simultaneously.
+Must be a positive integer; defaults to
+.B 4
+if unset or zero.
+.TP
+.B metrics_addr
+Optional address for the expvar HTTP metrics endpoint (e.g.\~\fI:9092\fR).
+If unset, the endpoint is not started.
+.TP
+.B models
+List of model definitions.
+Each entry maps a model name to a backend.
+.SS Model Fields
+.TP
+.B name
+Model identifier as sent by API callers in the
+.I model
+field of their request (e.g.\~\fIgpt-4o\fR).
+The router matches this name exactly when selecting a worker for a job.
+.TP
+.B context_size
+Optional context window size in tokens, reported to the router.
+Set this to help the router's scheduler make better decisions.
+If omitted or zero the router uses a default estimate.
+.TP
+.B backend
+Backend configuration block.
+See
+.B BACKENDS
+below.
+.SH BACKENDS
+.SS HTTP Backend (\fItype: http\fR)
+Routes requests to any HTTP API that speaks OpenAI or Anthropic protocol.
+.PP
+.RS 4
+.nf
+backend:
+  type: http
+  url: "https://api.openai.com"
+  format: openai        # or: anthropic
+  auth_type: bearer     # or: header, none
+  auth_value: "${OPENAI_API_KEY}"
+.fi
+.RE
+.TP
+.B url
+Base URL of the upstream API (e.g.\~\fIhttps://api.openai.com\fR).
+Must use
+.B http
+or
+.B https
+scheme.
+The shim appends
+.I /v1/chat/completions
+for
+.I format=openai
+and
+.I /v1/messages
+for
+.IR format=anthropic .
+.TP
+.B format
+Wire format for requests and responses.
+.I openai
+— compatible with OpenAI and any OpenAI-compatible server (Ollama, LM Studio, vLLM, etc.).
+.I anthropic
+— compatible with Anthropic Claude APIs.
+.TP
+.B auth_type
+Authentication method.
+.I bearer
+— sets
+.B Authorization: Bearer <auth_value>
+header.
+.I header
+— sets the header named by
+.B auth_header
+to
+.BR auth_value .
+.I none
+— no authentication header (for local or unauthenticated servers).
+.TP
+.B auth_header
+Header name when
+.IR auth_type=header .
+For example,
+.IR X-API-Key .
+.TP
+.B auth_value
+Token or key value.
+Supports
+.I ${VAR}
+syntax; the value is expanded from the environment at startup.
+.SS Command Adapter Backend (\fItype: command\fR)
+Runs an arbitrary shell command for each inference request.
+The shim writes a JSON-encoded
+.B InferenceRequest
+to the command's stdin and reads the response from stdout.
+.PP
+.RS 4
+.nf
+backend:
+  type: command
+  command: "python3 /path/to/adapter.py"
+.fi
+.RE
+.TP
+.B command
+Shell command to run (passed to
+.IR sh\ \-c ).
+Supports
+.I ${VAR}
+syntax expanded from the environment at startup.
+.PP
+.SS Command Adapter Protocol
+.B Batch output
+(stream=false) \(em one JSON line on stdout:
+.PP
+.RS 4
+.nf
+{"content":"response text","finish_reason":"stop"}
+.fi
+.RE
+.PP
+.B Streaming output
+(stream=true) \(em NDJSON, one JSON line per chunk, last line has
+.IR done:true :
+.PP
+.RS 4
+.nf
+{"delta":"Hello","done":false}
+{"delta":" world","done":false}
+{"delta":"","done":true,"finish_reason":"stop"}
+.fi
+.RE
+.PP
+Usage counts are optional on the final
+.I done=true
+line:
+.PP
+.RS 4
+.nf
+{"delta":"","done":true,"finish_reason":"stop",
+ "usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}
+.fi
+.RE
+.PP
+Any output written to stderr by the command is captured and logged as a
+warning by the shim; it does not fail the request.
+.SH ENVIRONMENT
+.TP
+.B OPENAI_API_KEY
+Typical variable for OpenAI API keys.
+Injected into
+.I auth_value
+fields that contain
+.IR ${OPENAI_API_KEY} .
+.TP
+.B ANTHROPIC_API_KEY
+Typical variable for Anthropic API keys.
+Injected into
+.I auth_value
+fields that contain
+.IR ${ANTHROPIC_API_KEY} .
+.PP
+Any environment variable may be referenced with
+.I ${VAR}
+in
+.B auth_value
+and
+.B command
+fields.
+.SH EXAMPLES
+.SS Run with a custom config file
+.nf
+llmesh\-shim \-config /etc/llmesh/shim.yaml
+.fi
+.SS Run inside Docker (recommended)
+Download
+.IR docker\-compose.shim.yml ,
+.IR config.yaml.example ,
+and set your API keys:
+.nf
+export OPENAI_API_KEY=sk\-...
+export ANTHROPIC_API_KEY=sk\-ant\-...
+docker compose \-f docker\-compose.shim.yml up \-d
+.fi
+.SS OpenAI backend
+.nf
+models:
+  \- name: "gpt\-4o"
+    context_size: 128000
+    backend:
+      type: http
+      url: "https://api.openai.com"
+      format: openai
+      auth_type: bearer
+      auth_value: "${OPENAI_API_KEY}"
+.fi
+.SS Anthropic backend
+.nf
+models:
+  \- name: "claude\-sonnet\-4\-5"
+    context_size: 200000
+    backend:
+      type: http
+      url: "https://api.anthropic.com"
+      format: anthropic
+      auth_type: bearer
+      auth_value: "${ANTHROPIC_API_KEY}"
+.fi
+.SS Ollama (local OpenAI-compatible server)
+.nf
+models:
+  \- name: "llama3.2:3b"
+    backend:
+      type: http
+      url: "http://localhost:11434"
+      format: openai
+      auth_type: none
+.fi
+.SS Shell command adapter
+.nf
+models:
+  \- name: "my\-model"
+    backend:
+      type: command
+      command: "python3 /opt/adapters/my_model.py"
+.fi
+.SH FILES
+.TP
+.I /config.yaml
+Default configuration file path (inside the Docker container).
+On the host, pass an explicit path with
+.BR \-config .
+.SH DIAGNOSTICS
+The shim logs to stderr.
+The status line (when stderr is a terminal) shows:
+.PP
+.RS 4
+.nf
+[llmesh\-shim] ● | jobs 1/4 | done 42 | err 0 | tok 18432 | up 5m30s
+.fi
+.RE
+.PP
+.B ●
+(filled circle) indicates an active router connection;
+.B ○
+(empty circle) indicates disconnected or reconnecting.
+.PP
+A persistent
+.I "dial failed"
+message indicates a network or authentication problem \(em verify the router URL
+and token, and check that the router is reachable from this host.
+.SH EXIT STATUS
+.TP
+.B 0
+Clean shutdown (SIGINT / SIGTERM).
+.TP
+.B 1
+Fatal error: bad configuration, missing required fields, or unrecoverable startup failure.
+.SH SEE ALSO
+.BR llmesh\-client (1)
+.PP
+llmesh project repository for source and issue tracker.

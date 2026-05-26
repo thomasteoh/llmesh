@@ -68,6 +68,7 @@
   <div class="new-key-actions">
     <button class="btn-secondary" data-copy-from="new-tok-val">Copy token</button>
     <a class="btn-secondary" href="/portal/clients/config?token={{.NewToken}}" download="config.yaml">Download config.yaml</a>
+    <a class="btn-secondary" href="/portal/clients/shim-config?token={{.NewToken}}" download="shim-config.yaml">Download shim config</a>
   </div>
 </div>
 {{end}}
@@ -222,6 +223,90 @@ models:
         Man page: <a href="/downloads/llmesh-client.1" download style="color:var(--text-muted);">llmesh-client.1</a>
         &nbsp;&mdash;&nbsp;
         install with <mono>sudo install -m644 llmesh-client.1 /usr/local/share/man/man1/</mono>
+      </p>
+    </div>
+  </div>
+</div>
+
+<div class="card" style="margin-top:24px;">
+  <div class="card-title">llmesh-shim downloads</div>
+  <div class="docs-subtitle" style="margin-top:4px;margin-bottom:16px;">Routes requests to external HTTP APIs or command adapters. No GPU required.</div>
+
+  <div id="shim-tab-group" class="tab-container">
+    <div class="tab-bar">
+      <div class="tab-btn active" data-tab="shim-linux-amd64" onclick="showOsTab('shim-tab-group','shim-linux-amd64')">linux / amd64</div>
+      <div class="tab-btn" data-tab="shim-linux-arm64" onclick="showOsTab('shim-tab-group','shim-linux-arm64')">linux / arm64</div>
+      <div class="tab-btn" data-tab="shim-darwin-amd64" onclick="showOsTab('shim-tab-group','shim-darwin-amd64')">macOS / Intel</div>
+      <div class="tab-btn" data-tab="shim-darwin-arm64" onclick="showOsTab('shim-tab-group','shim-darwin-arm64')">macOS / Apple Silicon</div>
+    </div>
+    <div class="tab-content">
+      <div class="tab-panel active" id="shim-linux-amd64">
+        <p class="field-desc">Linux x86-64. Most servers, WSL2.</p>
+        <a class="btn-download" href="/downloads/llmesh-shim-linux-amd64" download="llmesh-shim">Download</a>
+      </div>
+      <div class="tab-panel" id="shim-linux-arm64">
+        <p class="field-desc">Raspberry Pi 4/5, Graviton.</p>
+        <a class="btn-download" href="/downloads/llmesh-shim-linux-arm64" download="llmesh-shim">Download</a>
+      </div>
+      <div class="tab-panel" id="shim-darwin-amd64">
+        <p class="field-desc">Intel Mac.</p>
+        <a class="btn-download" href="/downloads/llmesh-shim-darwin-amd64" download="llmesh-shim">Download</a>
+      </div>
+      <div class="tab-panel" id="shim-darwin-arm64">
+        <p class="field-desc">Apple Silicon (M1&ndash;M4).</p>
+        <a class="btn-download" href="/downloads/llmesh-shim-darwin-arm64" download="llmesh-shim">Download</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="collapsible" style="margin-top:20px;">
+    <div class="collapsible-header" data-toggle="shim-run-section" onclick="toggleSection('shim-run-section')">
+      <span class="toggle-arrow">&#9662;</span> Config &amp; run instructions
+    </div>
+    <div class="collapsible-body" id="shim-run-section">
+      <div class="docs-label">Run</div>
+      <div class="docs-code">chmod +x llmesh-shim
+./llmesh-shim -config ./shim-config.yaml</div>
+      <p class="field-desc" style="margin-top:12px;">macOS: remove quarantine before first run</p>
+      <div class="docs-code">xattr -cr llmesh-shim</div>
+      <div class="docs-label" style="margin-top:16px;">Config file</div>
+      <p class="field-desc">Create a <mono>shim-config.yaml</mono> alongside the binary. A pre-filled file with your token is available above after generating a token. API keys are read from environment variables.</p>
+      <div class="docs-code">router_url: "wss://{{.Host}}/ws/client"
+router_token: "ct-yourname-yourtoken"
+max_concurrent: 4
+
+models:
+  - name: "gpt-4o"
+    context_size: 128000
+    backend:
+      type: http
+      url: "https://api.openai.com"
+      format: openai
+      auth_type: bearer
+      auth_value: "${OPENAI_API_KEY}"
+
+  - name: "claude-sonnet-4-5"
+    context_size: 200000
+    backend:
+      type: http
+      url: "https://api.anthropic.com"
+      format: anthropic
+      auth_type: bearer
+      auth_value: "${ANTHROPIC_API_KEY}"
+
+  # - name: "my-model"
+  #   backend:
+  #     type: command
+  #     command: "/path/to/adapter.sh"</div>
+      <p class="field-desc" style="margin-top:12px;">
+        Man page: <a href="/downloads/llmesh-shim.1" download style="color:var(--text-muted);">llmesh-shim.1</a>
+        &nbsp;&mdash;&nbsp;
+        install with <mono>sudo install -m644 llmesh-shim.1 /usr/local/share/man/man1/</mono>
+      </p>
+      <p class="field-desc" style="margin-top:8px;">
+        Docker Compose: <a href="/downloads/docker-compose.shim.yml" download style="color:var(--text-muted);">docker-compose.shim.yml</a>
+        &nbsp;&mdash;&nbsp;
+        example config: <a href="/downloads/llmesh-shim-config.yaml.example" download style="color:var(--text-muted);">shim-config.yaml.example</a>
       </p>
     </div>
   </div>

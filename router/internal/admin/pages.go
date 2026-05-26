@@ -512,6 +512,59 @@ func (a *Admin) handleClientTokenConfig(w http.ResponseWriter, r *http.Request) 
 	fmt.Fprint(w, yaml)
 }
 
+// handleShimConfig serves a pre-filled shim config.yaml for the given client token.
+func (a *Admin) handleShimConfig(w http.ResponseWriter, r *http.Request) {
+	u := ctxGetUser(r)
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		http.Error(w, "token required", http.StatusBadRequest)
+		return
+	}
+	ct, ok := a.state.LookupClientToken(token)
+	if !ok {
+		http.Error(w, "token not found", http.StatusNotFound)
+		return
+	}
+	if ct.Owner != u.Username && u.Role != "admin" {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	yaml := fmt.Sprintf(`router_url: "wss://%s/ws/client"
+router_token: "%s"
+max_concurrent: 4
+
+models:
+  # OpenAI example
+  - name: "gpt-4o"
+    context_size: 128000
+    backend:
+      type: http
+      url: "https://api.openai.com"
+      format: openai
+      auth_type: bearer
+      auth_value: "${OPENAI_API_KEY}"
+
+  # Anthropic example
+  - name: "claude-sonnet-4-5"
+    context_size: 200000
+    backend:
+      type: http
+      url: "https://api.anthropic.com"
+      format: anthropic
+      auth_type: bearer
+      auth_value: "${ANTHROPIC_API_KEY}"
+
+  # Command adapter example (uncomment and edit)
+  # - name: "my-model"
+  #   backend:
+  #     type: command
+  #     command: "/path/to/adapter.sh"
+`, a.host, token)
+	w.Header().Set("Content-Type", "application/x-yaml")
+	w.Header().Set("Content-Disposition", `attachment; filename="shim-config.yaml"`)
+	fmt.Fprint(w, yaml)
+}
+
 // --- Model Aliases ---
 
 func (a *Admin) handleModelAliasCreate(w http.ResponseWriter, r *http.Request) {
