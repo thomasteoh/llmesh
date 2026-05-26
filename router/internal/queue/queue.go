@@ -11,20 +11,43 @@ type Queue struct {
 	mu       sync.Mutex
 	cond     *sync.Cond
 	items    []types.InferenceRequest
-	MaxDepth int // 0 = unlimited
+	byID     map[string]int // requestID → index in items; kept in sync via pushLocked/removeAt
+	MaxDepth int            // 0 = unlimited
 }
 
 // New creates and returns an empty Queue.
 func New() *Queue {
-	q := &Queue{}
+	q := &Queue{byID: make(map[string]int)}
 	q.cond = sync.NewCond(&q.mu)
 	return q
+}
+
+// pushLocked appends req and records its index. Caller must hold q.mu.
+func (q *Queue) pushLocked(req types.InferenceRequest) {
+	q.byID[req.ID] = len(q.items)
+	q.items = append(q.items, req)
+}
+
+// removeAt removes the item at index i using swap-and-pop (O(1)).
+// Caller must hold q.mu. The slice order is not preserved, but all
+// selection methods (PeekBestForClient, popBestLocked) scan the whole
+// slice and pick by priority+FIFO, so order is irrelevant for correctness.
+func (q *Queue) removeAt(i int) types.InferenceRequest {
+	req := q.items[i]
+	last := len(q.items) - 1
+	if i != last {
+		q.items[i] = q.items[last]
+		q.byID[q.items[i].ID] = i
+	}
+	q.items = q.items[:last]
+	delete(q.byID, req.ID)
+	return req
 }
 
 // Push adds a request unconditionally (used for internal re-queues).
 func (q *Queue) Push(req types.InferenceRequest) {
 	q.mu.Lock()
-	q.items = append(q.items, req)
+	q.pushLocked(req)
 	q.cond.Signal()
 	q.mu.Unlock()
 }
@@ -37,7 +60,7 @@ func (q *Queue) TryPush(req types.InferenceRequest) bool {
 		q.mu.Unlock()
 		return false
 	}
-	q.items = append(q.items, req)
+	q.pushLocked(req)
 	q.cond.Signal()
 	q.mu.Unlock()
 	return true
@@ -97,8 +120,7 @@ func (q *Queue) popBestLocked(models map[string]bool, aliases map[string][]strin
 	if bestIdx == -1 {
 		return nil
 	}
-	req := q.items[bestIdx]
-	q.items = append(q.items[:bestIdx], q.items[bestIdx+1:]...)
+	req := q.removeAt(bestIdx)
 	return &req
 }
 
@@ -125,22 +147,21 @@ func (q *Queue) PeekBestForClient(models map[string]bool, aliases map[string][]s
 	if bestIdx == -1 {
 		return nil
 	}
-	copy := q.items[bestIdx]
-	return &copy
+	cp := q.items[bestIdx]
+	return &cp
 }
 
-// PopByID removes and returns the request with the given ID.
+// PopByID removes and returns the request with the given ID in O(1).
 // Returns nil if not found (e.g. already consumed).
 func (q *Queue) PopByID(id string) *types.InferenceRequest {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	for i, req := range q.items {
-		if req.ID == id {
-			q.items = append(q.items[:i], q.items[i+1:]...)
-			return &req
-		}
+	i, ok := q.byID[id]
+	if !ok {
+		return nil
 	}
-	return nil
+	req := q.removeAt(i)
+	return &req
 }
 
 // betterForClient reports whether a is a better dispatch choice than b for a client

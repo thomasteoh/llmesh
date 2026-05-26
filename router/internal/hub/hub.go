@@ -127,20 +127,23 @@ func (c *Client) closeSend() {
 
 // InFlightRecord is a snapshot of a job currently being processed by a client.
 type InFlightRecord struct {
-	ClientID     string
-	ClientToken  string
-	Req          types.InferenceRequest
+	ClientID    string
+	ClientToken string
+	ClientOwner string // owner of the client that holds this job
+	Req         types.InferenceRequest
 	DispatchedAt time.Time // when the job was dispatched to this client
 	LeaseExpiry  time.Time // DispatchedAt + LeaseDuration; slot reclaimed after this
 }
 
 // Hub manages WebSocket client connections and acts as the client registry.
 type Hub struct {
-	mu       sync.RWMutex
-	clients  map[string]*Client
-	lastSeen map[string]time.Time      // token → last disconnect time
-	jobs     map[string]InFlightRecord // requestID → in-flight record
-	log      *slog.Logger
+	mu             sync.RWMutex
+	clients        map[string]*Client
+	lastSeen       map[string]time.Time      // token → last disconnect time
+	jobs           map[string]InFlightRecord // requestID → in-flight record
+	jobsByClient   map[string]map[string]struct{} // clientID → set of requestIDs
+	nonOwnerCount  map[string]int               // clientID → count of non-owner in-flight jobs
+	log            *slog.Logger
 
 	// OnChunk is called when a client sends a ChunkMsg.
 	OnChunk func(msg types.ChunkMsg)
@@ -156,10 +159,12 @@ type Hub struct {
 // New creates and returns a new Hub.
 func New(logger *slog.Logger) *Hub {
 	return &Hub{
-		clients:  make(map[string]*Client),
-		lastSeen: make(map[string]time.Time),
-		jobs:     make(map[string]InFlightRecord),
-		log:      logger,
+		clients:       make(map[string]*Client),
+		lastSeen:      make(map[string]time.Time),
+		jobs:          make(map[string]InFlightRecord),
+		jobsByClient:  make(map[string]map[string]struct{}),
+		nonOwnerCount: make(map[string]int),
+		log:           logger,
 	}
 }
 
@@ -518,16 +523,26 @@ func (h *Hub) TrackJob(clientID string, req types.InferenceRequest) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	token := ""
+	clientOwner := ""
 	if c, ok := h.clients[clientID]; ok {
 		token = c.Token
+		clientOwner = c.Owner
 	}
 	now := time.Now()
 	h.jobs[req.ID] = InFlightRecord{
 		ClientID:     clientID,
 		ClientToken:  token,
+		ClientOwner:  clientOwner,
 		Req:          req,
 		DispatchedAt: now,
 		LeaseExpiry:  now.Add(LeaseDuration),
+	}
+	if _, ok := h.jobsByClient[clientID]; !ok {
+		h.jobsByClient[clientID] = make(map[string]struct{})
+	}
+	h.jobsByClient[clientID][req.ID] = struct{}{}
+	if req.Owner != clientOwner {
+		h.nonOwnerCount[clientID]++
 	}
 }
 
@@ -536,8 +551,14 @@ func (h *Hub) TrackJob(clientID string, req types.InferenceRequest) {
 // beat us to it). Callers must only DecrInFlight when this returns true.
 func (h *Hub) untrackJob(requestID string) bool {
 	h.mu.Lock()
-	_, existed := h.jobs[requestID]
-	delete(h.jobs, requestID)
+	rec, existed := h.jobs[requestID]
+	if existed {
+		delete(h.jobs, requestID)
+		delete(h.jobsByClient[rec.ClientID], requestID)
+		if rec.Req.Owner != rec.ClientOwner && h.nonOwnerCount[rec.ClientID] > 0 {
+			h.nonOwnerCount[rec.ClientID]--
+		}
+	}
 	h.mu.Unlock()
 	return existed
 }
@@ -554,9 +575,10 @@ func (h *Hub) LookupInFlightJob(requestID string) (InFlightRecord, bool) {
 func (h *Hub) InFlightJobsByClientID(clientID string) []InFlightRecord {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	var out []InFlightRecord
-	for _, rec := range h.jobs {
-		if rec.ClientID == clientID {
+	reqIDs := h.jobsByClient[clientID]
+	out := make([]InFlightRecord, 0, len(reqIDs))
+	for id := range reqIDs {
+		if rec, ok := h.jobs[id]; ok {
 			out = append(out, rec)
 		}
 	}
@@ -718,13 +740,7 @@ func (h *Hub) SetClientSharedSlots(token string, slots int) {
 func (h *Hub) NonOwnerInFlight(clientID string, owner string) int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	count := 0
-	for _, rec := range h.jobs {
-		if rec.ClientID == clientID && rec.Req.Owner != owner {
-			count++
-		}
-	}
-	return count
+	return h.nonOwnerCount[clientID]
 }
 
 // TotalSlots returns the sum of MaxConcurrent across all registered clients.
@@ -760,6 +776,10 @@ func (h *Hub) handleExpiredLeases() {
 		if rec.LeaseExpiry.Before(now) {
 			expired = append(expired, rec)
 			delete(h.jobs, id)
+			delete(h.jobsByClient[rec.ClientID], id)
+			if rec.Req.Owner != rec.ClientOwner && h.nonOwnerCount[rec.ClientID] > 0 {
+				h.nonOwnerCount[rec.ClientID]--
+			}
 		}
 	}
 	h.mu.Unlock()
