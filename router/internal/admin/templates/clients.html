@@ -81,7 +81,7 @@
 {{end}}
 <div class="card">
   <div class="card-title">Add client</div>
-  <p class="field-desc" style="margin-bottom:14px;">A client token authenticates a llama.cpp instance (a machine or container running a model) to the router. Use it in the client's config file so the router knows this client is allowed to serve requests.</p>
+  <p class="field-desc" style="margin-bottom:14px;">A client token authenticates a worker &mdash; either a <strong>llmesh-client</strong> (llama.cpp node) or <strong>llmesh-shim</strong> (cloud API or command adapter) &mdash; to the router. Use it in the worker's config file so the router knows this worker is allowed to receive jobs.</p>
   <form method="POST" action="/portal/clients">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <div class="form-row">

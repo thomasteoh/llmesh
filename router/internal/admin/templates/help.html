@@ -50,6 +50,7 @@
       <a class="docs-link" onclick="showDoc('responses',this)">Responses API</a>
       <div class="docs-nav-section">Setup</div>
       <a class="docs-link" onclick="showDoc('client-setup',this)">Client config</a>
+      <a class="docs-link" onclick="showDoc('shim-setup',this)">Shim config</a>
       <a class="docs-link" onclick="showDoc('priority-tiers',this)">Priority tiers</a>
       <div class="docs-nav-section">Features</div>
       <a class="docs-link" onclick="showDoc('model-aliases',this)">Model aliases</a>
@@ -133,6 +134,89 @@ models:
       <div class="docs-label">Notes</div>
       <p class="docs-p">The client reconnects automatically on disconnect using exponential back-off (1 s &rarr; 2 s &rarr; 4 s &rarr; &hellip; &rarr; 60 s max).</p>
       <p class="docs-p">Inside Docker, use <code>http://host.docker.internal:8080</code> as the endpoint to reach llama.cpp running on the host. The provided <code>docker-compose.client.yml</code> sets the <code>host.docker.internal</code> alias automatically.</p>
+    </div>
+
+    {{/* ── Shim config ────────────────────────────────────────── */}}
+    <div class="docs-section" id="shim-setup">
+      <div class="docs-title">Shim config reference</div>
+      <div class="docs-subtitle">All fields for <code>shim-config.yaml</code></div>
+      <p class="docs-p"><strong>llmesh-shim</strong> connects to the router using the same WebSocket protocol as llmesh-client, but dispatches jobs to external HTTP APIs or shell command adapters instead of a local llama.cpp server. No GPU required.</p>
+      <div class="docs-label">Full example</div>
+      <div class="docs-code">router_url: "wss://{{.Host}}/ws/client"
+router_token: "ct-yourname-yourtoken"
+max_concurrent: 4
+
+models:
+  - name: "gpt-4o"
+    context_size: 128000
+    backend:
+      type: http
+      url: "https://api.openai.com"
+      format: openai
+      auth_type: bearer
+      auth_value: "${OPENAI_API_KEY}"
+
+  - name: "claude-sonnet-4-5"
+    context_size: 200000
+    backend:
+      type: http
+      url: "https://api.anthropic.com"
+      format: anthropic
+      auth_type: bearer
+      auth_value: "${ANTHROPIC_API_KEY}"
+
+  # Shell command adapter
+  - name: "my-model"
+    backend:
+      type: command
+      command: "python3 /path/to/adapter.py"</div>
+      <div class="docs-label">Top-level fields</div>
+      <div class="table-scroll" style="margin-bottom:16px;">
+        <table class="data-table">
+          <thead><tr><th>Field</th><th>Required</th><th>Default</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><mono>router_url</mono></td><td>yes</td><td>&mdash;</td><td>WebSocket URL of the router. Use <code>wss://</code> for TLS.</td></tr>
+            <tr><td><mono>router_token</mono></td><td>yes</td><td>&mdash;</td><td>Client token from the Clients page. Begins with <code>ct-</code>.</td></tr>
+            <tr><td><mono>max_concurrent</mono></td><td>no</td><td>4</td><td>Max parallel jobs. Set to match upstream API rate limits or concurrency budget.</td></tr>
+            <tr><td><mono>models[].name</mono></td><td>yes</td><td>&mdash;</td><td>Model name as used by callers (e.g. <mono>gpt-4o</mono>). Must match what clients request.</td></tr>
+            <tr><td><mono>models[].context_size</mono></td><td>no</td><td>0</td><td>Context window in tokens, reported to the router scheduler. Set for better scheduling decisions.</td></tr>
+            <tr><td><mono>models[].backend</mono></td><td>yes</td><td>&mdash;</td><td>Backend config block. See below.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="docs-label">HTTP backend fields (<mono>type: http</mono>)</div>
+      <div class="table-scroll" style="margin-bottom:16px;">
+        <table class="data-table">
+          <thead><tr><th>Field</th><th>Required</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><mono>url</mono></td><td>yes</td><td>Base URL of the upstream API. Must use <code>http</code> or <code>https</code>.</td></tr>
+            <tr><td><mono>format</mono></td><td>yes</td><td><mono>openai</mono> or <mono>anthropic</mono>. Determines the request/response wire format and endpoint path.</td></tr>
+            <tr><td><mono>auth_type</mono></td><td>yes</td><td><mono>bearer</mono> (Authorization: Bearer), <mono>header</mono> (custom header), or <mono>none</mono>.</td></tr>
+            <tr><td><mono>auth_header</mono></td><td>if bearer/header</td><td>Header name when <mono>auth_type: header</mono> (e.g. <mono>X-API-Key</mono>).</td></tr>
+            <tr><td><mono>auth_value</mono></td><td>if bearer/header</td><td>Token or key value. Supports <mono>${VAR}</mono> expansion from environment.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="docs-label">Command adapter fields (<mono>type: command</mono>)</div>
+      <div class="table-scroll" style="margin-bottom:16px;">
+        <table class="data-table">
+          <thead><tr><th>Field</th><th>Required</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><mono>command</mono></td><td>yes</td><td>Shell command (passed to <code>sh -c</code>). Receives JSON-encoded <mono>InferenceRequest</mono> on stdin. Supports <mono>${VAR}</mono> expansion.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="docs-label">Command adapter protocol</div>
+      <p class="docs-p">The adapter reads a JSON <mono>InferenceRequest</mono> from stdin and writes to stdout.</p>
+      <p class="docs-p"><strong>Batch</strong> (<mono>stream: false</mono>) &mdash; one JSON line:</p>
+      <div class="docs-code">{"content":"response text","finish_reason":"stop"}</div>
+      <p class="docs-p"><strong>Streaming</strong> (<mono>stream: true</mono>) &mdash; NDJSON, one line per chunk:</p>
+      <div class="docs-code">{"delta":"Hello","done":false}
+{"delta":" world","done":false}
+{"delta":"","done":true,"finish_reason":"stop","usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}</div>
+      <div class="docs-label">Notes</div>
+      <p class="docs-p"><mono>${VAR}</mono> references in <mono>auth_value</mono> and <mono>command</mono> are expanded from the environment at startup. Pass API keys via environment variables rather than hardcoding them in the config file.</p>
+      <p class="docs-p">The shim sends an empty keep-alive chunk every 60 seconds during long upstream calls to prevent the router&rsquo;s activity timeout from expiring.</p>
     </div>
 
     {{/* ── Priority tiers ─────────────────────────────────────── */}}
@@ -304,7 +388,8 @@ flowchart LR
       <div class="docs-label">Multi-turn tool use</div>
       <p class="docs-p">Conversations with <mono>tool_use</mono> / <mono>tool_result</mono> content blocks (Anthropic) or <mono>tool_calls</mono> / <mono>tool</mono> role messages (OpenAI) are forwarded intact. The full message history including tool call results must be included in each request &mdash; the router is stateless.</p>
       <div class="docs-label">Note on format translation</div>
-      <p class="docs-p">llama.cpp speaks OpenAI format. When using the Anthropic endpoint with tools, the model must support OpenAI-style tool calling. Anthropic&harr;OpenAI tool format translation is not currently performed by the router.</p>
+      <p class="docs-p">llama.cpp speaks OpenAI format. When using the Anthropic endpoint with tools via <strong>llmesh-client</strong>, the model must support OpenAI-style tool calling. Anthropic&harr;OpenAI tool format translation is not performed by the router.</p>
+      <p class="docs-p">When using <strong>llmesh-shim</strong>, tools are forwarded in the native format of the configured backend (OpenAI or Anthropic), so Anthropic-format tool blocks reach Anthropic APIs unmodified.</p>
     </div>
 
     {{/* ── Chat templates ─────────────────────────────────────── */}}
@@ -419,8 +504,8 @@ flowchart TD
       <div class="docs-label">6&ndash;9 &mdash; Scheduler dispatch</div>
       <p class="flow-prose">Client-centric affinity scheduling: for each available client, <mono>PeekBestForClient</mono> finds the best queued request whose model matches the client&rsquo;s model names or the server-side alias map, preferring the client owner&rsquo;s requests. The globally best (client, request) pair wins. <mono>PopByID</mono> atomically commits the choice. If <mono>req.Model</mono> is an alias, it is rewritten to the canonical model name using the server-side alias map before the job is sent.</p>
 
-      <div class="docs-label">10&ndash;12 &mdash; Client processing</div>
-      <p class="flow-prose">The client dispatches each <mono>JobMsg</mono> to a goroutine after acquiring a semaphore slot. The full conversation history (including any tool calls and results) is re-POSTed to llama.cpp on every call &mdash; no cross-request KV cache management at the llmesh layer. Token deltas and tool-call deltas are forwarded back as <mono>ChunkMsg</mono>.</p>
+      <div class="docs-label">10&ndash;12 &mdash; Worker processing</div>
+      <p class="flow-prose">The worker dispatches each <mono>JobMsg</mono> to a goroutine after acquiring a semaphore slot. <strong>llmesh-client</strong>: re-POSTs the full conversation history to llama.cpp &mdash; no cross-request KV cache management at the llmesh layer. <strong>llmesh-shim</strong>: dispatches to an external HTTP API (OpenAI or Anthropic format) or runs a shell command adapter. In both cases token deltas and tool-call deltas are forwarded back as <mono>ChunkMsg</mono>.</p>
 
       <div class="docs-label">13 &mdash; Correlation and response</div>
       <p class="flow-prose"><mono>correlation.Send</mono> is non-blocking: if the 32-slot channel is full the chunk is silently dropped. The HTTP goroutine drains the channel and writes SSE events, flushing after each token or tool-call delta.</p>
