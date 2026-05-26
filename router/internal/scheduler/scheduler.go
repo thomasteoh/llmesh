@@ -129,8 +129,14 @@ func (s *Scheduler) drainQueue() {
 			continue
 		}
 
-		// Rewrite alias → the specific model name the selected client serves.
-		if targets, ok := aliases[req.Model]; ok {
+		// "any" is a system pseudo-model: dispatch to whichever model the selected client serves.
+		if req.Model == "any" {
+			for m := range best.clientModels {
+				req.Model = m
+				break
+			}
+		} else if targets, ok := aliases[req.Model]; ok {
+			// Rewrite alias → the specific model name the selected client serves.
 			for _, t := range targets {
 				if best.clientModels[t] {
 					req.Model = t

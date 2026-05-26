@@ -51,8 +51,12 @@ func (q *Queue) Len() int {
 }
 
 // canHandle reports whether a client with the given models and aliases can serve req.
-// req.Model may be a canonical model name or an alias pointing to one or more targets.
+// req.Model may be a canonical model name, an alias pointing to one or more targets,
+// or the reserved pseudo-model "any" which matches any client with at least one model.
 func canHandle(req types.InferenceRequest, models map[string]bool, aliases map[string][]string) bool {
+	if req.Model == "any" {
+		return len(models) > 0
+	}
 	if models[req.Model] {
 		return true
 	}

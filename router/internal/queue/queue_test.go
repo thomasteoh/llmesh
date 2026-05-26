@@ -89,6 +89,27 @@ func TestPopBest_RequestByAlias(t *testing.T) {
 	}
 }
 
+func TestPopBest_AnyModel(t *testing.T) {
+	q := New()
+	q.Push(req("any", types.PriorityNormal, 0))
+	result := q.PopBest(map[string]bool{"llama": true}, nil)
+	if result == nil {
+		t.Fatal("expected match for 'any' pseudo-model")
+	}
+	if result.Model != "any" {
+		t.Fatalf("queue should preserve 'any' in model field, got %s", result.Model)
+	}
+}
+
+func TestPopBest_AnyModelEmptyClient(t *testing.T) {
+	q := New()
+	q.Push(req("any", types.PriorityNormal, 0))
+	result := q.PopBest(map[string]bool{}, nil)
+	if result != nil {
+		t.Fatalf("'any' should not match a client with no models, got %+v", result)
+	}
+}
+
 func TestLen(t *testing.T) {
 	q := New()
 	if q.Len() != 0 {
