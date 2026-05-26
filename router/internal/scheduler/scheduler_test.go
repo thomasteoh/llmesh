@@ -20,11 +20,12 @@ type noAlias struct{}
 
 func (noAlias) AliasMap() map[string][]string { return nil }
 
-// dialClient connects to the hub test server. exclusive controls ExclusiveOwner on the client.
-func dialClient(t *testing.T, h *hub.Hub, owner, token string, exclusive bool) *websocket.Conn {
+// dialClient connects to the hub test server. sharedSlots controls sharing:
+// -1=unlimited, 0=exclusive (owner only), N=up to N concurrent non-owner slots.
+func dialClient(t *testing.T, h *hub.Hub, owner, token string, sharedSlots int) *websocket.Conn {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h.ServeWS(w, r, "test-client", owner, token, exclusive)
+		h.ServeWS(w, r, "test-client", owner, token, sharedSlots)
 	}))
 	t.Cleanup(srv.Close)
 	url := "ws" + strings.TrimPrefix(srv.URL, "http")
@@ -79,7 +80,7 @@ func TestDrainQueue_ExclusiveClient_SkipsNonOwnerJob(t *testing.T) {
 	s := New(q, h, noAlias{}, slog.Default())
 
 	// Connect an exclusive client owned by alice.
-	conn := dialClient(t, h, "alice", "ct-alice-excl", true)
+	conn := dialClient(t, h, "alice", "ct-alice-excl", 0)
 	registerModels(t, conn, "llama3")
 
 	// Push a job owned by bob — alice's exclusive client must not accept it.
@@ -105,7 +106,7 @@ func TestDrainQueue_ExclusiveClient_DispatchesOwnerJob(t *testing.T) {
 	q := queue.New()
 	s := New(q, h, noAlias{}, slog.Default())
 
-	conn := dialClient(t, h, "alice", "ct-alice-excl2", true)
+	conn := dialClient(t, h, "alice", "ct-alice-excl2", 0)
 	registerModels(t, conn, "llama3")
 
 	q.Push(types.InferenceRequest{
@@ -132,7 +133,7 @@ func TestDrainQueue_SharedClient_DispatchesAnyOwnerJob(t *testing.T) {
 	s := New(q, h, noAlias{}, slog.Default())
 
 	// Shared client (exclusive=false) owned by alice should accept bob's job.
-	conn := dialClient(t, h, "alice", "ct-alice-shared", false)
+	conn := dialClient(t, h, "alice", "ct-alice-shared", -1)
 	registerModels(t, conn, "llama3")
 
 	q.Push(types.InferenceRequest{
@@ -159,7 +160,7 @@ func TestDrainQueue_AnyModel_ExclusiveClient_SkipsNonOwner(t *testing.T) {
 	s := New(q, h, noAlias{}, slog.Default())
 
 	// Exclusive client owned by alice — must not accept bob's "any" request.
-	conn := dialClient(t, h, "alice", "ct-alice-any-excl", true)
+	conn := dialClient(t, h, "alice", "ct-alice-any-excl", 0)
 	registerModels(t, conn, "llama3")
 
 	q.Push(types.InferenceRequest{
@@ -185,7 +186,7 @@ func TestDrainQueue_AnyModel_SharedClient_RewritesModel(t *testing.T) {
 	s := New(q, h, noAlias{}, slog.Default())
 
 	// Shared client — should accept "any" and receive job with rewritten model name.
-	conn := dialClient(t, h, "alice", "ct-alice-any-shared", false)
+	conn := dialClient(t, h, "alice", "ct-alice-any-shared", -1)
 	registerModels(t, conn, "llama3")
 
 	q.Push(types.InferenceRequest{
@@ -209,30 +210,72 @@ func TestDrainQueue_AnyModel_SharedClient_RewritesModel(t *testing.T) {
 	}
 }
 
-func TestSetClientExclusive_UpdatesInMemoryClient(t *testing.T) {
+func TestSetClientSharedSlots_UpdatesInMemoryClient(t *testing.T) {
 	h := hub.New(slog.Default())
 
-	// Connect as shared (exclusive=false).
-	conn := dialClient(t, h, "alice", "ct-alice-toggle", false)
+	// Connect as fully shared (SharedSlots=-1).
+	conn := dialClient(t, h, "alice", "ct-alice-toggle", -1)
 	registerModels(t, conn, "llama3")
 
-	// Initially the client summary should show ExclusiveOwner=false.
 	summaries := h.AvailableClientList()
 	if len(summaries) != 1 {
 		t.Fatalf("expected 1 available client, got %d", len(summaries))
 	}
-	if summaries[0].ExclusiveOwner {
-		t.Error("expected ExclusiveOwner=false before toggle")
+	if summaries[0].SharedSlots != -1 {
+		t.Errorf("expected SharedSlots=-1 (unlimited), got %d", summaries[0].SharedSlots)
 	}
 
-	// Toggle to exclusive.
-	h.SetClientExclusive("ct-alice-toggle", true)
+	// Set to exclusive (0).
+	h.SetClientSharedSlots("ct-alice-toggle", 0)
 
 	summaries = h.AvailableClientList()
 	if len(summaries) != 1 {
-		t.Fatalf("expected 1 available client after toggle, got %d", len(summaries))
+		t.Fatalf("expected 1 available client after update, got %d", len(summaries))
 	}
-	if !summaries[0].ExclusiveOwner {
-		t.Error("expected ExclusiveOwner=true after SetClientExclusive")
+	if summaries[0].SharedSlots != 0 {
+		t.Errorf("expected SharedSlots=0 (exclusive) after SetClientSharedSlots, got %d", summaries[0].SharedSlots)
+	}
+
+	// Set to partial (2 shared slots).
+	h.SetClientSharedSlots("ct-alice-toggle", 2)
+
+	summaries = h.AvailableClientList()
+	if summaries[0].SharedSlots != 2 {
+		t.Errorf("expected SharedSlots=2, got %d", summaries[0].SharedSlots)
+	}
+}
+
+func TestDrainQueue_SharedSlots_PartialLimit(t *testing.T) {
+	h := hub.New(slog.Default())
+	q := queue.New()
+	s := New(q, h, noAlias{}, slog.Default())
+
+	// Client owned by alice, 1 shared slot, max_concurrent=3.
+	conn := dialClient(t, h, "alice", "ct-alice-partial", 1)
+	registerModels(t, conn, "llama3")
+
+	// Fill the one shared slot with a bob job.
+	q.Push(types.InferenceRequest{ID: "req-bob-1", Model: "llama3", Owner: "bob", EnqueuedAt: time.Now()})
+	s.drainQueue()
+	if readJob(t, conn, 300*time.Millisecond) == nil {
+		t.Fatal("first non-owner job should be dispatched (slot available)")
+	}
+
+	// Shared slot is now occupied. A second bob job must wait.
+	q.Push(types.InferenceRequest{ID: "req-bob-2", Model: "llama3", Owner: "bob", EnqueuedAt: time.Now()})
+	s.drainQueue()
+	if q.Len() == 0 {
+		t.Error("second non-owner job should not be dispatched when shared slot limit is reached")
+	}
+
+	// An owner (alice) job must still be dispatchable despite the shared slot being full.
+	q.Push(types.InferenceRequest{ID: "req-alice-1", Model: "llama3", Owner: "alice", EnqueuedAt: time.Now()})
+	s.drainQueue()
+	job := readJob(t, conn, 300*time.Millisecond)
+	if job == nil {
+		t.Fatal("owner job should be dispatchable regardless of shared slot limit")
+	}
+	if job.Request.ID != "req-alice-1" {
+		t.Errorf("expected alice's job, got %s", job.Request.ID)
 	}
 }

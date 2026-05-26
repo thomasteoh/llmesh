@@ -34,11 +34,39 @@ type APIKey struct {
 }
 
 type ClientToken struct {
-	Name           string    `json:"name"`
-	Owner          string    `json:"owner"`
-	Token          string    `json:"token"`
-	CreatedAt      time.Time `json:"created_at"`
-	ExclusiveOwner bool      `json:"exclusive_owner,omitempty"` // if true, only dispatch jobs from this client's owner
+	Name        string    `json:"name"`
+	Owner       string    `json:"owner"`
+	Token       string    `json:"token"`
+	CreatedAt   time.Time `json:"created_at"`
+	SharedSlots int       `json:"shared_slots"` // -1=unlimited, 0=exclusive (owner only), N=up to N concurrent non-owner slots
+}
+
+// UnmarshalJSON migrates the legacy exclusive_owner bool field to shared_slots.
+func (ct *ClientToken) UnmarshalJSON(data []byte) error {
+	type raw struct {
+		Name           string    `json:"name"`
+		Owner          string    `json:"owner"`
+		Token          string    `json:"token"`
+		CreatedAt      time.Time `json:"created_at"`
+		ExclusiveOwner bool      `json:"exclusive_owner,omitempty"` // legacy
+		SharedSlots    *int      `json:"shared_slots,omitempty"`    // new; nil = not yet set
+	}
+	var r raw
+	if err := json.Unmarshal(data, &r); err != nil {
+		return err
+	}
+	ct.Name = r.Name
+	ct.Owner = r.Owner
+	ct.Token = r.Token
+	ct.CreatedAt = r.CreatedAt
+	if r.SharedSlots != nil {
+		ct.SharedSlots = *r.SharedSlots
+	} else if r.ExclusiveOwner {
+		ct.SharedSlots = 0
+	} else {
+		ct.SharedSlots = -1
+	}
+	return nil
 }
 
 // UpstreamRouter configures an upstream (orchestrator) router that this router
@@ -381,14 +409,14 @@ func (s *State) RevokeClientToken(owner, token string, isAdmin bool) error {
 	return fmt.Errorf("token not found")
 }
 
-// SetClientTokenExclusive toggles the exclusive_owner flag for the given token.
+// SetClientTokenSharedSlots sets the shared_slots value for the given token.
 // Non-admins may only update their own tokens.
-func (s *State) SetClientTokenExclusive(owner, token string, exclusive bool, isAdmin bool) error {
+func (s *State) SetClientTokenSharedSlots(owner, token string, slots int, isAdmin bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i, t := range s.data.ClientTokens {
 		if t.Token == token && (isAdmin || t.Owner == owner) {
-			s.data.ClientTokens[i].ExclusiveOwner = exclusive
+			s.data.ClientTokens[i].SharedSlots = slots
 			return s.save()
 		}
 	}

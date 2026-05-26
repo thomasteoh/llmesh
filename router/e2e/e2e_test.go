@@ -81,9 +81,10 @@ func setupTestRouter(t *testing.T) (routerURL, apiKey, clientToken string, clean
 		t.Fatalf("gen client token: %v", keyErr)
 	}
 	st.AddClientToken(admin.ClientToken{
-		Name:    "test-client",
-		Owner:   "testuser",
-		Token:   clientToken,
+		Name:        "test-client",
+		Owner:       "testuser",
+		Token:       clientToken,
+		SharedSlots: -1,
 	})
 
 	// Wire components (same as main.go)
@@ -149,7 +150,7 @@ func setupTestRouter(t *testing.T) (routerURL, apiKey, clientToken string, clean
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		h.ServeWS(w, r, ct.Name, ct.Owner, token, ct.ExclusiveOwner)
+		h.ServeWS(w, r, ct.Name, ct.Owner, token, ct.SharedSlots)
 	})
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"status":"ok","version":"e2e"}`+"\n")
@@ -711,6 +712,10 @@ func TestE2E_ConcurrentRequests(t *testing.T) {
 				}
 				reqID := job.Request.ID
 
+				mu.Lock()
+				allReqIDs = append(allReqIDs, reqID)
+				mu.Unlock()
+
 				wg.Add(1)
 				go func(rID string) {
 					defer wg.Done()
@@ -725,10 +730,6 @@ func TestE2E_ConcurrentRequests(t *testing.T) {
 						wsMu.Unlock()
 					}
 				}(reqID)
-
-				mu.Lock()
-				allReqIDs = append(allReqIDs, reqID)
-				mu.Unlock()
 			}
 		}
 		wg.Wait()
@@ -1213,9 +1214,10 @@ func TestE2E_AdminStateClientToken(t *testing.T) {
 
 	token := "ct-testowner-mock12345678"
 	st.AddClientToken(admin.ClientToken{
-		Name:    "test-client",
-		Owner:   "testowner",
-		Token:   token,
+		Name:        "test-client",
+		Owner:       "testowner",
+		Token:       token,
+		SharedSlots: -1,
 	})
 
 	ct, ok := st.LookupClientToken(token)
@@ -1261,7 +1263,7 @@ func TestE2E_HubRegisterDisconnect(t *testing.T) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		h.ServeWS(w, r, "test-client", "testuser", token, false)
+		h.ServeWS(w, r, "test-client", "testuser", token, -1)
 	})
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
@@ -1361,7 +1363,7 @@ func TestE2E_SchedulerDispatch(t *testing.T) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		h.ServeWS(w, r, "sched-client", "alice", token, false)
+		h.ServeWS(w, r, "sched-client", "alice", token, -1)
 	})
 	ts := httptest.NewServer(mux)
 	defer ts.Close()

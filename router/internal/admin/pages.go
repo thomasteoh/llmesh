@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -442,10 +443,11 @@ func (a *Admin) handleClientTokenCreate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	t := ClientToken{
-		Name:      name,
-		Owner:     u.Username,
-		Token:     tokVal,
-		CreatedAt: time.Now().UTC(),
+		Name:        name,
+		Owner:       u.Username,
+		Token:       tokVal,
+		CreatedAt:   time.Now().UTC(),
+		SharedSlots: -1, // fully shared by default
 	}
 	if err := a.state.AddClientToken(t); err != nil {
 		a.renderClientTokens(w, u, "", err.Error())
@@ -466,20 +468,29 @@ func (a *Admin) handleClientTokenRevoke(w http.ResponseWriter, r *http.Request) 
 	http.Redirect(w, r, "/portal/clients", http.StatusFound)
 }
 
-func (a *Admin) handleClientTokenExclusive(w http.ResponseWriter, r *http.Request) {
+func (a *Admin) handleClientTokenSharedSlots(w http.ResponseWriter, r *http.Request) {
 	u := ctxGetUser(r)
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 	token := r.FormValue("token")
-	exclusive := r.FormValue("exclusive") == "true"
-	if err := a.state.SetClientTokenExclusive(u.Username, token, exclusive, u.Role == "admin"); err != nil {
-		a.log.Warn("admin: exclusive toggle rejected", "actor", u.Username, "error", err)
+	slotsStr := strings.TrimSpace(r.FormValue("slots"))
+	slots := -1 // default: fully shared
+	if slotsStr != "" {
+		n, err := strconv.Atoi(slotsStr)
+		if err != nil || n < -1 {
+			http.Error(w, "invalid slots value", http.StatusBadRequest)
+			return
+		}
+		slots = n
+	}
+	if err := a.state.SetClientTokenSharedSlots(u.Username, token, slots, u.Role == "admin"); err != nil {
+		a.log.Warn("admin: shared slots update rejected", "actor", u.Username, "error", err)
 		http.Redirect(w, r, "/portal/clients", http.StatusFound)
 		return
 	}
-	a.hub.SetClientExclusive(token, exclusive)
+	a.hub.SetClientSharedSlots(token, slots)
 	http.Redirect(w, r, "/portal/clients", http.StatusFound)
 }
 

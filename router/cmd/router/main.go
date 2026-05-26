@@ -263,7 +263,7 @@ func main() {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		h.ServeWS(w, r, ct.Name, ct.Owner, token, ct.ExclusiveOwner)
+		h.ServeWS(w, r, ct.Name, ct.Owner, token, ct.SharedSlots)
 	})
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"status":"ok","version":%q}`+"\n", version)
