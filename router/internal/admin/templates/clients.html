@@ -1,3 +1,25 @@
+{{define "shared-slots-form"}}
+{{/* Inline form for configuring shared slots on a client token.
+     Expects a ClientTokenRow as '.'.
+     SharedSlots: -1=unlimited, 0=exclusive (owner only), N=up to N non-owner slots. */}}
+<form method="POST" action="/portal/clients/shared-slots" class="form-inline"
+      title="Shared slots: blank or -1 = unlimited, 0 = owner only, N = up to N concurrent non-owner jobs">
+  <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+  <input type="hidden" name="token" value="{{.Token}}">
+  {{if lt .SharedSlots 0}}
+  <span class="badge badge-ok btn-xs" style="margin-right:4px;" title="All slots shared">shared</span>
+  <input type="number" name="slots" min="0" placeholder="∞" style="width:42px;text-align:center;" title="0 = owner only, N = up to N shared slots">
+  {{else if eq .SharedSlots 0}}
+  <span class="badge badge-warning btn-xs" style="margin-right:4px;" title="Only {{.Owner}}'s jobs dispatched">owner only</span>
+  <input type="number" name="slots" value="0" min="0" placeholder="∞" style="width:42px;text-align:center;" title="blank = unlimited, N = up to N shared slots">
+  {{else}}
+  <span class="badge badge-info btn-xs" style="margin-right:4px;" title="Up to {{.SharedSlots}} non-owner jobs at once">{{.SharedSlots}} shared</span>
+  <input type="number" name="slots" value="{{.SharedSlots}}" min="0" placeholder="∞" style="width:42px;text-align:center;" title="0 = owner only, blank = unlimited">
+  {{end}}
+  <button type="submit" class="btn-secondary btn-xs">set</button>
+</form>
+{{end}}
+
 {{define "conn-subrow"}}
 {{/* Renders the connection detail sub-row for a connected token.
      Expects a ClientTokenRow as '.'; uses .CSRFToken for cancel forms. */}}
@@ -89,21 +111,7 @@
             <td data-label="Status"><span class="badge {{.StatusClass}}">{{.StatusLabel}}</span></td>
             <td data-label="Last seen" class="muted">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
             <td class="cell-actions">
-              {{if .ExclusiveOwner}}
-              <form method="POST" action="/portal/clients/exclusive" class="form-inline" title="Owner-only: only {{.Owner}}'s jobs are dispatched to this client. Click to allow shared jobs.">
-                <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-                <input type="hidden" name="token" value="{{.Token}}">
-                <input type="hidden" name="exclusive" value="false">
-                <button type="submit" class="btn-warning btn-xs">owner only</button>
-              </form>
-              {{else}}
-              <form method="POST" action="/portal/clients/exclusive" class="form-inline" title="Shared: this client accepts any job. Click to restrict to {{.Owner}}'s jobs only.">
-                <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-                <input type="hidden" name="token" value="{{.Token}}">
-                <input type="hidden" name="exclusive" value="true">
-                <button type="submit" class="btn-secondary btn-xs">shared</button>
-              </form>
-              {{end}}
+              {{template "shared-slots-form" .}}
               <form method="POST" action="/portal/clients/revoke" class="form-inline" onsubmit="return confirm('Revoke this client token? The client will be disconnected and cannot reconnect.')">
                 <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
                 <input type="hidden" name="token" value="{{.Token}}">
@@ -140,21 +148,7 @@
         <td data-label="Status"><span class="badge {{.StatusClass}}">{{.StatusLabel}}</span></td>
         <td data-label="Last seen" class="muted">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
         <td class="cell-actions">
-          {{if .ExclusiveOwner}}
-          <form method="POST" action="/portal/clients/exclusive" class="form-inline" title="Owner-only: only your jobs are dispatched to this client. Click to allow shared jobs.">
-            <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-            <input type="hidden" name="token" value="{{.Token}}">
-            <input type="hidden" name="exclusive" value="false">
-            <button type="submit" class="btn-warning btn-xs">owner only</button>
-          </form>
-          {{else}}
-          <form method="POST" action="/portal/clients/exclusive" class="form-inline" title="Shared: this client accepts any job. Click to restrict to your jobs only.">
-            <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-            <input type="hidden" name="token" value="{{.Token}}">
-            <input type="hidden" name="exclusive" value="true">
-            <button type="submit" class="btn-secondary btn-xs">shared</button>
-          </form>
-          {{end}}
+          {{template "shared-slots-form" .}}
           <form method="POST" action="/portal/clients/revoke" class="form-inline" onsubmit="return confirm('Revoke this client token? The client will be disconnected and cannot reconnect.')">
             <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
             <input type="hidden" name="token" value="{{.Token}}">

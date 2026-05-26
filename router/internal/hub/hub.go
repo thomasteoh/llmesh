@@ -83,7 +83,7 @@ type Client struct {
 	Owner            string
 	Token            string
 	Version          string // client version from register message
-	ExclusiveOwner   bool   // if true, only dispatch jobs from this client's owner
+	SharedSlots      int    // -1=unlimited, 0=exclusive (owner only), N=up to N concurrent non-owner slots
 	wg               sync.WaitGroup // tracks writeLoop + readLoop goroutines
 	closeOnce        sync.Once      // ensures conn.Close() happens exactly once
 	sendMu           sync.Mutex     // guards send channel close/send to prevent data race
@@ -92,10 +92,10 @@ type Client struct {
 
 // ClientSummary is a snapshot of an available client used by the scheduler.
 type ClientSummary struct {
-	ID             string
-	Owner          string
-	Models         map[string]bool
-	ExclusiveOwner bool // if true, only dispatch jobs from this client's owner
+	ID          string
+	Owner       string
+	Models      map[string]bool
+	SharedSlots int // -1=unlimited, 0=exclusive, N=up to N concurrent non-owner slots
 }
 
 func (c *Client) InFlight() int {
@@ -165,7 +165,7 @@ func New(logger *slog.Logger) *Hub {
 
 // ServeWS upgrades an HTTP connection to WebSocket and registers the client.
 // The caller should have already validated auth.
-func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token string, exclusiveOwner bool) {
+func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token string, sharedSlots int) {
 	origin := r.Header.Get("Origin")
 	if !isValidOrigin(origin, r.Host) {
 		h.log.Warn("hub: ws origin rejected", "origin", origin, "host", r.Host)
@@ -185,7 +185,7 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token
 		Name:           name,
 		Owner:          owner,
 		Token:          token,
-		ExclusiveOwner: exclusiveOwner,
+		SharedSlots:    sharedSlots,
 	}
 
 	h.mu.Lock()
@@ -448,7 +448,7 @@ func (h *Hub) AvailableClientList() []ClientSummary {
 		for k, v := range c.Models {
 			models[k] = v
 		}
-		out = append(out, ClientSummary{ID: c.ID, Owner: c.Owner, Models: models, ExclusiveOwner: c.ExclusiveOwner})
+		out = append(out, ClientSummary{ID: c.ID, Owner: c.Owner, Models: models, SharedSlots: c.SharedSlots})
 	}
 	return out
 }
@@ -700,17 +700,31 @@ func (h *Hub) CloseByToken(token string) {
 	}
 }
 
-// SetClientExclusive updates the ExclusiveOwner flag on all currently connected
+// SetClientSharedSlots updates the SharedSlots value on all currently connected
 // clients that authenticated with the given token. Takes effect immediately for
 // subsequent scheduler cycles; in-flight jobs are not affected.
-func (h *Hub) SetClientExclusive(token string, exclusive bool) {
+func (h *Hub) SetClientSharedSlots(token string, slots int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, c := range h.clients {
 		if c.Token == token {
-			c.ExclusiveOwner = exclusive
+			c.SharedSlots = slots
 		}
 	}
+}
+
+// NonOwnerInFlight returns the number of in-flight jobs on clientID whose
+// request owner differs from owner. Used by the scheduler to enforce SharedSlots.
+func (h *Hub) NonOwnerInFlight(clientID string, owner string) int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	count := 0
+	for _, rec := range h.jobs {
+		if rec.ClientID == clientID && rec.Req.Owner != owner {
+			count++
+		}
+	}
+	return count
 }
 
 // TotalSlots returns the sum of MaxConcurrent across all registered clients.
@@ -800,13 +814,14 @@ func (h *Hub) ConnectedCountByToken(token string) int {
 
 // ConnectedClientInfo holds a snapshot of a connected client for display.
 type ConnectedClientInfo struct {
-	ID              string
-	Name            string
-	Version         string
-	Models          []string
+	ID                string
+	Name              string
+	Version           string
+	Models            []string
 	ModelContextSizes map[string]int
-	MaxConcurrent   int
-	InFlight        int
+	MaxConcurrent     int
+	InFlight          int
+	SharedSlots       int // -1=unlimited, 0=exclusive, N=up to N non-owner slots
 }
 
 // ConnectedClientsByToken returns a snapshot of all currently connected clients
@@ -830,6 +845,7 @@ func (h *Hub) ConnectedClientsByToken(token string) []ConnectedClientInfo {
 				ModelContextSizes: c.ModelContextSizes,
 				MaxConcurrent:     c.MaxConcurrent,
 				InFlight:          c.InFlight(),
+				SharedSlots:       c.SharedSlots,
 			})
 		}
 	}
