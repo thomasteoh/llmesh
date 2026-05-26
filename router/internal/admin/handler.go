@@ -201,6 +201,9 @@ func (a *Admin) registerRoutes() {
 	// Dashboard JSON API
 	mux.HandleFunc("/portal/api/dashboard", a.requireAuth(a.handleDashboardJSON))
 
+	// Jobs JSON API — live stats for in-flight jobs
+	mux.HandleFunc("/portal/api/jobs", a.requireAuth(a.handleJobsJSON))
+
 	// Logs JSON API (admin-only)
 	mux.HandleFunc("/portal/api/logs", a.requireAdmin(a.handleLogsJSON))
 

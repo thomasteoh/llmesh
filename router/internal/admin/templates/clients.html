@@ -37,19 +37,22 @@
       {{if .Jobs}}
       <div class="conn-jobs">
         {{range .Jobs}}
-        <div class="job-row">
-          <span class="job-model">{{.Model}}</span>
-          {{if .APIKeyLabel}}<span class="job-key muted">{{.APIKeyLabel}}</span>{{else}}<span class="job-key muted">{{.Owner}}</span>{{end}}
-          {{if .WordCount}}<span class="job-words muted">{{.WordCount}}w</span>{{end}}
-          {{if .DispatchedAtISO}}<span class="job-elapsed muted" data-since="{{.DispatchedAtISO}}" title="dispatched {{.EnqueuedAt}}">—</span>{{end}}
-          <span class="job-phase job-phase-{{.Phase}}" title="{{if eq .Phase "processing"}}processing prompt{{else}}generating tokens{{end}}">{{if eq .Phase "processing"}}&#x23F3;{{else}}&#x25B6;{{end}}</span>
-          {{if .CanCancel}}
-          <form method="POST" action="/portal/jobs/cancel" class="form-inline" onsubmit="return confirm('Cancel this job? The request will be aborted.')">
-            <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-            <input type="hidden" name="request_id" value="{{.ID}}">
-            <button type="submit" class="btn-danger btn-xs" title="Cancel job" aria-label="Cancel job">&#x2715;</button>
-          </form>
-          {{end}}
+        <div class="job-row job-{{.Phase}}" data-job-id="{{.ID}}">
+          <div class="job-row-header">
+            <span class="job-phase-dot"></span>
+            <span class="job-model">{{.Model}}</span>
+            <span class="job-owner">{{if .APIKeyLabel}}{{.APIKeyLabel}}{{else}}{{.Owner}}{{end}}</span>
+            {{if .CanCancel}}
+            <form method="POST" action="/portal/jobs/cancel" class="form-inline" onsubmit="return confirm('Cancel this job?')">
+              <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+              <input type="hidden" name="request_id" value="{{.ID}}">
+              <button type="submit" class="btn-danger btn-xs" title="Cancel job" aria-label="Cancel job">&#x2715;</button>
+            </form>
+            {{end}}
+          </div>
+          <div class="job-row-stats">
+            {{if .DispatchedAtISO}}<span class="job-elapsed" data-since="{{.DispatchedAtISO}}" title="dispatched {{.EnqueuedAt}}">—</span>{{end}}<span class="job-stats-live"{{if .FirstChunkAtISO}} data-first-chunk="{{.FirstChunkAtISO}}"{{end}} data-delta="{{.DeltaCount}}"{{if .WordCount}} data-words="{{.WordCount}}"{{end}}>{{.StatsStr}}</span>
+          </div>
         </div>
         {{end}}
       </div>

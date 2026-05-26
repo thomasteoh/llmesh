@@ -101,7 +101,11 @@ type InFlightJobRow struct {
 	Model           string
 	EnqueuedAt      string
 	DispatchedAtISO string // RFC3339, for JS elapsed computation
+	FirstChunkAtISO string // RFC3339; empty while still processing
+	TTFTMs          int    // time-to-first-token in ms; 0 while processing
+	DeltaCount      int    // tokens generated so far
 	WordCount       int
+	StatsStr        string // pre-rendered static stats for initial display
 	Phase           string // "processing" | "generating"
 	CanCancel       bool
 }
@@ -378,8 +382,26 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, u User, newToken, form
 				var jobs []InFlightJobRow
 				for _, rec := range a.hub.InFlightJobsByClientID(ci.ID) {
 					phase := "processing"
+					var firstChunkAtISO string
+					var ttftMs int
 					if rec.FirstChunkAt != nil {
 						phase = "generating"
+						ttftMs = int(rec.FirstChunkAt.Sub(rec.DispatchedAt).Milliseconds())
+						firstChunkAtISO = rec.FirstChunkAt.UTC().Format(time.RFC3339)
+					}
+					var statParts []string
+					if ttftMs > 0 {
+						statParts = append(statParts, fmt.Sprintf("ttft %.1fs", float64(ttftMs)/1000))
+					}
+					if rec.DeltaCount > 0 {
+						statParts = append(statParts, fmt.Sprintf("%d tok", rec.DeltaCount))
+					}
+					if rec.Req.WordCount > 0 {
+						statParts = append(statParts, fmt.Sprintf("%dw in", rec.Req.WordCount))
+					}
+					statsStr := ""
+					if len(statParts) > 0 {
+						statsStr = " · " + strings.Join(statParts, " · ")
 					}
 					jobs = append(jobs, InFlightJobRow{
 						ID:              rec.Req.ID,
@@ -388,7 +410,11 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, u User, newToken, form
 						Model:           rec.Req.Model,
 						EnqueuedAt:      humanTime(rec.Req.EnqueuedAt),
 						DispatchedAtISO: rec.DispatchedAt.UTC().Format(time.RFC3339),
+						FirstChunkAtISO: firstChunkAtISO,
+						TTFTMs:          ttftMs,
+						DeltaCount:      int(rec.DeltaCount),
 						WordCount:       rec.Req.WordCount,
+						StatsStr:        statsStr,
 						Phase:           phase,
 						CanCancel:       isAdmin || rec.Req.Owner == u.Username || isTokenOwner,
 					})

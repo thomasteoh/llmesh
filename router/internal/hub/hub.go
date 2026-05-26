@@ -134,6 +134,7 @@ type InFlightRecord struct {
 	DispatchedAt time.Time  // when the job was dispatched to this client
 	LeaseExpiry  time.Time  // DispatchedAt + LeaseDuration; slot reclaimed after this
 	FirstChunkAt *time.Time // when the first non-empty delta arrived; nil until then
+	DeltaCount   int64      // number of non-empty deltas received (≈ tokens generated)
 }
 
 // Hub manages WebSocket client connections and acts as the client registry.
@@ -318,9 +319,12 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 		}
 		if msg.Delta != "" {
 			h.mu.Lock()
-			if rec, ok := h.jobs[msg.RequestID]; ok && rec.FirstChunkAt == nil {
-				now := time.Now()
-				rec.FirstChunkAt = &now
+			if rec, ok := h.jobs[msg.RequestID]; ok {
+				if rec.FirstChunkAt == nil {
+					now := time.Now()
+					rec.FirstChunkAt = &now
+				}
+				rec.DeltaCount++
 				h.jobs[msg.RequestID] = rec
 			}
 			h.mu.Unlock()

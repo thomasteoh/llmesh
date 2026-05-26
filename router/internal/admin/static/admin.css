@@ -577,33 +577,67 @@ mono, code { font-family: monospace; font-size: 11px; }
 
 /* ─── In-flight jobs ─────────────────────────────────────────── */
 .conn-jobs {
+  padding: 6px 10px 8px 10px;
   border-top: 1px solid var(--border);
-  padding: 4px 0 4px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 .job-row {
+  padding: 6px 8px;
+  background: var(--surface-1);
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  border-left: 3px solid transparent;
+  font-size: 11px;
+  transition: border-left-color 0.3s;
+}
+.job-processing { border-left-color: var(--warning); }
+.job-generating  { border-left-color: var(--success); }
+.job-row-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 3px 0;
-  font-size: 11px;
+  gap: 6px;
 }
+.job-phase-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-muted);
+  transition: background 0.3s;
+}
+.job-processing .job-phase-dot {
+  background: var(--warning);
+  animation: job-pulse 1.5s ease-in-out infinite;
+}
+.job-generating .job-phase-dot { background: var(--success); }
+@keyframes job-pulse { 0%,100%{opacity:1} 50%{opacity:0.35} }
 .job-model {
   font-family: monospace;
+  font-weight: 600;
   color: var(--text);
   white-space: nowrap;
 }
-.job-key {
+.job-owner {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--text-muted);
 }
-.job-words { white-space: nowrap; }
-.job-time { white-space: nowrap; }
-.job-phase { font-size: 10px; white-space: nowrap; opacity: 0.7; }
-.job-phase-processing { color: var(--text-muted); }
-.job-phase-generating { color: var(--accent, #4a9eff); }
+.job-row-stats {
+  margin-top: 3px;
+  padding-left: 12px;
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.job-elapsed  { opacity: 0.85; }
+.job-stats-live { opacity: 0.7; }
 .btn-xs {
   padding: 1px 6px;
   font-size: 10px;
