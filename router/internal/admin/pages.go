@@ -101,7 +101,14 @@ type InFlightJobRow struct {
 	Model           string
 	EnqueuedAt      string
 	DispatchedAtISO string // RFC3339, for JS elapsed computation
+	FirstChunkAtISO string // RFC3339; empty while still processing
+	TTFTMs          int    // time-to-first-token in ms; 0 while processing
+	DeltaCount      int    // tokens generated so far
 	WordCount       int
+	Priority        string // "high" | "low" | "" (normal — no badge)
+	Attempts        int    // > 1 means job has been retried
+	StatsStr        string // pre-rendered static stats for initial display
+	Phase           string // "processing" | "generating"
 	CanCancel       bool
 }
 
@@ -376,6 +383,35 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, u User, newToken, form
 			for _, ci := range connInfos {
 				var jobs []InFlightJobRow
 				for _, rec := range a.hub.InFlightJobsByClientID(ci.ID) {
+					phase := "processing"
+					var firstChunkAtISO string
+					var ttftMs int
+					if fc := rec.FirstChunkAt(); fc != nil {
+						phase = "generating"
+						ttftMs = int(fc.Sub(rec.DispatchedAt).Milliseconds())
+						firstChunkAtISO = fc.UTC().Format(time.RFC3339)
+					}
+					var statParts []string
+					if ttftMs > 0 {
+						statParts = append(statParts, fmt.Sprintf("ttft %.1fs", float64(ttftMs)/1000))
+					}
+					if dc := rec.DeltaCount(); dc > 0 {
+						statParts = append(statParts, fmt.Sprintf("%d tok", dc))
+					}
+					if rec.Req.WordCount > 0 {
+						statParts = append(statParts, fmt.Sprintf("%dw in", rec.Req.WordCount))
+					}
+					statsStr := ""
+					if len(statParts) > 0 {
+						statsStr = " · " + strings.Join(statParts, " · ")
+					}
+					priority := ""
+					switch rec.Req.Priority {
+					case types.PriorityHigh:
+						priority = "high"
+					case types.PriorityLow:
+						priority = "low"
+					}
 					jobs = append(jobs, InFlightJobRow{
 						ID:              rec.Req.ID,
 						Owner:           rec.Req.Owner,
@@ -383,7 +419,14 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, u User, newToken, form
 						Model:           rec.Req.Model,
 						EnqueuedAt:      humanTime(rec.Req.EnqueuedAt),
 						DispatchedAtISO: rec.DispatchedAt.UTC().Format(time.RFC3339),
+						FirstChunkAtISO: firstChunkAtISO,
+						TTFTMs:          ttftMs,
+						DeltaCount:      int(rec.DeltaCount()),
 						WordCount:       rec.Req.WordCount,
+						Priority:        priority,
+						Attempts:        rec.Req.Attempts,
+						StatsStr:        statsStr,
+						Phase:           phase,
 						CanCancel:       isAdmin || rec.Req.Owner == u.Username || isTokenOwner,
 					})
 				}
@@ -509,6 +552,59 @@ func (a *Admin) handleClientTokenConfig(w http.ResponseWriter, r *http.Request) 
 	yaml := fmt.Sprintf("router_url: \"wss://%s/ws/client\"\nrouter_token: \"%s\"\nmax_concurrent: 4\nmodels:\n  - name: \"llama3.2:3b\"\n    endpoint: \"http://localhost:8080\"\n", a.host, token)
 	w.Header().Set("Content-Type", "application/x-yaml")
 	w.Header().Set("Content-Disposition", `attachment; filename="config.yaml"`)
+	fmt.Fprint(w, yaml)
+}
+
+// handleShimConfig serves a pre-filled shim config.yaml for the given client token.
+func (a *Admin) handleShimConfig(w http.ResponseWriter, r *http.Request) {
+	u := ctxGetUser(r)
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		http.Error(w, "token required", http.StatusBadRequest)
+		return
+	}
+	ct, ok := a.state.LookupClientToken(token)
+	if !ok {
+		http.Error(w, "token not found", http.StatusNotFound)
+		return
+	}
+	if ct.Owner != u.Username && u.Role != "admin" {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	yaml := fmt.Sprintf(`router_url: "wss://%s/ws/client"
+router_token: "%s"
+max_concurrent: 4
+
+models:
+  # OpenAI example
+  - name: "gpt-4o"
+    context_size: 128000
+    backend:
+      type: http
+      url: "https://api.openai.com"
+      format: openai
+      auth_type: bearer
+      auth_value: "${OPENAI_API_KEY}"
+
+  # Anthropic example
+  - name: "claude-sonnet-4-5"
+    context_size: 200000
+    backend:
+      type: http
+      url: "https://api.anthropic.com"
+      format: anthropic
+      auth_type: bearer
+      auth_value: "${ANTHROPIC_API_KEY}"
+
+  # Command adapter example (uncomment and edit)
+  # - name: "my-model"
+  #   backend:
+  #     type: command
+  #     command: "/path/to/adapter.sh"
+`, a.host, token)
+	w.Header().Set("Content-Type", "application/x-yaml")
+	w.Header().Set("Content-Disposition", `attachment; filename="shim-config.yaml"`)
 	fmt.Fprint(w, yaml)
 }
 

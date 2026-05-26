@@ -171,6 +171,13 @@ func (a *Admin) registerRoutes() {
 		}
 		a.handleClientTokenConfig(w, r)
 	}))
+	mux.HandleFunc("/portal/clients/shim-config", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		a.handleShimConfig(w, r)
+	}))
 
 	mux.HandleFunc("/portal/model-aliases", a.requireAdmin(a.postWithCSRF(a.handleModelAliasCreate)))
 	mux.HandleFunc("/portal/model-aliases/delete", a.requireAdmin(a.postWithCSRF(a.handleModelAliasDelete)))
@@ -193,6 +200,9 @@ func (a *Admin) registerRoutes() {
 
 	// Dashboard JSON API
 	mux.HandleFunc("/portal/api/dashboard", a.requireAuth(a.handleDashboardJSON))
+
+	// Jobs JSON API — live stats for in-flight jobs
+	mux.HandleFunc("/portal/api/jobs", a.requireAuth(a.handleJobsJSON))
 
 	// Logs JSON API (admin-only)
 	mux.HandleFunc("/portal/api/logs", a.requireAdmin(a.handleLogsJSON))

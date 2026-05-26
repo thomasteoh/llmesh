@@ -1,0 +1,67 @@
+# llmesh-shim configuration
+# Connects to an llmesh router and routes incoming jobs to external HTTP APIs
+# or local shell command adapters. No local GPU required.
+
+router_url: "wss://llm.example.com/ws/client"
+router_token: "ct-your-token-here"
+max_concurrent: 4
+
+# Optional: expose expvar metrics endpoint
+# metrics_addr: ":9092"
+
+models:
+  # ── OpenAI ────────────────────────────────────────────────────────────────────
+  - name: "gpt-4o"
+    context_size: 128000
+    backend:
+      type: http
+      url: "https://api.openai.com"
+      format: openai
+      auth_type: bearer
+      auth_value: "${OPENAI_API_KEY}"
+
+  - name: "gpt-4o-mini"
+    context_size: 128000
+    backend:
+      type: http
+      url: "https://api.openai.com"
+      format: openai
+      auth_type: bearer
+      auth_value: "${OPENAI_API_KEY}"
+
+  # ── Anthropic ─────────────────────────────────────────────────────────────────
+  - name: "claude-sonnet-4-5"
+    context_size: 200000
+    backend:
+      type: http
+      url: "https://api.anthropic.com"
+      format: anthropic
+      auth_type: bearer
+      auth_value: "${ANTHROPIC_API_KEY}"
+
+  # ── Custom OpenAI-compatible server (e.g. Ollama, LM Studio, vLLM) ───────────
+  # - name: "llama3.2:3b"
+  #   backend:
+  #     type: http
+  #     url: "http://localhost:11434"
+  #     format: openai
+  #     auth_type: none
+
+  # ── Shell command adapter ──────────────────────────────────────────────────────
+  # The adapter receives a JSON-encoded InferenceRequest on stdin.
+  #
+  # Batch output (stream=false) — one JSON line:
+  #   {"content":"response text","finish_reason":"stop"}
+  #
+  # Streaming output (stream=true) — NDJSON, one line per chunk:
+  #   {"delta":"Hello","done":false}
+  #   {"delta":" world","done":false}
+  #   {"delta":"","done":true,"finish_reason":"stop"}
+  #
+  # Optional usage on the done line:
+  #   {"delta":"","done":true,"finish_reason":"stop","usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}
+  #
+  # - name: "my-model"
+  #   backend:
+  #     type: command
+  #     command: "python3 /path/to/adapter.py"

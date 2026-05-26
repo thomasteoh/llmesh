@@ -1,0 +1,11 @@
+services:
+  llmesh-shim:
+    image: ghcr.io/thomasteoh/llmesh-shim:latest
+    restart: unless-stopped
+    volumes:
+      - ./config.yaml:/config.yaml:ro
+    # Inject API keys from the host environment.
+    # Add any keys your backends use.
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}

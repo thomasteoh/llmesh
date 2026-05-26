@@ -296,3 +296,91 @@ curl https://llm.teoh.co/v1/messages \
   -H "Content-Type: application/json" \
   -d '{"model":"llama3.2:3b","messages":[{"role":"user","content":"hi"}],"max_tokens":100}'
 ```
+
+---
+
+## Shim Design
+
+### Overview
+
+`llmesh-shim` is a second worker variant that uses the same WebSocket protocol as `llmesh-client` but dispatches jobs to external HTTP APIs or shell command adapters rather than a local llama.cpp server. No local GPU is required.
+
+The key difference:
+
+| | llmesh-client | llmesh-shim |
+|---|---|---|
+| GPU required | Yes | No |
+| Backend | llama.cpp HTTP | OpenAI / Anthropic / shell command |
+| Model discovery | Probes `/props` on llama.cpp | Reads model list from config |
+| Context size | Read from llama.cpp `/props` | Set in config (`context_size`) |
+
+### Shim Config (`shim/config.yaml.example`)
+
+```yaml
+router_url: "wss://llm.example.com/ws/client"
+router_token: "ct-your-token-here"
+max_concurrent: 4
+
+models:
+  - name: "gpt-4o"
+    context_size: 128000
+    backend:
+      type: http
+      url: "https://api.openai.com"
+      format: openai          # "openai" or "anthropic"
+      auth_type: bearer       # "bearer", "header", or "none"
+      auth_value: "${OPENAI_API_KEY}"
+
+  - name: "claude-sonnet-4-5"
+    context_size: 200000
+    backend:
+      type: http
+      url: "https://api.anthropic.com"
+      format: anthropic
+      auth_type: bearer
+      auth_value: "${ANTHROPIC_API_KEY}"
+
+  - name: "my-model"
+    backend:
+      type: command
+      command: "python3 /path/to/adapter.py"
+```
+
+`${VAR}` references in `auth_value` and `command` are expanded from the environment at startup.
+
+### Lifecycle
+
+1. Load config; expand `${VAR}` in auth/command fields
+2. Dial router WS with `Authorization: Bearer <router_token>`
+3. Send `RegisterMsg` with model names and `context_size` values from config
+4. Read loop: on `JobMsg` → acquire semaphore → goroutine calls `worker.Handle`
+5. Worker dispatches to HTTP backend or shell command adapter, streams `ChunkMsg`s back
+6. Keep-alive: empty `ChunkMsg` sent every 60 s to reset router's TTFT timer
+7. On disconnect: exponential backoff reconnect (1 s → 2 s → … → 60 s max)
+
+### Backends
+
+**HTTP backend** — Translates `InferenceRequest` to the upstream wire format:
+- `format: openai` → `POST /v1/chat/completions` (OpenAI, Ollama, vLLM, LM Studio, etc.)
+- `format: anthropic` → `POST /v1/messages`
+
+OpenAI streaming uses `stream_options: {include_usage: true}` to obtain token counts.
+Anthropic streaming extracts `input_tokens` from `message_start` and `output_tokens` from `message_delta`.
+
+**Command adapter** — Runs `sh -c <command>` per request, writing JSON-encoded `InferenceRequest` to stdin and reading NDJSON chunks from stdout. See `shim/man/llmesh-shim.1` for the full adapter protocol.
+
+### Portal Integration
+
+The shim binaries are built alongside the client binaries in `router/Dockerfile` (when `INCLUDE_CLIENTS=true`) for four platforms:
+
+```
+/downloads/llmesh-shim-linux-amd64
+/downloads/llmesh-shim-linux-arm64
+/downloads/llmesh-shim-darwin-amd64
+/downloads/llmesh-shim-darwin-arm64
+/downloads/llmesh-shim.1
+/downloads/docker-compose.shim.yml
+/downloads/config.yaml.example  (shim config example)
+```
+
+The admin portal's **Clients** page includes a shim downloads card (below the client downloads card) with per-platform download links, run instructions, and a pre-filled config download at `/portal/clients/shim-config`.

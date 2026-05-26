@@ -149,3 +149,43 @@ func (a *Admin) handleDashboardJSON(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }
+
+// ─── Jobs API ─────────────────────────────────────────────────────────────────
+
+type jobStatJSON struct {
+	ID             string `json:"id"`
+	Phase          string `json:"phase"`            // "processing" | "generating"
+	DeltaCount     int64  `json:"delta_count"`      // tokens generated so far
+	TTFTMs         int64  `json:"ttft_ms,omitempty"` // time-to-first-token in ms
+	FirstChunkAtISO string `json:"first_chunk_at,omitempty"` // RFC3339
+}
+
+// handleJobsJSON returns live stats for all in-flight jobs visible to the caller.
+func (a *Admin) handleJobsJSON(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	u := ctxGetUser(r)
+	recs := a.hub.AllInFlightJobs()
+	out := make([]jobStatJSON, 0, len(recs))
+	for _, rec := range recs {
+		if u.Role != "admin" && rec.Req.Owner != u.Username && rec.ClientOwner != u.Username {
+			continue
+		}
+		stat := jobStatJSON{
+			ID:         rec.Req.ID,
+			Phase:      "processing",
+			DeltaCount: rec.DeltaCount(),
+		}
+		if fc := rec.FirstChunkAt(); fc != nil {
+			stat.Phase = "generating"
+			stat.TTFTMs = fc.Sub(rec.DispatchedAt).Milliseconds()
+			stat.FirstChunkAtISO = fc.UTC().Format("2006-01-02T15:04:05Z07:00")
+		}
+		out = append(out, stat)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	json.NewEncoder(w).Encode(out)
+}

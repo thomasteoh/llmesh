@@ -491,9 +491,60 @@ function fallbackCopy(text) {
 
 /* ─── Init ──────────────────────────────────────────────────── */
 
+
+/* ─── Live job stats polling ─────────────────────────────────── */
+
+function initJobStats() {
+  if (!document.querySelector('[data-job-id]')) return;
+
+  function buildStats(j, liveEl) {
+    var parts = [];
+    if (j.ttft_ms > 0) {
+      parts.push('ttft ' + (j.ttft_ms / 1000).toFixed(1) + 's');
+    }
+    if (j.delta_count > 0) {
+      var tok = j.delta_count + ' tok';
+      if (j.first_chunk_at) {
+        var elapsedSec = (Date.now() - new Date(j.first_chunk_at).getTime()) / 1000;
+        if (elapsedSec > 2) tok += ' · ' + Math.round(j.delta_count / elapsedSec) + ' t/s';
+      }
+      parts.push(tok);
+    } else if (liveEl) {
+      var w = liveEl.getAttribute('data-words');
+      if (w && parseInt(w) > 0) parts.push(w + 'w in');
+    }
+    return parts.length ? ' · ' + parts.join(' · ') : '';
+  }
+
+  function refresh() {
+    fetch('/portal/api/jobs').then(function(r) {
+      if (!r.ok) return null;
+      return r.json();
+    }).then(function(jobs) {
+      if (!jobs) return;
+      jobs.forEach(function(j) {
+        var row = document.querySelector('[data-job-id="' + j.id + '"]');
+        if (!row) return;
+
+        // Update phase class and dot
+        row.classList.toggle('job-processing', j.phase === 'processing');
+        row.classList.toggle('job-generating',  j.phase === 'generating');
+
+        // Update live stats text
+        var liveEl = row.querySelector('.job-stats-live');
+        if (liveEl) liveEl.textContent = buildStats(j, liveEl);
+      });
+    }).catch(function() {});
+  }
+
+  refresh();
+  setInterval(refresh, 2000);
+}
+
 document.addEventListener('DOMContentLoaded', function() {
   initDashboard();
   initClientGroups();
+  initJobStats();
 
   // Restore settings tab or docs section from URL hash
   var hash = window.location.hash.slice(1);
