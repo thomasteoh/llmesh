@@ -712,6 +712,10 @@ func TestE2E_ConcurrentRequests(t *testing.T) {
 				}
 				reqID := job.Request.ID
 
+				mu.Lock()
+				allReqIDs = append(allReqIDs, reqID)
+				mu.Unlock()
+
 				wg.Add(1)
 				go func(rID string) {
 					defer wg.Done()
@@ -726,10 +730,6 @@ func TestE2E_ConcurrentRequests(t *testing.T) {
 						wsMu.Unlock()
 					}
 				}(reqID)
-
-				mu.Lock()
-				allReqIDs = append(allReqIDs, reqID)
-				mu.Unlock()
 			}
 		}
 		wg.Wait()
