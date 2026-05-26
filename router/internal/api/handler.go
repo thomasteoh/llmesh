@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"llmesh/pkg/types"
 	"llmesh/router/internal/correlation"
+	"llmesh/router/internal/dedup"
 	"llmesh/router/internal/hub"
 	"llmesh/router/internal/queue"
 	"llmesh/router/internal/scheduler"
@@ -70,7 +71,8 @@ type Handler struct {
 	Queue             *queue.Queue
 	Correlation       *correlation.Store
 	Scheduler         *scheduler.Scheduler
-	Canceller         Canceller // optional; nil = no cancellation
+	Canceller         Canceller       // optional; nil = no cancellation
+	Dedup             *dedup.Registry // optional; nil = no coalescing
 	TTFTTimeout       time.Duration
 	ActivityTimeout   time.Duration
 	BatchTimeout      time.Duration
@@ -199,6 +201,61 @@ func (h *Handler) enqueue(
 		}
 	}
 
+	// Coalescing: if an identical request is already in-flight, subscribe to its
+	// response instead of occupying a new worker slot.
+	if h.Dedup != nil {
+		hash := dedup.ContentHash(req)
+		isOriginal, buf, live := h.Dedup.RegisterOrSubscribe(hash)
+		if !isOriginal {
+			req.ID = uuid.New().String()
+			req.Priority = h.Keys.PriorityFor(key)
+			req.Owner = h.Keys.OwnerFor(key)
+			req.APIKeyLabel = h.Keys.LabelFor(key)
+			req.WordCount = messageWordCount(req)
+			h.requestCount.Add(1)
+			req.EnqueuedAt = time.Now()
+			apiLogger().Info("api: request coalesced", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "key_label", req.APIKeyLabel, "ip", clientIP(r))
+			subCh := dedup.MakeSubscriberChan(buf, live)
+			if req.Stream {
+				h.streamResponse(w, r, req, subCh, "")
+			} else {
+				h.batchResponse(w, r, req, subCh, "")
+			}
+			return
+		}
+		// Original: must unregister when done (success or failure).
+		defer h.Dedup.Unregister(hash)
+		// Store hash for forwarding chunks to subscribers below.
+		req.ID = uuid.New().String()
+		req.Priority = h.Keys.PriorityFor(key)
+		req.Owner = h.Keys.OwnerFor(key)
+		req.APIKeyLabel = h.Keys.LabelFor(key)
+		req.WordCount = messageWordCount(req)
+		h.requestCount.Add(1)
+		req.EnqueuedAt = time.Now()
+
+		ch := h.Correlation.Create(req.ID)
+		defer h.Correlation.Delete(req.ID)
+
+		if !h.Queue.TryPush(*req) {
+			apiLogger().Warn("api: queue full, rejecting request", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "queue_depth", h.Queue.Len())
+			h.Correlation.Delete(req.ID)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			w.Write([]byte(`{"error":{"message":"server busy, queue is full — try again shortly","type":"server_error"}}` + "\n"))
+			return
+		}
+		apiLogger().Info("api: request enqueued", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "key_label", req.APIKeyLabel, "priority", priorityName(int(req.Priority)), "stream", req.Stream, "word_count", req.WordCount, "ip", clientIP(r), "queue_depth", h.Queue.Len())
+		h.Scheduler.Wake()
+
+		if req.Stream {
+			h.streamResponse(w, r, req, ch, hash)
+		} else {
+			h.batchResponse(w, r, req, ch, hash)
+		}
+		return
+	}
+
 	req.ID = uuid.New().String()
 	req.Priority = h.Keys.PriorityFor(key)
 	req.Owner = h.Keys.OwnerFor(key)
@@ -222,13 +279,13 @@ func (h *Handler) enqueue(
 	h.Scheduler.Wake()
 
 	if req.Stream {
-		h.streamResponse(w, r, req, ch)
+		h.streamResponse(w, r, req, ch, "")
 	} else {
-		h.batchResponse(w, r, req, ch)
+		h.batchResponse(w, r, req, ch, "")
 	}
 }
 
-func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *types.InferenceRequest, ch <-chan types.ChunkMsg) {
+func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *types.InferenceRequest, ch <-chan types.ChunkMsg, dedupHash string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -286,6 +343,9 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 				}
 			}
 			resetActivity()
+			if dedupHash != "" && h.Dedup != nil {
+				h.Dedup.Forward(dedupHash, chunk)
+			}
 			switch req.SourceFmt {
 			case "anthropic":
 				if chunk.Delta != "" {
@@ -354,7 +414,7 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 	}
 }
 
-func (h *Handler) batchResponse(w http.ResponseWriter, r *http.Request, req *types.InferenceRequest, ch <-chan types.ChunkMsg) {
+func (h *Handler) batchResponse(w http.ResponseWriter, r *http.Request, req *types.InferenceRequest, ch <-chan types.ChunkMsg, dedupHash string) {
 	batch := h.batchTimeout()
 	timeout := time.NewTimer(batch)
 	defer timeout.Stop()
@@ -370,6 +430,9 @@ func (h *Handler) batchResponse(w http.ResponseWriter, r *http.Request, req *typ
 			if !open {
 				h.writeBatch(w, req, sb.String(), finishReason, toolCalls, usage)
 				return
+			}
+			if dedupHash != "" && h.Dedup != nil {
+				h.Dedup.Forward(dedupHash, chunk)
 			}
 			if chunk.Done {
 				if chunk.FinishReason != "" {
