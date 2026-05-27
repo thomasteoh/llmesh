@@ -117,13 +117,33 @@ func statusLine(st *stats.Stats, maxConcurrent int) string {
 	if st.Connected() {
 		connSym = "●"
 	}
-	uptime := time.Since(st.StartTime).Round(time.Second)
 	return fmt.Sprintf("\033[2K\r[llmesh-client] %s | jobs %d/%d | done %d | err %d | tok %d | up %s",
 		connSym,
 		st.ActiveJobs.Load(), maxConcurrent,
 		st.TotalDone.Load(),
 		st.TotalErrors.Load(),
 		st.TotalTokens.Load(),
-		uptime,
+		formatUptime(time.Since(st.StartTime)),
 	)
+}
+
+// formatUptime returns a compact human-readable duration, dropping lower-order
+// units once a higher-order unit is reached:
+//
+//	< 1 min  → "42s"
+//	< 1 hour → "5m"   (seconds dropped)
+//	< 1 day  → "2h"   (minutes dropped)
+//	≥ 1 day  → "3d"   (hours dropped)
+func formatUptime(d time.Duration) string {
+	d = d.Round(time.Second)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
 }
