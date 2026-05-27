@@ -102,30 +102,47 @@ func (s *Scheduler) drainQueue() {
 			}
 			// Enforce per-model owner-slot constraints for non-owner requests.
 			if req.Owner != c.Owner {
-				// Resolve the effective model name for OwnerSlots lookup.
-				// The alias may not be rewritten yet at this point, so resolve it now.
-				effectiveModel := req.Model
-				if req.Model != "any" {
-					if targets, ok := aliases[req.Model]; ok {
-						for _, t := range targets {
-							if c.Models[t] {
-								effectiveModel = t
-								break
-							}
+				// Resolve model names for OwnerSlots and NonOwnerInFlight separately:
+				//
+				//   ownerSlotsKey — the key into c.OwnerSlots. For a direct model name
+				//     or "any", this is req.Model unchanged (users set OwnerSlots["any"]
+				//     for "any" requests; there is no single concrete name to use).
+				//     For an alias it is resolved to the canonical model name the client
+				//     actually serves (users set OwnerSlots by canonical name).
+				//
+				//   inFlightModel — the model name used in NonOwnerInFlight's live scan.
+				//     Dispatched jobs always store the rewritten (concrete) model name,
+				//     so this must be the resolved name in all cases — including "any",
+				//     which is rewritten before TrackJob is called.
+				ownerSlotsKey := req.Model // default: same as request
+				inFlightModel := req.Model // will be resolved below
+				if req.Model == "any" {
+					// OwnerSlots key stays "any" (user-visible).
+					// Resolve inFlightModel to the concrete model for the live scan.
+					for m := range c.Models {
+						inFlightModel = m
+						break
+					}
+				} else if targets, ok := aliases[req.Model]; ok {
+					for _, t := range targets {
+						if c.Models[t] {
+							ownerSlotsKey = t
+							inFlightModel = t
+							break
 						}
 					}
 				}
-				ownerReserved := c.OwnerSlots[effectiveModel] // 0 if unset = fully shared
+				ownerReserved := c.OwnerSlots[ownerSlotsKey] // 0 if unset = fully shared
 				nonOwnerCap := c.MaxConcurrent - ownerReserved
 				if nonOwnerCap <= 0 {
 					s.log.Debug("scheduler: skipping exclusive client for non-owner request",
 						"client_id", c.ID, "client_owner", c.Owner, "request_owner", req.Owner,
-						"model", effectiveModel, "owner_reserved", ownerReserved)
+						"model", ownerSlotsKey, "owner_reserved", ownerReserved)
 					continue
 				}
-				if s.hub.NonOwnerInFlight(c.ID, c.Owner, effectiveModel) >= nonOwnerCap {
+				if s.hub.NonOwnerInFlight(c.ID, c.Owner, inFlightModel) >= nonOwnerCap {
 					s.log.Debug("scheduler: owner-slot cap reached for model",
-						"client_id", c.ID, "model", effectiveModel,
+						"client_id", c.ID, "model", inFlightModel,
 						"non_owner_cap", nonOwnerCap)
 					continue
 				}

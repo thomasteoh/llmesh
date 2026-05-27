@@ -465,18 +465,18 @@ func genRandom(n int) (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// GenAPIKeyValue returns "sk-{owner}-{16 hex chars}".
+// GenAPIKeyValue returns "sk-{owner}-{32 hex chars}" (128 bits of entropy).
 func GenAPIKeyValue(owner string) (string, error) {
-	r, err := genRandom(8)
+	r, err := genRandom(16)
 	if err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("sk-%s-%s", owner, r), nil
 }
 
-// GenClientTokenValue returns "ct-{owner}-{16 hex chars}".
+// GenClientTokenValue returns "ct-{owner}-{32 hex chars}" (128 bits of entropy).
 func GenClientTokenValue(owner string) (string, error) {
-	r, err := genRandom(8)
+	r, err := genRandom(16)
 	if err != nil {
 		return "", err
 	}

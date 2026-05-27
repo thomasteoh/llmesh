@@ -208,7 +208,13 @@ func (c *Conn) connect(outerCtx context.Context) error {
 				continue
 			}
 			spec := specFromBackend(bc)
-			c.sem <- struct{}{}
+			// Acquire a concurrency slot. Use select so a shutdown (connCtx.Done)
+			// can interrupt the wait and allow cancel messages to be processed.
+			select {
+			case c.sem <- struct{}{}:
+			case <-connCtx.Done():
+				continue
+			}
 			jobCtx, jobCancel := context.WithCancel(connCtx)
 			c.cancelsMu.Lock()
 			c.cancels[job.Request.ID] = jobCancel

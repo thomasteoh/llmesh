@@ -192,23 +192,3 @@ func (q *Queue) Signal() {
 	q.cond.Signal()
 }
 
-// WaitAndPopBest blocks until a request matching models/aliases is available, then returns it.
-// Returns nil if stop is closed. The caller must NOT hold q.mu.
-// IMPORTANT: After closing stop, the caller must call Signal() to unblock any goroutine
-// that may be blocked inside cond.Wait, otherwise shutdown will hang.
-func (q *Queue) WaitAndPopBest(models map[string]bool, aliases map[string][]string, stop <-chan struct{}) *types.InferenceRequest {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	for {
-		select {
-		case <-stop:
-			return nil
-		default:
-		}
-		req := q.popBestLocked(models, aliases)
-		if req != nil {
-			return req
-		}
-		q.cond.Wait()
-	}
-}
