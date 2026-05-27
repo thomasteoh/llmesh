@@ -26,11 +26,12 @@ type User struct {
 }
 
 type APIKey struct {
-	Label     string    `json:"label"`
-	Owner     string    `json:"owner"`
-	Key       string    `json:"key"`
-	Priority  string    `json:"priority"` // "high" | "normal" | "low"
-	CreatedAt time.Time `json:"created_at"`
+	Label         string    `json:"label"`
+	Owner         string    `json:"owner"`
+	Key           string    `json:"key"`
+	Priority      string    `json:"priority"`       // "high" | "normal" | "low"
+	MaxConcurrent int       `json:"max_concurrent,omitempty"` // 0 = unlimited
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type ClientToken struct {
@@ -277,6 +278,32 @@ func (s *State) UpdateAPIKeyPriority(key, priority string) error {
 		}
 	}
 	return fmt.Errorf("key not found")
+}
+
+// UpdateAPIKeyMaxConcurrent sets the MaxConcurrent limit for a key. 0 = unlimited. Admin-only.
+func (s *State) UpdateAPIKeyMaxConcurrent(key string, limit int) error {
+	if limit < 0 {
+		return fmt.Errorf("max_concurrent must be >= 0")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.data.APIKeys {
+		if s.data.APIKeys[i].Key == key {
+			s.data.APIKeys[i].MaxConcurrent = limit
+			return s.save()
+		}
+	}
+	return fmt.Errorf("key not found")
+}
+
+// MaxConcurrentFor satisfies the api.LimitProvider interface.
+// Returns the per-key max concurrent limit (0 = unlimited).
+func (s *State) MaxConcurrentFor(key string) int {
+	k, ok := s.LookupAPIKey(key)
+	if !ok {
+		return 0
+	}
+	return k.MaxConcurrent
 }
 
 // RevokeAPIKey removes the key. Non-admins can only revoke their own keys.

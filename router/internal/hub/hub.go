@@ -806,6 +806,44 @@ func (h *Hub) ActiveClientCount() int {
 	return len(h.clients)
 }
 
+// HasWorkerForModel reports whether any connected and registered client currently
+// serves model (direct name, alias resolution, or the "any" pseudo-model).
+func (h *Hub) HasWorkerForModel(model string, aliases map[string][]string) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, c := range h.clients {
+		if c.Models == nil {
+			continue // not yet registered
+		}
+		if model == "any" {
+			return true
+		}
+		if c.Models[model] {
+			return true
+		}
+		for _, target := range aliases[model] {
+			if c.Models[target] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// OwnerInFlight returns the number of jobs currently in flight whose
+// request owner matches owner.
+func (h *Hub) OwnerInFlight(owner string) int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	n := 0
+	for _, rec := range h.jobs {
+		if rec.Req.Owner == owner {
+			n++
+		}
+	}
+	return n
+}
+
 // handleExpiredLeases scans all tracked jobs and reclaims slots for any whose
 // LeaseExpiry has passed. Called by the lease reaper goroutine; also exposed for
 // testing so tests can trigger it directly without waiting for the ticker.

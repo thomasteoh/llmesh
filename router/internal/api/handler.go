@@ -63,6 +63,24 @@ type Canceller interface {
 	CancelRequest(requestID string)
 }
 
+// WorkerChecker is satisfied by *hub.Hub (duck typing — no import needed).
+// HasWorkerForModel reports whether any connected client serves model.
+type WorkerChecker interface {
+	HasWorkerForModel(model string, aliases map[string][]string) bool
+}
+
+// OwnerInFlighter is satisfied by *hub.Hub (duck typing — no import needed).
+// OwnerInFlight returns the number of jobs currently in flight for owner.
+type OwnerInFlighter interface {
+	OwnerInFlight(owner string) int
+}
+
+// LimitProvider is satisfied by *admin.State (duck typing — no import needed).
+// MaxConcurrentFor returns the max concurrent limit for a key (0 = unlimited).
+type LimitProvider interface {
+	MaxConcurrentFor(key string) int
+}
+
 type Handler struct {
 	Keys              APIKeyStore
 	Models            ModelStore
@@ -72,6 +90,9 @@ type Handler struct {
 	Correlation       *correlation.Store
 	Scheduler         *scheduler.Scheduler
 	Canceller         Canceller       // optional; nil = no cancellation
+	Workers           WorkerChecker   // optional; nil = skip worker fast-fail
+	InFlight          OwnerInFlighter // optional; nil = skip per-owner concurrency check
+	Limits            LimitProvider   // optional; nil = no per-key concurrency limits
 	Dedup             *dedup.Registry // optional; nil = no coalescing
 	TTFTTimeout       time.Duration
 	ActivityTimeout   time.Duration
@@ -145,6 +166,21 @@ func (h *Handler) enqueue(
 		return
 	}
 
+	// Per-key concurrency limit: check before body parse to keep the fast path cheap.
+	if h.Limits != nil && h.InFlight != nil {
+		limit := h.Limits.MaxConcurrentFor(key)
+		if limit > 0 {
+			owner := h.Keys.OwnerFor(key)
+			if h.InFlight.OwnerInFlight(owner) >= limit {
+				apiLogger().Warn("api: per-key concurrency limit reached", "owner", owner, "limit", limit, "ip", clientIP(r))
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusTooManyRequests)
+				w.Write([]byte(`{"error":{"message":"concurrency limit reached for your API key — try again shortly","type":"rate_limit_error"}}` + "\n"))
+				return
+			}
+		}
+	}
+
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
 		apiLogger().Warn("api: read body failed", "error", err, "ip", clientIP(r))
@@ -160,6 +196,29 @@ func (h *Handler) enqueue(
 		w.WriteHeader(http.StatusBadRequest)
 		fmt.Fprintf(w, `{"error":{"message":%s}}`+"\n", b)
 		return
+	}
+
+	// Fast-fail: reject if no connected worker can serve this model.
+	// This fires before the active-models check to give a more specific error when
+	// a model is registered in state (e.g. alias) but no client is online for it.
+	if h.Workers != nil {
+		var aliases map[string][]string
+		if h.Aliases != nil {
+			aliases = h.Aliases.AliasMap()
+		}
+		if !h.Workers.HasWorkerForModel(req.Model, aliases) {
+			apiLogger().Warn("api: no worker for model", "model", req.Model, "ip", clientIP(r))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			b, _ := json.Marshal(map[string]any{
+				"error": map[string]any{
+					"message": fmt.Sprintf("no worker available for model %q — all clients offline", req.Model),
+					"type":    "server_error",
+				},
+			})
+			w.Write(b)
+			return
+		}
 	}
 
 	// Validate model/alias exists against currently connected clients.
