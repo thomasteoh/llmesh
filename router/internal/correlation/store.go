@@ -4,7 +4,17 @@ package correlation
 import (
 	"log/slog"
 	"sync"
+
 	"llmesh/pkg/types"
+)
+
+// SendResult indicates the outcome of a Send call.
+type SendResult int
+
+const (
+	SendOK       SendResult = iota // chunk delivered to handler
+	SendNotFound                   // no handler registered (timed out, cancelled, or completed)
+	SendFull                       // handler channel full — caller should cancel the request
 )
 
 // Store maps requestIDs to channels through which result chunks are delivered to HTTP handlers.
@@ -41,26 +51,28 @@ func (s *Store) Create(requestID string) <-chan types.ChunkMsg {
 }
 
 // Send delivers a chunk to the waiting HTTP handler for the given requestID.
-// Returns false if no handler is registered (request timed out, cancelled, or completed).
-func (s *Store) Send(msg types.ChunkMsg) (ok bool) {
+// Returns SendOK on success, SendNotFound if no handler is registered, or
+// SendFull if the handler's channel is full (caller should cancel the request
+// to avoid silently truncating the response stream).
+func (s *Store) Send(msg types.ChunkMsg) (result SendResult) {
 	s.mu.Lock()
 	ch, found := s.channels[msg.RequestID]
 	s.mu.Unlock()
 	if !found {
-		return false
+		return SendNotFound
 	}
 	defer func() {
 		if recover() != nil {
-			ok = false // channel was closed (request completed)
+			result = SendNotFound // channel was closed (request completed)
 		}
 	}()
 	select {
 	case ch <- msg:
-		return true
+		return SendOK
 	default:
-		s.log.Warn("correlation: chunk dropped, handler not reading fast enough",
+		s.log.Warn("correlation: handler backpressure, cancelling request",
 			"request_id", msg.RequestID, "done", msg.Done)
-		return false
+		return SendFull
 	}
 }
 

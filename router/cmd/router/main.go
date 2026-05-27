@@ -168,18 +168,30 @@ func main() {
 	api.SetLogger(logring.NewLogger(sink, "api", slog.LevelInfo))
 
 	h.OnChunk = func(msg types.ChunkMsg) {
-		if !store.Send(msg) && !msg.Done {
-			log.Warn("chunk lost, no handler registered or buffer full", "request_id", msg.RequestID)
+		switch store.Send(msg) {
+		case correlation.SendOK:
+			// delivered
+		case correlation.SendNotFound:
+			if !msg.Done {
+				log.Debug("chunk dropped: no handler registered (request timed out or cancelled)",
+					"request_id", msg.RequestID)
+			}
+		case correlation.SendFull:
+			// Handler is not consuming fast enough — cancel the job to avoid
+			// silently truncating the response stream.
+			log.Warn("correlation: handler backpressure, cancelling request",
+				"request_id", msg.RequestID)
+			h.CancelRequest(msg.RequestID)
 		}
 	}
 	h.OnError = func(msg types.ErrorMsg) {
 		log.Error("client error for request", "request_id", msg.RequestID, "message", msg.Message)
-		if !store.Send(types.ChunkMsg{
+		if result := store.Send(types.ChunkMsg{
 			Type:         "chunk",
 			RequestID:    msg.RequestID,
 			Done:         true,
 			FinishReason: "error",
-		}) {
+		}); result == correlation.SendNotFound {
 			log.Debug("error done-chunk dropped, handler already gone", "request_id", msg.RequestID)
 		}
 	}
@@ -296,10 +308,27 @@ func main() {
 	go func() {
 		<-sigCh
 		log.Info("shutting down...")
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer shutdownCancel()
+
+		// Stop dispatch so no new jobs are sent to workers.
 		sched.Stop()
-		if err := srv.Shutdown(ctx); err != nil {
+
+		// Drain queued (not-yet-dispatched) requests and send terminal error chunks
+		// so HTTP handlers unblock immediately rather than waiting for the TTFT timeout.
+		if drained := q.Drain(); len(drained) > 0 {
+			log.Info("shutdown: draining queued requests", "count", len(drained))
+			for _, req := range drained {
+				store.Send(types.ChunkMsg{
+					Type:         "chunk",
+					RequestID:    req.ID,
+					Done:         true,
+					FinishReason: "error",
+				})
+			}
+		}
+
+		if err := srv.Shutdown(shutdownCtx); err != nil {
 			log.Error("shutdown error", "error", err)
 		}
 	}()

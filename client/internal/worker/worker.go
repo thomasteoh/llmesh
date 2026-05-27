@@ -15,11 +15,6 @@ import (
 
 var log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-// keepAliveInterval is how often to send an empty chunk to the router to
-// prevent its TTFT and activity timers from firing during long prompt evaluation.
-// Must be shorter than the router's 2-minute activityTimer.
-const keepAliveInterval = 60 * time.Second
-
 // SendFn sends a JSON-encodable message back to the router over WebSocket.
 type SendFn func(msg any) error
 
@@ -39,12 +34,13 @@ func Handle(ctx context.Context, job types.JobMsg, cfg *clientPkg.Config, send S
 		return nil
 	}
 
-	// Send an empty chunk to the router every minute so its TTFT and activity
-	// timers don't fire during long prompt evaluation. The router ignores
-	// chunks with empty deltas when writing the HTTP response.
+	// Send an empty chunk to the router at a regular interval so its TTFT and
+	// activity timers don't fire during long prompt evaluation. The interval is
+	// derived from the router's configured activity timeout (half the timeout,
+	// capped at 60s). The router ignores chunks with empty deltas.
 	keepAliveDone := make(chan struct{})
 	go func() {
-		ticker := time.NewTicker(keepAliveInterval)
+		ticker := time.NewTicker(cfg.KeepAliveInterval())
 		defer ticker.Stop()
 		for {
 			select {

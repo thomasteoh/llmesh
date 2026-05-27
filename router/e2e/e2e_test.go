@@ -94,7 +94,7 @@ func setupTestRouter(t *testing.T) (routerURL, apiKey, clientToken string, clean
 	reqStats := stats.New()
 
 	h.OnChunk = func(msg types.ChunkMsg) {
-		if !store.Send(msg) && !msg.Done {
+		if store.Send(msg) == correlation.SendNotFound && !msg.Done {
 			t.Logf("chunk lost in test harness: request_id=%s", msg.RequestID)
 		}
 	}
@@ -1116,13 +1116,12 @@ func TestE2E_CorrelationCreateSendDelete(t *testing.T) {
 	ch := store.Create(reqID)
 
 	// Send a chunk
-	ok := store.Send(types.ChunkMsg{
+	if result := store.Send(types.ChunkMsg{
 		Type:      "chunk",
 		RequestID: reqID,
 		Delta:     "test",
-	})
-	if !ok {
-		t.Fatal("Send returned false for valid request")
+	}); result != correlation.SendOK {
+		t.Fatalf("Send returned %v for valid request, want SendOK", result)
 	}
 
 	// Read the chunk from channel
@@ -1135,11 +1134,10 @@ func TestE2E_CorrelationCreateSendDelete(t *testing.T) {
 		t.Fatal("timed out waiting for chunk")
 	}
 
-	// After delete, Send should return false
+	// After delete, Send should return SendNotFound
 	store.Delete(reqID)
-	ok = store.Send(types.ChunkMsg{RequestID: reqID})
-	if ok {
-		t.Fatal("Send should return false after Delete")
+	if result := store.Send(types.ChunkMsg{RequestID: reqID}); result != correlation.SendNotFound {
+		t.Fatalf("Send returned %v after Delete, want SendNotFound", result)
 	}
 }
 
