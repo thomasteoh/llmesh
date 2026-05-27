@@ -125,6 +125,12 @@ type QueuedJobRow struct {
 	CanCancel     bool // true only for admins
 }
 
+// ModelSlotRow holds per-model owner-slot data for display and the owner-slots form.
+type ModelSlotRow struct {
+	Name       string
+	OwnerSlots int // 0 = fully shared
+}
+
 type ClientTokenRow struct {
 	ClientToken
 	Status      string
@@ -132,6 +138,7 @@ type ClientTokenRow struct {
 	StatusLabel string // display label with symbol
 	LastSeen    string
 	Models      []ModelWithAliases
+	ModelSlots  []ModelSlotRow // per-model owner-slot configuration
 	Connections []ConnectedClientRow
 	CSRFToken   string // for use in named sub-templates
 }
@@ -449,6 +456,24 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, u User, newToken, form
 			row.StatusClass = "never_connected"
 			row.StatusLabel = "\u25cb never connected"
 		}
+		// Build ModelSlots: union of live model names and OwnerSlots keys (offline
+		// tokens may have limits on models they no longer advertise).
+		modelSet := make(map[string]bool)
+		for _, mwa := range row.Models {
+			modelSet[mwa.Name] = true
+		}
+		for m := range t.OwnerSlots {
+			modelSet[m] = true
+		}
+		for m := range modelSet {
+			row.ModelSlots = append(row.ModelSlots, ModelSlotRow{
+				Name:       m,
+				OwnerSlots: t.OwnerSlots[m],
+			})
+		}
+		sort.Slice(row.ModelSlots, func(i, j int) bool {
+			return row.ModelSlots[i].Name < row.ModelSlots[j].Name
+		})
 		rows = append(rows, row)
 	}
 	page := ClientTokensPage{
@@ -481,11 +506,10 @@ func (a *Admin) handleClientTokenCreate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	t := ClientToken{
-		Name:        name,
-		Owner:       u.Username,
-		Token:       tokVal,
-		CreatedAt:   time.Now().UTC(),
-		SharedSlots: -1, // fully shared by default
+		Name:      name,
+		Owner:     u.Username,
+		Token:     tokVal,
+		CreatedAt: time.Now().UTC(),
 	}
 	if err := a.state.AddClientToken(t); err != nil {
 		a.renderClientTokens(w, u, "", err.Error())
@@ -506,29 +530,34 @@ func (a *Admin) handleClientTokenRevoke(w http.ResponseWriter, r *http.Request) 
 	http.Redirect(w, r, "/portal/clients", http.StatusFound)
 }
 
-func (a *Admin) handleClientTokenSharedSlots(w http.ResponseWriter, r *http.Request) {
+func (a *Admin) handleClientTokenOwnerSlots(w http.ResponseWriter, r *http.Request) {
 	u := ctxGetUser(r)
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 	token := r.FormValue("token")
+	model := strings.TrimSpace(r.FormValue("model"))
+	if model == "" {
+		http.Error(w, "model is required", http.StatusBadRequest)
+		return
+	}
 	slotsStr := strings.TrimSpace(r.FormValue("slots"))
-	slots := -1 // default: fully shared
+	slots := 0 // default: fully shared (remove reservation)
 	if slotsStr != "" {
 		n, err := strconv.Atoi(slotsStr)
-		if err != nil || n < -1 {
+		if err != nil || n < 0 {
 			http.Error(w, "invalid slots value", http.StatusBadRequest)
 			return
 		}
 		slots = n
 	}
-	if err := a.state.SetClientTokenSharedSlots(u.Username, token, slots, u.Role == "admin"); err != nil {
-		a.log.Warn("admin: shared slots update rejected", "actor", u.Username, "error", err)
+	if err := a.state.SetClientTokenOwnerSlots(u.Username, token, model, slots, u.Role == "admin"); err != nil {
+		a.log.Warn("admin: owner slots update rejected", "actor", u.Username, "error", err)
 		http.Redirect(w, r, "/portal/clients", http.StatusFound)
 		return
 	}
-	a.hub.SetClientSharedSlots(token, slots)
+	a.hub.SetClientOwnerSlots(token, model, slots)
 	http.Redirect(w, r, "/portal/clients", http.StatusFound)
 }
 

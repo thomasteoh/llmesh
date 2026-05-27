@@ -82,8 +82,8 @@ type Client struct {
 	Name             string
 	Owner            string
 	Token            string
-	Version          string // client version from register message
-	SharedSlots      int    // -1=unlimited, 0=exclusive (owner only), N=up to N concurrent non-owner slots
+	Version          string         // client version from register message
+	OwnerSlots       map[string]int // model → slots reserved for owner; 0/unset = fully shared
 	wg               sync.WaitGroup // tracks writeLoop + readLoop goroutines
 	closeOnce        sync.Once      // ensures conn.Close() happens exactly once
 	sendMu           sync.Mutex     // guards send channel close/send to prevent data race
@@ -92,10 +92,11 @@ type Client struct {
 
 // ClientSummary is a snapshot of an available client used by the scheduler.
 type ClientSummary struct {
-	ID          string
-	Owner       string
-	Models      map[string]bool
-	SharedSlots int // -1=unlimited, 0=exclusive, N=up to N concurrent non-owner slots
+	ID            string
+	Owner         string
+	Models        map[string]bool
+	MaxConcurrent int
+	OwnerSlots    map[string]int // model → slots reserved for owner; 0/unset = fully shared
 }
 
 func (c *Client) InFlight() int {
@@ -163,10 +164,9 @@ func (r InFlightRecord) DeltaCount() int64 {
 type Hub struct {
 	mu             sync.RWMutex
 	clients        map[string]*Client
-	lastSeen       map[string]time.Time      // token → last disconnect time
-	jobs           map[string]InFlightRecord // requestID → in-flight record
+	lastSeen       map[string]time.Time           // token → last disconnect time
+	jobs           map[string]InFlightRecord      // requestID → in-flight record
 	jobsByClient   map[string]map[string]struct{} // clientID → set of requestIDs
-	nonOwnerCount  map[string]int               // clientID → count of non-owner in-flight jobs
 	log            *slog.Logger
 
 	// OnChunk is called when a client sends a ChunkMsg.
@@ -183,18 +183,17 @@ type Hub struct {
 // New creates and returns a new Hub.
 func New(logger *slog.Logger) *Hub {
 	return &Hub{
-		clients:       make(map[string]*Client),
-		lastSeen:      make(map[string]time.Time),
-		jobs:          make(map[string]InFlightRecord),
-		jobsByClient:  make(map[string]map[string]struct{}),
-		nonOwnerCount: make(map[string]int),
-		log:           logger,
+		clients:      make(map[string]*Client),
+		lastSeen:     make(map[string]time.Time),
+		jobs:         make(map[string]InFlightRecord),
+		jobsByClient: make(map[string]map[string]struct{}),
+		log:          logger,
 	}
 }
 
 // ServeWS upgrades an HTTP connection to WebSocket and registers the client.
 // The caller should have already validated auth.
-func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token string, sharedSlots int) {
+func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token string, ownerSlots map[string]int) {
 	origin := r.Header.Get("Origin")
 	if !isValidOrigin(origin, r.Host) {
 		h.log.Warn("hub: ws origin rejected", "origin", origin, "host", r.Host)
@@ -208,13 +207,13 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token
 	}
 
 	client := &Client{
-		ID:             uuid.New().String(),
-		conn:           conn,
-		send:           make(chan []byte, 64),
-		Name:           name,
-		Owner:          owner,
-		Token:          token,
-		SharedSlots:    sharedSlots,
+		ID:         uuid.New().String(),
+		conn:       conn,
+		send:       make(chan []byte, 64),
+		Name:       name,
+		Owner:      owner,
+		Token:      token,
+		OwnerSlots: ownerSlots,
 	}
 
 	h.mu.Lock()
@@ -489,7 +488,17 @@ func (h *Hub) AvailableClientList() []ClientSummary {
 		for k, v := range c.Models {
 			models[k] = v
 		}
-		out = append(out, ClientSummary{ID: c.ID, Owner: c.Owner, Models: models, SharedSlots: c.SharedSlots})
+		ownerSlots := make(map[string]int, len(c.OwnerSlots))
+		for k, v := range c.OwnerSlots {
+			ownerSlots[k] = v
+		}
+		out = append(out, ClientSummary{
+			ID:            c.ID,
+			Owner:         c.Owner,
+			Models:        models,
+			MaxConcurrent: c.MaxConcurrent,
+			OwnerSlots:    ownerSlots,
+		})
 	}
 	return out
 }
@@ -578,9 +587,6 @@ func (h *Hub) TrackJob(clientID string, req types.InferenceRequest) {
 		h.jobsByClient[clientID] = make(map[string]struct{})
 	}
 	h.jobsByClient[clientID][req.ID] = struct{}{}
-	if req.Owner != clientOwner {
-		h.nonOwnerCount[clientID]++
-	}
 }
 
 // untrackJob removes the job record for requestID. Returns true if the record
@@ -592,9 +598,6 @@ func (h *Hub) untrackJob(requestID string) bool {
 	if existed {
 		delete(h.jobs, requestID)
 		delete(h.jobsByClient[rec.ClientID], requestID)
-		if rec.Req.Owner != rec.ClientOwner && h.nonOwnerCount[rec.ClientID] > 0 {
-			h.nonOwnerCount[rec.ClientID]--
-		}
 	}
 	h.mu.Unlock()
 	return existed
@@ -759,25 +762,40 @@ func (h *Hub) CloseByToken(token string) {
 	}
 }
 
-// SetClientSharedSlots updates the SharedSlots value on all currently connected
-// clients that authenticated with the given token. Takes effect immediately for
-// subsequent scheduler cycles; in-flight jobs are not affected.
-func (h *Hub) SetClientSharedSlots(token string, slots int) {
+// SetClientOwnerSlots updates the OwnerSlots map for the given model on all currently
+// connected clients that authenticated with the given token. Takes effect immediately
+// for subsequent scheduler cycles; in-flight jobs are not affected.
+// slots <= 0 removes the model key (restores full sharing for that model).
+func (h *Hub) SetClientOwnerSlots(token, model string, slots int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, c := range h.clients {
 		if c.Token == token {
-			c.SharedSlots = slots
+			if c.OwnerSlots == nil {
+				c.OwnerSlots = make(map[string]int)
+			}
+			if slots <= 0 {
+				delete(c.OwnerSlots, model)
+			} else {
+				c.OwnerSlots[model] = slots
+			}
 		}
 	}
 }
 
-// NonOwnerInFlight returns the number of in-flight jobs on clientID whose
-// request owner differs from owner. Used by the scheduler to enforce SharedSlots.
-func (h *Hub) NonOwnerInFlight(clientID string, owner string) int {
+// NonOwnerInFlight returns the number of in-flight jobs on clientID for the given
+// model whose request owner differs from owner. Used by the scheduler to enforce
+// per-model OwnerSlots limits.
+func (h *Hub) NonOwnerInFlight(clientID, owner, model string) int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	return h.nonOwnerCount[clientID]
+	n := 0
+	for id := range h.jobsByClient[clientID] {
+		if rec, ok := h.jobs[id]; ok && rec.Req.Owner != owner && rec.Req.Model == model {
+			n++
+		}
+	}
+	return n
 }
 
 // TotalSlots returns the sum of MaxConcurrent across all registered clients.
@@ -814,9 +832,6 @@ func (h *Hub) handleExpiredLeases() {
 			expired = append(expired, rec)
 			delete(h.jobs, id)
 			delete(h.jobsByClient[rec.ClientID], id)
-			if rec.Req.Owner != rec.ClientOwner && h.nonOwnerCount[rec.ClientID] > 0 {
-				h.nonOwnerCount[rec.ClientID]--
-			}
 		}
 	}
 	h.mu.Unlock()
@@ -878,7 +893,7 @@ type ConnectedClientInfo struct {
 	ModelContextSizes map[string]int
 	MaxConcurrent     int
 	InFlight          int
-	SharedSlots       int // -1=unlimited, 0=exclusive, N=up to N non-owner slots
+	OwnerSlots        map[string]int // model → slots reserved for owner; 0/unset = fully shared
 }
 
 // ConnectedClientsByToken returns a snapshot of all currently connected clients
@@ -894,6 +909,10 @@ func (h *Hub) ConnectedClientsByToken(token string) []ConnectedClientInfo {
 				models = append(models, m)
 			}
 			sort.Strings(models)
+			ownerSlots := make(map[string]int, len(c.OwnerSlots))
+			for k, v := range c.OwnerSlots {
+				ownerSlots[k] = v
+			}
 			out = append(out, ConnectedClientInfo{
 				ID:                c.ID,
 				Name:              c.Name,
@@ -902,7 +921,7 @@ func (h *Hub) ConnectedClientsByToken(token string) []ConnectedClientInfo {
 				ModelContextSizes: c.ModelContextSizes,
 				MaxConcurrent:     c.MaxConcurrent,
 				InFlight:          c.InFlight(),
-				SharedSlots:       c.SharedSlots,
+				OwnerSlots:        ownerSlots,
 			})
 		}
 	}

@@ -1,23 +1,33 @@
-{{define "shared-slots-form"}}
-{{/* Inline form for configuring shared slots on a client token.
+{{define "owner-slots-section"}}
+{{/* Per-model owner-slot configuration sub-row for a client token.
      Expects a ClientTokenRow as '.'.
-     SharedSlots: -1=unlimited, 0=exclusive (owner only), N=up to N non-owner slots. */}}
-<form method="POST" action="/portal/clients/shared-slots" class="form-inline"
-      title="Shared slots: blank or -1 = unlimited, 0 = owner only, N = up to N concurrent non-owner jobs">
-  <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-  <input type="hidden" name="token" value="{{.Token}}">
-  {{if lt .SharedSlots 0}}
-  <span class="badge badge-ok btn-xs" style="margin-right:4px;" title="All slots shared">shared</span>
-  <input type="number" name="slots" min="0" placeholder="∞" style="width:42px;text-align:center;" title="0 = owner only, N = up to N shared slots">
-  {{else if eq .SharedSlots 0}}
-  <span class="badge badge-warning btn-xs" style="margin-right:4px;" title="Only {{.Owner}}'s jobs dispatched">owner only</span>
-  <input type="number" name="slots" value="0" min="0" placeholder="∞" style="width:42px;text-align:center;" title="blank = unlimited, N = up to N shared slots">
-  {{else}}
-  <span class="badge badge-info btn-xs" style="margin-right:4px;" title="Up to {{.SharedSlots}} non-owner jobs at once">{{.SharedSlots}} shared</span>
-  <input type="number" name="slots" value="{{.SharedSlots}}" min="0" placeholder="∞" style="width:42px;text-align:center;" title="0 = owner only, blank = unlimited">
-  {{end}}
-  <button type="submit" class="btn-secondary btn-xs">set</button>
-</form>
+     Renders a form for each model in .ModelSlots.
+     OwnerSlots: 0 = fully shared, N = N slots reserved for the token owner. */}}
+{{if .ModelSlots}}
+<tr>
+  <td colspan="4" style="padding:0;">
+    <div class="client-connections" style="padding:4px 8px 6px;">
+      {{range .ModelSlots}}
+      <form method="POST" action="/portal/clients/owner-slots" class="form-inline" style="margin:2px 0;">
+        <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+        <input type="hidden" name="token" value="{{$.Token}}">
+        <input type="hidden" name="model" value="{{.Name}}">
+        <span class="conn-name" style="min-width:140px;">{{.Name}}</span>
+        {{if gt .OwnerSlots 0}}
+          <span class="badge badge-warning btn-xs" style="margin-right:4px;" title="{{.OwnerSlots}} slot(s) reserved for owner">{{.OwnerSlots}} reserved</span>
+        {{else}}
+          <span class="badge badge-ok btn-xs" style="margin-right:4px;" title="All slots shared">shared</span>
+        {{end}}
+        <input type="number" name="slots" value="{{if gt .OwnerSlots 0}}{{.OwnerSlots}}{{end}}"
+               min="0" placeholder="0" style="width:42px;text-align:center;"
+               title="Slots reserved for owner (0 = fully shared)">
+        <button type="submit" class="btn-secondary btn-xs">set</button>
+      </form>
+      {{end}}
+    </div>
+  </td>
+</tr>
+{{end}}
 {{end}}
 
 {{define "conn-subrow"}}
@@ -119,7 +129,6 @@
             <td data-label="Status"><span class="badge {{.StatusClass}}">{{.StatusLabel}}</span></td>
             <td data-label="Last seen" class="muted">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
             <td class="cell-actions">
-              {{template "shared-slots-form" .}}
               <form method="POST" action="/portal/clients/revoke" class="form-inline" onsubmit="return confirm('Revoke this client token? The client will be disconnected and cannot reconnect.')">
                 <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
                 <input type="hidden" name="token" value="{{.Token}}">
@@ -128,6 +137,7 @@
             </td>
           </tr>
           {{template "conn-subrow" .}}
+          {{template "owner-slots-section" .}}
           {{end}}
         </tbody>
       </table>
@@ -156,7 +166,6 @@
         <td data-label="Status"><span class="badge {{.StatusClass}}">{{.StatusLabel}}</span></td>
         <td data-label="Last seen" class="muted">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
         <td class="cell-actions">
-          {{template "shared-slots-form" .}}
           <form method="POST" action="/portal/clients/revoke" class="form-inline" onsubmit="return confirm('Revoke this client token? The client will be disconnected and cannot reconnect.')">
             <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
             <input type="hidden" name="token" value="{{.Token}}">
@@ -165,6 +174,7 @@
         </td>
       </tr>
       {{template "conn-subrow" .}}
+      {{template "owner-slots-section" .}}
       {{else}}
       <tr class="empty-row"><td colspan="4">No client tokens yet.</td></tr>
       {{end}}

@@ -163,7 +163,7 @@ func (a *Admin) registerRoutes() {
 		}
 	}))
 	mux.HandleFunc("/portal/clients/revoke", a.requireAuth(a.postWithCSRF(a.handleClientTokenRevoke)))
-	mux.HandleFunc("/portal/clients/shared-slots", a.requireAuth(a.postWithCSRF(a.handleClientTokenSharedSlots)))
+	mux.HandleFunc("/portal/clients/owner-slots", a.requireAuth(a.postWithCSRF(a.handleClientTokenOwnerSlots)))
 	mux.HandleFunc("/portal/clients/config", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

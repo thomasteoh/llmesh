@@ -81,10 +81,9 @@ func setupTestRouter(t *testing.T) (routerURL, apiKey, clientToken string, clean
 		t.Fatalf("gen client token: %v", keyErr)
 	}
 	st.AddClientToken(admin.ClientToken{
-		Name:        "test-client",
-		Owner:       "testuser",
-		Token:       clientToken,
-		SharedSlots: -1,
+		Name:  "test-client",
+		Owner: "testuser",
+		Token: clientToken,
 	})
 
 	// Wire components (same as main.go)
@@ -150,7 +149,7 @@ func setupTestRouter(t *testing.T) (routerURL, apiKey, clientToken string, clean
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		h.ServeWS(w, r, ct.Name, ct.Owner, token, ct.SharedSlots)
+		h.ServeWS(w, r, ct.Name, ct.Owner, token, ct.OwnerSlots)
 	})
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"status":"ok","version":"e2e"}`+"\n")
@@ -1214,10 +1213,9 @@ func TestE2E_AdminStateClientToken(t *testing.T) {
 
 	token := "ct-testowner-mock12345678"
 	st.AddClientToken(admin.ClientToken{
-		Name:        "test-client",
-		Owner:       "testowner",
-		Token:       token,
-		SharedSlots: -1,
+		Name:  "test-client",
+		Owner: "testowner",
+		Token: token,
 	})
 
 	ct, ok := st.LookupClientToken(token)
@@ -1263,7 +1261,7 @@ func TestE2E_HubRegisterDisconnect(t *testing.T) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		h.ServeWS(w, r, "test-client", "testuser", token, -1)
+		h.ServeWS(w, r, "test-client", "testuser", token, nil)
 	})
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
@@ -1363,7 +1361,7 @@ func TestE2E_SchedulerDispatch(t *testing.T) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		h.ServeWS(w, r, "sched-client", "alice", token, -1)
+		h.ServeWS(w, r, "sched-client", "alice", token, nil)
 	})
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
