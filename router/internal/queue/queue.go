@@ -187,6 +187,21 @@ func (q *Queue) Snapshot() []types.InferenceRequest {
 	return out
 }
 
+// Drain removes and returns all queued requests, leaving the queue empty.
+// Used during graceful shutdown to fail pending requests cleanly instead of
+// leaving HTTP handlers hanging until the TTFT timeout fires.
+func (q *Queue) Drain() []types.InferenceRequest {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	out := make([]types.InferenceRequest, len(q.items))
+	copy(out, q.items)
+	q.items = q.items[:0]
+	for k := range q.byID {
+		delete(q.byID, k)
+	}
+	return out
+}
+
 // Signal wakes up goroutines waiting on the queue (e.g., after a client becomes available).
 func (q *Queue) Signal() {
 	q.cond.Signal()

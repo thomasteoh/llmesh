@@ -3,6 +3,7 @@ package client
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -14,11 +15,12 @@ type ModelConfig struct {
 }
 
 type Config struct {
-	RouterURL     string        `yaml:"router_url"`
-	RouterToken   string        `yaml:"router_token"`
-	MaxConcurrent int           `yaml:"max_concurrent"`
-	Models        []ModelConfig `yaml:"models"`
-	MetricsAddr   string        `yaml:"metrics_addr"` // e.g. ":9091"; empty = disabled
+	RouterURL              string        `yaml:"router_url"`
+	RouterToken            string        `yaml:"router_token"`
+	MaxConcurrent          int           `yaml:"max_concurrent"`
+	Models                 []ModelConfig `yaml:"models"`
+	MetricsAddr            string        `yaml:"metrics_addr"`             // e.g. ":9091"; empty = disabled
+	RouterActivityTimeout  time.Duration `yaml:"router_activity_timeout"`  // derive keep-alive interval; 0 = use 60s default
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -45,6 +47,22 @@ func (c *Config) EndpointFor(model string) string {
 		}
 	}
 	return ""
+}
+
+// KeepAliveInterval returns the worker keep-alive interval derived from
+// RouterActivityTimeout. The keep-alive is sent to prevent the router's
+// activity timer from firing during long prompt evaluation.
+// Defaults to 60s (safe for the default 5-minute router activity timeout).
+// Caps at 60s to avoid unexpectedly long silences on low-latency setups.
+func (c *Config) KeepAliveInterval() time.Duration {
+	if c.RouterActivityTimeout <= 0 {
+		return 60 * time.Second
+	}
+	half := c.RouterActivityTimeout / 2
+	if half > 60*time.Second {
+		return 60 * time.Second
+	}
+	return half
 }
 
 // ChatTemplateFor returns the configured chat template override for the given model.
