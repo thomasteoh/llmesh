@@ -20,6 +20,7 @@ import (
 	"llmesh/router/internal/correlation"
 	"llmesh/router/internal/dedup"
 	"llmesh/router/internal/hub"
+	"llmesh/router/internal/latency"
 	"llmesh/router/internal/logring"
 	"llmesh/router/internal/queue"
 	"llmesh/router/internal/scheduler"
@@ -164,6 +165,7 @@ func main() {
 	q.MaxDepth = timeouts.QueueMaxDepth
 	store := correlation.New(logring.NewLogger(sink, "correlation", slog.LevelInfo))
 	h := hub.New(logring.NewLogger(sink, "hub", slog.LevelInfo))
+	h.Latency = latency.New()
 	reqStats := stats.New()
 	api.SetLogger(logring.NewLogger(sink, "api", slog.LevelInfo))
 
@@ -270,7 +272,7 @@ func main() {
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"status":"ok","version":%q}`+"\n", version)
 	})
-	mux.HandleFunc("/metrics", metricsHandler(apiHandler, q, h, reqStats))
+	mux.HandleFunc("/metrics", metricsHandler(apiHandler, q, h, reqStats, h.Latency))
 	mux.Handle("/portal/", adminHandler)
 	mux.Handle("/portal", adminHandler)
 	// Backward-compat redirect: old /admin bookmarks → /portal

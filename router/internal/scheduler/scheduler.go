@@ -194,7 +194,7 @@ func (s *Scheduler) drainQueue() {
 			return
 		}
 		s.hub.TrackJob(best.clientID, *req)
-		s.log.Info("scheduler: dispatched", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "client_id", best.clientID, "client_owner", best.clientOwner)
+		s.log.Info("scheduler: dispatched", "request_id", req.ID, "origin_id", req.OriginID, "model", req.Model, "owner", req.Owner, "client_id", best.clientID, "client_owner", best.clientOwner)
 	}
 }
 

@@ -322,6 +322,11 @@ func (c *Connector) connect(ctx context.Context, u admin.UpstreamRouter) error {
 				}()
 				// Sanitise fields the upstream controls to prevent priority
 				// spoofing and false attribution in the admin UI.
+				// Preserve the upstream-assigned ID as OriginID for cross-hop
+				// log correlation before processing (the local hub uses req.ID
+				// for correlation; we do not reassign it to avoid extra uuid
+				// dependency in upstream).
+				req.OriginID = req.ID
 				req.Owner = u.Name
 				req.Priority = types.PriorityNormal
 				req.APIKeyLabel = ""
