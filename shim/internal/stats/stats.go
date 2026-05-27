@@ -22,3 +22,10 @@ func New() *Stats {
 
 func (s *Stats) Connected() bool        { return s.connected.Load() }
 func (s *Stats) SetConnected(v bool)    { s.connected.Store(v) }
+
+// ConnStats interface methods — used by pkg/wsclient.Conn.
+func (s *Stats) IncrReconnects() { s.Reconnects.Add(1) }
+func (s *Stats) IncrActive()     { s.ActiveJobs.Add(1) }
+func (s *Stats) DecrActive()     { s.ActiveJobs.Add(-1) }
+func (s *Stats) IncrDone()       { s.TotalDone.Add(1) }
+func (s *Stats) IncrError()      { s.TotalErrors.Add(1) }

@@ -199,16 +199,9 @@ func (s *Scheduler) drainQueue() {
 }
 
 // betterPair reports whether (ownerA, reqA) is a better dispatch pair than (ownerB, reqB).
-// A pair with affinity (request owner matches client owner) beats a non-affinity pair.
-// Among equal affinity: lower priority tier wins, then earlier enqueue time.
+// Delegates to types.BetterRequest.
 func betterPair(ownerA string, reqA types.InferenceRequest, ownerB string, reqB types.InferenceRequest) bool {
-	aAffinity := ownerA != "" && reqA.Owner == ownerA
-	bAffinity := ownerB != "" && reqB.Owner == ownerB
-	if aAffinity != bAffinity {
-		return aAffinity
-	}
-	if reqA.Priority != reqB.Priority {
-		return reqA.Priority < reqB.Priority
-	}
-	return reqA.EnqueuedAt.Before(reqB.EnqueuedAt)
+	return types.BetterRequest(reqA, reqB,
+		ownerA != "" && reqA.Owner == ownerA,
+		ownerB != "" && reqB.Owner == ownerB)
 }
