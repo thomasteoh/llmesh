@@ -120,3 +120,16 @@ type ReleaseMsg struct {
 	RequestID string `json:"request_id"`
 	Reason    string `json:"reason"`     // "model_failed" | "timeout" | "client_shutdown"
 }
+
+// BetterRequest reports whether request a is a better dispatch choice than b.
+// aOwnerMatch and bOwnerMatch indicate whether each request matches the
+// preferred client owner (affinity). Ordering: affinity > priority tier > FIFO.
+func BetterRequest(a, b InferenceRequest, aOwnerMatch, bOwnerMatch bool) bool {
+	if aOwnerMatch != bOwnerMatch {
+		return aOwnerMatch
+	}
+	if a.Priority != b.Priority {
+		return a.Priority < b.Priority
+	}
+	return a.EnqueuedAt.Before(b.EnqueuedAt)
+}

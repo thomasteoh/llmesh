@@ -165,17 +165,11 @@ func (q *Queue) PopByID(id string) *types.InferenceRequest {
 }
 
 // betterForClient reports whether a is a better dispatch choice than b for a client
-// whose owner is preferOwner. Affinity beats priority; priority beats FIFO.
+// whose owner is preferOwner. Delegates to types.BetterRequest.
 func betterForClient(a, b types.InferenceRequest, preferOwner string) bool {
-	aMatch := preferOwner != "" && a.Owner == preferOwner
-	bMatch := preferOwner != "" && b.Owner == preferOwner
-	if aMatch != bMatch {
-		return aMatch
-	}
-	if a.Priority != b.Priority {
-		return a.Priority < b.Priority
-	}
-	return a.EnqueuedAt.Before(b.EnqueuedAt)
+	return types.BetterRequest(a, b,
+		preferOwner != "" && a.Owner == preferOwner,
+		preferOwner != "" && b.Owner == preferOwner)
 }
 
 // Snapshot returns a copy of all queued requests in their current order.
