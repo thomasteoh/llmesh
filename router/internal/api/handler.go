@@ -13,11 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"llmesh/pkg/types"
-	"llmesh/router/internal/correlation"
 	"llmesh/router/internal/dedup"
-	"llmesh/router/internal/hub"
-	"llmesh/router/internal/queue"
-	"llmesh/router/internal/scheduler"
 	"llmesh/router/internal/translate"
 )
 
@@ -81,14 +77,33 @@ type LimitProvider interface {
 	MaxConcurrentFor(key string) int
 }
 
+// Enqueuer accepts new inference requests. Satisfied by *queue.Queue.
+type Enqueuer interface {
+	TryPush(req types.InferenceRequest) bool
+	Push(req types.InferenceRequest)
+	PopByID(id string) *types.InferenceRequest
+	Len() int
+}
+
+// ResponseStore routes response chunks to HTTP handlers. Satisfied by *correlation.Store.
+type ResponseStore interface {
+	Create(requestID string) <-chan types.ChunkMsg
+	Delete(requestID string)
+}
+
+// Waker triggers the dispatch scheduler. Satisfied by *scheduler.Scheduler.
+type Waker interface {
+	Wake()
+}
+
 type Handler struct {
 	Keys              APIKeyStore
 	Models            ModelStore
 	Aliases           AliasStore
 	Stats             StatsRecorder
-	Queue             *queue.Queue
-	Correlation       *correlation.Store
-	Scheduler         *scheduler.Scheduler
+	Queue             Enqueuer
+	Correlation       ResponseStore
+	Scheduler         Waker
 	Canceller         Canceller       // optional; nil = no cancellation
 	Workers           WorkerChecker   // optional; nil = skip worker fast-fail
 	InFlight          OwnerInFlighter // optional; nil = skip per-owner concurrency check
@@ -512,9 +527,9 @@ func (h *Handler) batchResponse(w http.ResponseWriter, r *http.Request, req *typ
 			}
 		case <-timeout.C:
 			req.Attempts++
-			if req.Attempts < hub.MaxAttempts {
+			if req.Attempts < types.MaxAttempts {
 				apiLogger().Warn("api: batch timeout, requeuing",
-					"request_id", req.ID, "attempt", req.Attempts, "max_attempts", hub.MaxAttempts)
+					"request_id", req.ID, "attempt", req.Attempts, "max_attempts", types.MaxAttempts)
 				h.cancelRequest(req.ID)
 				// Drain any stale chunks from the cancelled dispatch.
 			drainStale:

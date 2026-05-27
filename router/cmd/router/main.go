@@ -215,6 +215,9 @@ func main() {
 
 	sched := scheduler.New(q, h, adminHandler.State(), logring.NewLogger(sink, "scheduler", slog.LevelInfo))
 	sched.Start()
+	// Wire hub callbacks that wake the scheduler (moved here from scheduler.New since
+	// scheduler now accepts a Dispatcher interface rather than *hub.Hub directly).
+	h.OnAvailable = func() { sched.Wake() }
 	h.OnRelease = func(req types.InferenceRequest) { q.Push(req); sched.Wake() }
 	h.StartLeaseReaper()
 
