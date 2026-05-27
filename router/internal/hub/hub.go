@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"llmesh/pkg/types"
+	"llmesh/router/internal/latency"
 )
 
 // LeaseDuration is the maximum time a dispatched job may remain in-flight
@@ -178,6 +179,10 @@ type Hub struct {
 	// OnRelease is called when a client releases a job back to the queue.
 	// The caller should push the request back to the queue and wake the scheduler.
 	OnRelease func(req types.InferenceRequest)
+
+	// Latency records per-model queue wait, TTFT, and job duration observations.
+	// Optional; nil disables latency tracking.
+	Latency *latency.Recorder
 }
 
 // New creates and returns a new Hub.
@@ -346,7 +351,12 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 				rec.live.deltaCount.Add(1)
 				if rec.live.firstChunkAt.Load() == nil {
 					now := time.Now()
-					rec.live.firstChunkAt.CompareAndSwap(nil, &now)
+					if rec.live.firstChunkAt.CompareAndSwap(nil, &now) {
+						// First non-empty token — record TTFT.
+						if h.Latency != nil {
+							h.Latency.RecordTTFT(rec.Req.Model, now.Sub(rec.DispatchedAt))
+						}
+					}
 				}
 			}
 		}
@@ -570,6 +580,10 @@ func (h *Hub) TrackJob(clientID string, req types.InferenceRequest) {
 		LeaseExpiry:  now.Add(LeaseDuration),
 		live:         &jobLiveStats{},
 	}
+	// Record time from enqueue to dispatch (queue wait latency).
+	if h.Latency != nil {
+		h.Latency.RecordQueueWait(req.Model, now.Sub(req.EnqueuedAt))
+	}
 	if _, ok := h.jobsByClient[clientID]; !ok {
 		h.jobsByClient[clientID] = make(map[string]struct{})
 	}
@@ -587,6 +601,9 @@ func (h *Hub) untrackJob(requestID string) bool {
 		delete(h.jobsByClient[rec.ClientID], requestID)
 	}
 	h.mu.Unlock()
+	if existed && h.Latency != nil {
+		h.Latency.RecordDuration(rec.Req.Model, time.Since(rec.DispatchedAt))
+	}
 	return existed
 }
 

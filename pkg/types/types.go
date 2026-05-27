@@ -56,6 +56,7 @@ type InferenceRequest struct {
 	WordCount   int             `json:"word_count,omitempty"`    // approximate word count across all messages
 	EnqueuedAt  time.Time       `json:"enqueued_at"`
 	Attempts    int             `json:"attempts,omitempty"` // number of times this request has errored and been retried
+	OriginID    string          `json:"origin_id,omitempty"` // request ID assigned by the originating router; set by upstream connector for cross-hop tracing
 }
 
 // --- WebSocket message types ---

@@ -7,6 +7,7 @@ import (
 
 	"llmesh/router/internal/api"
 	"llmesh/router/internal/hub"
+	"llmesh/router/internal/latency"
 	"llmesh/router/internal/queue"
 	"llmesh/router/internal/stats"
 )
@@ -15,7 +16,7 @@ import (
 // It exposes router-level counters and gauges with no authentication so that
 // Prometheus scrapers can reach it without credentials. Mount it on the main
 // mux so no additional port needs to be exposed in the container.
-func metricsHandler(ah *api.Handler, q *queue.Queue, h *hub.Hub, s *stats.Stats) http.HandlerFunc {
+func metricsHandler(ah *api.Handler, q *queue.Queue, h *hub.Hub, s *stats.Stats, lat *latency.Recorder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 
@@ -66,6 +67,11 @@ func metricsHandler(ah *api.Handler, q *queue.Queue, h *hub.Hub, s *stats.Stats)
 			fmt.Fprintf(&b, "llmrouter_user_requests_total{user=%q} %d\n", row.Name, row.Requests)
 			fmt.Fprintf(&b, "llmrouter_user_prompt_tokens_total{user=%q} %d\n", row.Name, row.PromptTokens)
 			fmt.Fprintf(&b, "llmrouter_user_completion_tokens_total{user=%q} %d\n", row.Name, row.CompletionTokens)
+		}
+
+		// --- Latency histograms (p50/p95/p99 over rolling 10-minute window) ---
+		if lat != nil {
+			lat.WritePrometheus(&b)
 		}
 
 		fmt.Fprint(w, b.String())
