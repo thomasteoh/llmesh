@@ -21,10 +21,8 @@ import (
 // Configurable via config.yaml (timeouts.lease_minutes); default 20 min.
 var LeaseDuration = 20 * time.Minute
 
-// MaxAttempts is the total number of times a request may be dispatched to a
-// client before being failed back to the caller. Counts the initial attempt
-// plus any retries triggered by client errors or disconnects.
-const MaxAttempts = 3
+// MaxAttempts aliases types.MaxAttempts for backward compatibility within this package.
+const MaxAttempts = types.MaxAttempts
 
 // isValidOrigin validates the Origin header against the Host header.
 // It allows empty origin (non-browser clients) and host-based matching
@@ -91,14 +89,9 @@ type Client struct {
 	sendClosed       bool
 }
 
-// ClientSummary is a snapshot of an available client used by the scheduler.
-type ClientSummary struct {
-	ID            string
-	Owner         string
-	Models        map[string]bool
-	MaxConcurrent int
-	OwnerSlots    map[string]int // model → slots reserved for owner; 0/unset = fully shared
-}
+// ClientSummary is an alias for types.ClientSummary for backward compatibility.
+// Defined in pkg/types to allow the scheduler to reference it without importing hub.
+type ClientSummary = types.ClientSummary
 
 func (c *Client) InFlight() int {
 	return int(c.inFlight.Load())

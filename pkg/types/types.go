@@ -121,6 +121,22 @@ type ReleaseMsg struct {
 	Reason    string `json:"reason"`     // "model_failed" | "timeout" | "client_shutdown"
 }
 
+// MaxAttempts is the total number of times a request may be dispatched before
+// being failed back to the caller (initial attempt + retries on client errors/disconnects).
+// Defined here so the api package can use it without importing hub.
+const MaxAttempts = 3
+
+// ClientSummary is a snapshot of an available client used by the scheduler.
+// Defined here (rather than in the hub package) so the scheduler can depend
+// on it via an interface without importing hub.
+type ClientSummary struct {
+	ID            string
+	Owner         string
+	Models        map[string]bool
+	MaxConcurrent int
+	OwnerSlots    map[string]int // model → slots reserved for owner; 0/unset = fully shared
+}
+
 // BetterRequest reports whether request a is a better dispatch choice than b.
 // aOwnerMatch and bOwnerMatch indicate whether each request matches the
 // preferred client owner (affinity). Ordering: affinity > priority tier > FIFO.

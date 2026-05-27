@@ -28,8 +28,12 @@ import (
 	"llmesh/router/internal/correlation"
 	"llmesh/router/internal/hub"
 	"llmesh/router/internal/queue"
-	"llmesh/router/internal/scheduler"
 )
+
+// Waker triggers the local dispatch scheduler. Satisfied by *scheduler.Scheduler.
+type Waker interface {
+	Wake()
+}
 
 const (
 	pingInterval      = 30 * time.Second
@@ -45,7 +49,7 @@ type Connector struct {
 	h       *hub.Hub
 	q       *queue.Queue
 	store   *correlation.Store
-	sched   *scheduler.Scheduler
+	sched   Waker
 	version string
 	log     *slog.Logger
 
@@ -56,7 +60,7 @@ type Connector struct {
 
 // New creates a Connector. version is the build-time router version string.
 // Call Reload to start connections.
-func New(h *hub.Hub, q *queue.Queue, store *correlation.Store, sched *scheduler.Scheduler, version string, log *slog.Logger) *Connector {
+func New(h *hub.Hub, q *queue.Queue, store *correlation.Store, sched Waker, version string, log *slog.Logger) *Connector {
 	return &Connector{
 		h:         h,
 		q:         q,

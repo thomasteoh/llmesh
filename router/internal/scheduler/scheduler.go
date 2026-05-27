@@ -6,7 +6,6 @@ import (
 	"sync"
 
 	"llmesh/pkg/types"
-	"llmesh/router/internal/hub"
 	"llmesh/router/internal/queue"
 )
 
@@ -15,10 +14,21 @@ type AliasProvider interface {
 	AliasMap() map[string][]string
 }
 
+// Dispatcher is satisfied by *hub.Hub. It exposes only the methods the scheduler
+// needs to dispatch jobs, so the scheduler package does not import hub.
+type Dispatcher interface {
+	AvailableClientList() []types.ClientSummary
+	SendToClient(clientID string, msg any) bool
+	IncrInFlight(clientID string)
+	DecrInFlight(clientID string)
+	TrackJob(clientID string, req types.InferenceRequest)
+	NonOwnerInFlight(clientID, owner, model string) int
+}
+
 // Scheduler dispatches queued InferenceRequests to available hub clients.
 type Scheduler struct {
 	queue    *queue.Queue
-	hub      *hub.Hub
+	hub      Dispatcher
 	aliases  AliasProvider
 	log      *slog.Logger
 	signal   chan struct{}
@@ -28,8 +38,7 @@ type Scheduler struct {
 }
 
 // New creates a Scheduler wired to the given queue, hub, and alias provider.
-// It registers itself as the hub's OnAvailable callback.
-func New(q *queue.Queue, h *hub.Hub, aliases AliasProvider, logger *slog.Logger) *Scheduler {
+func New(q *queue.Queue, h Dispatcher, aliases AliasProvider, logger *slog.Logger) *Scheduler {
 	s := &Scheduler{
 		queue:   q,
 		hub:     h,
@@ -38,7 +47,6 @@ func New(q *queue.Queue, h *hub.Hub, aliases AliasProvider, logger *slog.Logger)
 		signal:  make(chan struct{}, 1),
 		stopCh:  make(chan struct{}),
 	}
-	h.OnAvailable = func() { s.Wake() }
 	return s
 }
 
