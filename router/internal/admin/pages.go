@@ -924,6 +924,31 @@ func (a *Admin) handleAPIKeyPriority(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/portal/api-keys", http.StatusFound)
 }
 
+// --- API Key max concurrent ---
+
+func (a *Admin) handleAPIKeyMaxConcurrent(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	key := r.FormValue("key")
+	limitStr := strings.TrimSpace(r.FormValue("max_concurrent"))
+	var limit int
+	if limitStr != "" {
+		n, err := strconv.Atoi(limitStr)
+		if err != nil || n < 0 {
+			http.Error(w, "max_concurrent must be a non-negative integer", http.StatusBadRequest)
+			return
+		}
+		limit = n
+	}
+	if err := a.state.UpdateAPIKeyMaxConcurrent(key, limit); err != nil {
+		http.Error(w, "could not update max_concurrent: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	http.Redirect(w, r, "/portal/api-keys", http.StatusFound)
+}
+
 // buildClientGroups groups ClientTokenRows by owner, sorted: live users first, then alpha.
 func buildClientGroups(rows []ClientTokenRow) []ClientUserGroup {
 	groupMap := make(map[string]*ClientUserGroup)

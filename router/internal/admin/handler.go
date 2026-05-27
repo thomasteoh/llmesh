@@ -154,6 +154,7 @@ func (a *Admin) registerRoutes() {
 	}))
 	mux.HandleFunc("/portal/api-keys/revoke", a.requireAuth(a.postWithCSRF(a.handleAPIKeyRevoke)))
 	mux.HandleFunc("/portal/api-keys/priority", a.requireAdmin(a.postWithCSRF(a.handleAPIKeyPriority)))
+	mux.HandleFunc("/portal/api-keys/max-concurrent", a.requireAdmin(a.postWithCSRF(a.handleAPIKeyMaxConcurrent)))
 
 	mux.HandleFunc("/portal/clients", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
