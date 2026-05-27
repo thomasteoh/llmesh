@@ -208,7 +208,13 @@ func (c *Conn) connect(outerCtx context.Context) error {
 				log.Warn("ws: bad job message", "error", err)
 				continue
 			}
-			c.sem <- struct{}{} // acquire slot
+			// Acquire a concurrency slot. Use select so a shutdown (connCtx.Done)
+			// can interrupt the wait and allow cancel messages to be processed.
+			select {
+			case c.sem <- struct{}{}:
+			case <-connCtx.Done():
+				continue
+			}
 			jobCtx, jobCancel := context.WithCancel(connCtx)
 			c.cancelsMu.Lock()
 			c.cancels[job.Request.ID] = jobCancel

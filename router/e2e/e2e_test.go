@@ -1016,17 +1016,19 @@ func TestE2E_RequestIDCorrelation(t *testing.T) {
 	routerReqID, _ := respMap["id"].(string)
 
 	mu.Lock()
-	clientReqID = clientReqID
+	gotClientReqID := clientReqID
 	mu.Unlock()
 
-	// The router generates its own ID and sends it to the client via JobMsg
-	// The client's ChunkMsg must use the same request ID
-	// Both should match because the router sends its generated ID in the JobMsg
+	// The router generates its own ID and sends it to the client via JobMsg.
+	// The client's ChunkMsg must use the same request ID as the router assigned.
 	if routerReqID == "" {
 		t.Fatal("empty router request ID")
 	}
+	if gotClientReqID != routerReqID {
+		t.Errorf("request ID mismatch: router assigned %q but client received %q", routerReqID, gotClientReqID)
+	}
 
-	t.Logf("correlation OK: routerID=%s, clientID=%s", routerReqID, clientReqID)
+	t.Logf("correlation OK: routerID=%s, clientID=%s", routerReqID, gotClientReqID)
 }
 
 // TestE2E_AnthropicSSEChunk verifies the translate.AnthropicSSEChunk helper works.

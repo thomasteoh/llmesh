@@ -647,7 +647,10 @@ func (a *Admin) handleModelAliasCreate(w http.ResponseWriter, r *http.Request) {
 	alias := strings.TrimSpace(r.FormValue("alias"))
 	model := strings.TrimSpace(r.FormValue("model"))
 	if alias != "" && model != "" {
-		a.state.AddAlias(alias, model) // duplicate errors silently ignored
+		if err := a.state.AddAlias(alias, model); err != nil {
+			http.Error(w, "could not add alias: "+err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 	http.Redirect(w, r, "/portal/", http.StatusFound)
 }
@@ -660,9 +663,15 @@ func (a *Admin) handleModelAliasDelete(w http.ResponseWriter, r *http.Request) {
 	alias := r.FormValue("alias")
 	model := r.FormValue("model")
 	if model != "" {
-		a.state.DeleteAlias(alias, model)
+		if err := a.state.DeleteAlias(alias, model); err != nil {
+			http.Error(w, "could not delete alias: "+err.Error(), http.StatusBadRequest)
+			return
+		}
 	} else {
-		a.state.DeleteAliasGroup(alias)
+		if err := a.state.DeleteAliasGroup(alias); err != nil {
+			http.Error(w, "could not delete alias group: "+err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 	// Redirect back to the originating page (dashboard or clients)
 	ref := r.FormValue("ref")
@@ -908,7 +917,10 @@ func (a *Admin) handleAPIKeyPriority(w http.ResponseWriter, r *http.Request) {
 	}
 	key := r.FormValue("key")
 	priority := r.FormValue("priority")
-	a.state.UpdateAPIKeyPriority(key, priority) // errors silently ignored; bad input just doesn't save
+	if err := a.state.UpdateAPIKeyPriority(key, priority); err != nil {
+		http.Error(w, "could not update priority: "+err.Error(), http.StatusBadRequest)
+		return
+	}
 	http.Redirect(w, r, "/portal/api-keys", http.StatusFound)
 }
 

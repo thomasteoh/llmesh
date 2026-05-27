@@ -446,19 +446,6 @@ func (h *Hub) SendToClient(clientID string, msg any) bool {
 	}
 }
 
-// FindAvailable returns the ID of a connected client that supports model and has capacity.
-// Returns "" if none available.
-func (h *Hub) FindAvailable(model string) string {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	for id, c := range h.clients {
-		if c.Models[model] && c.InFlight() < c.MaxConcurrent {
-			return id
-		}
-	}
-	return ""
-}
-
 // AvailableModels returns the set of all models currently served by clients with available capacity.
 func (h *Hub) AvailableModels() map[string]bool {
 	h.mu.RLock()
