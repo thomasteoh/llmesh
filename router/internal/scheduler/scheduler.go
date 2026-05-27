@@ -100,21 +100,35 @@ func (s *Scheduler) drainQueue() {
 			if req == nil {
 				continue
 			}
-			// Enforce shared-slot constraints for non-owner requests.
+			// Enforce per-model owner-slot constraints for non-owner requests.
 			if req.Owner != c.Owner {
-				switch {
-				case c.SharedSlots == 0:
-					s.log.Debug("scheduler: skipping exclusive client for non-owner request",
-						"client_id", c.ID, "client_owner", c.Owner, "request_owner", req.Owner)
-					continue
-				case c.SharedSlots > 0:
-					if s.hub.NonOwnerInFlight(c.ID, c.Owner) >= c.SharedSlots {
-						s.log.Debug("scheduler: shared slot limit reached",
-							"client_id", c.ID, "shared_slots", c.SharedSlots)
-						continue
+				// Resolve the effective model name for OwnerSlots lookup.
+				// The alias may not be rewritten yet at this point, so resolve it now.
+				effectiveModel := req.Model
+				if req.Model != "any" {
+					if targets, ok := aliases[req.Model]; ok {
+						for _, t := range targets {
+							if c.Models[t] {
+								effectiveModel = t
+								break
+							}
+						}
 					}
 				}
-				// SharedSlots < 0: unlimited sharing, no restriction
+				ownerReserved := c.OwnerSlots[effectiveModel] // 0 if unset = fully shared
+				nonOwnerCap := c.MaxConcurrent - ownerReserved
+				if nonOwnerCap <= 0 {
+					s.log.Debug("scheduler: skipping exclusive client for non-owner request",
+						"client_id", c.ID, "client_owner", c.Owner, "request_owner", req.Owner,
+						"model", effectiveModel, "owner_reserved", ownerReserved)
+					continue
+				}
+				if s.hub.NonOwnerInFlight(c.ID, c.Owner, effectiveModel) >= nonOwnerCap {
+					s.log.Debug("scheduler: owner-slot cap reached for model",
+						"client_id", c.ID, "model", effectiveModel,
+						"non_owner_cap", nonOwnerCap)
+					continue
+				}
 			}
 			cand := &candidate{
 				clientID:     c.ID,
