@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -11,10 +12,10 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"llmesh/pkg/types"
+	_ "modernc.org/sqlite"
 )
 
 type User struct {
@@ -29,7 +30,7 @@ type APIKey struct {
 	Label         string    `json:"label"`
 	Owner         string    `json:"owner"`
 	Key           string    `json:"key"`
-	Priority      string    `json:"priority"`       // "high" | "normal" | "low"
+	Priority      string    `json:"priority"`               // "high" | "normal" | "low"
 	MaxConcurrent int       `json:"max_concurrent,omitempty"` // 0 = unlimited
 	CreatedAt     time.Time `json:"created_at"`
 }
@@ -43,14 +44,14 @@ type ClientToken struct {
 }
 
 // UpstreamRouter configures an upstream (orchestrator) router that this router
-// connects to as a client. Models are advertised automatically from locally
-// connected GPU clients; no manual model configuration is required.
+// connects to as a client.
 type UpstreamRouter struct {
 	Name  string `json:"name"`
 	URL   string `json:"url"`   // base URL, e.g. "https://orchestrator.example.com"
 	Token string `json:"token"` // client token issued on the upstream router
 }
 
+// stateData is kept only for migrating legacy state.json files on first startup.
 type stateData struct {
 	Users           []User              `json:"users"`
 	APIKeys         []APIKey            `json:"api_keys"`
@@ -62,10 +63,10 @@ type stateData struct {
 // UnmarshalJSON handles migration from the old map[string]string format.
 func (sd *stateData) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		Users           []User          `json:"users"`
-		APIKeys         []APIKey        `json:"api_keys"`
-		ClientTokens    []ClientToken   `json:"client_tokens"`
-		ModelAliases    json.RawMessage `json:"model_aliases,omitempty"`
+		Users           []User           `json:"users"`
+		APIKeys         []APIKey         `json:"api_keys"`
+		ClientTokens    []ClientToken    `json:"client_tokens"`
+		ModelAliases    json.RawMessage  `json:"model_aliases,omitempty"`
 		UpstreamRouters []UpstreamRouter `json:"upstream_routers,omitempty"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -76,13 +77,11 @@ func (sd *stateData) UnmarshalJSON(data []byte) error {
 	sd.ClientTokens = raw.ClientTokens
 	sd.UpstreamRouters = raw.UpstreamRouters
 	if len(raw.ModelAliases) > 0 {
-		// Try new format first: map[string][]string
 		var newFmt map[string][]string
 		if err := json.Unmarshal(raw.ModelAliases, &newFmt); err == nil {
 			sd.ModelAliases = newFmt
 			return nil
 		}
-		// Fall back to old format: map[string]string → migrate
 		var oldFmt map[string]string
 		if err := json.Unmarshal(raw.ModelAliases, &oldFmt); err == nil {
 			sd.ModelAliases = make(map[string][]string, len(oldFmt))
@@ -94,156 +93,304 @@ func (sd *stateData) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// State is the mutable runtime state, persisted to state.json.
+// State is the mutable runtime state, persisted to a SQLite database.
 type State struct {
-	mu   sync.RWMutex
-	path string
-	data stateData
+	db *sql.DB
 }
 
-// LoadState loads state from path. Returns empty state if file does not exist.
+// dbPath converts a .json path to a .db path so that tests using .json paths
+// transparently get a SQLite file instead.
+func dbPath(path string) string {
+	if strings.HasSuffix(path, ".json") {
+		return strings.TrimSuffix(path, ".json") + ".db"
+	}
+	return path
+}
+
+// LoadState opens (or creates) the SQLite database at path.
+// If path ends in .json it is converted to .db.
+// On first open, if a legacy state.json exists at the original path, its data is imported.
 func LoadState(path string) (*State, error) {
-	s := &State{path: path}
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return s, nil
-	}
+	dbfile := dbPath(path)
+	db, err := sql.Open("sqlite", dbfile)
 	if err != nil {
-		return nil, fmt.Errorf("read state: %w", err)
+		return nil, fmt.Errorf("open state db: %w", err)
 	}
-	if len(data) == 0 {
-		return s, nil // empty file treated as no state yet
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("set WAL mode: %w", err)
 	}
-	if err := json.Unmarshal(data, &s.data); err != nil {
-		return nil, fmt.Errorf("parse state: %w", err)
+	if err := createSchema(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	s := &State{db: db}
+	if err := s.maybeMigrateJSON(path, dbfile); err != nil {
+		db.Close()
+		return nil, err
 	}
 	return s, nil
 }
 
-// save writes state to disk atomically. Caller must hold write lock.
-func (s *State) save() error {
-	data, err := json.MarshalIndent(s.data, "", "  ")
+func createSchema(db *sql.DB) error {
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS users (
+			username      TEXT PRIMARY KEY,
+			password_hash TEXT NOT NULL DEFAULT '',
+			role          TEXT NOT NULL DEFAULT 'member',
+			disabled      INTEGER NOT NULL DEFAULT 0,
+			csrf_token    TEXT NOT NULL DEFAULT ''
+		);
+		CREATE TABLE IF NOT EXISTS api_keys (
+			key            TEXT PRIMARY KEY,
+			label          TEXT NOT NULL DEFAULT '',
+			owner          TEXT NOT NULL DEFAULT '',
+			priority       TEXT NOT NULL DEFAULT 'normal',
+			max_concurrent INTEGER NOT NULL DEFAULT 0,
+			created_at     TEXT NOT NULL DEFAULT '',
+			UNIQUE(owner, label)
+		);
+		CREATE TABLE IF NOT EXISTS client_tokens (
+			token       TEXT PRIMARY KEY,
+			name        TEXT NOT NULL DEFAULT '',
+			owner       TEXT NOT NULL DEFAULT '',
+			created_at  TEXT NOT NULL DEFAULT '',
+			owner_slots TEXT NOT NULL DEFAULT '{}',
+			UNIQUE(owner, name)
+		);
+		CREATE TABLE IF NOT EXISTS model_aliases (
+			alias TEXT NOT NULL,
+			model TEXT NOT NULL,
+			PRIMARY KEY (alias, model)
+		);
+		CREATE TABLE IF NOT EXISTS upstream_routers (
+			url   TEXT PRIMARY KEY,
+			name  TEXT NOT NULL DEFAULT '',
+			token TEXT NOT NULL DEFAULT ''
+		);
+	`)
+	return err
+}
+
+// maybeMigrateJSON imports data from a legacy state.json if the DB has no users yet.
+func (s *State) maybeMigrateJSON(jsonPath, dbfile string) error {
+	if jsonPath == dbfile {
+		return nil // path was already a .db path, nothing to migrate
+	}
+	var count int
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM users").Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+	data, err := os.ReadFile(jsonPath)
+	if errors.Is(err, os.ErrNotExist) || len(data) == 0 {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read legacy state: %w", err)
+	}
+	var sd stateData
+	if err := json.Unmarshal(data, &sd); err != nil {
+		return fmt.Errorf("parse legacy state: %w", err)
+	}
+	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
-		return err
+	defer tx.Rollback()
+	for _, u := range sd.Users {
+		disabled := boolInt(u.Disabled)
+		if _, err := tx.Exec(
+			`INSERT OR IGNORE INTO users (username, password_hash, role, disabled, csrf_token) VALUES (?, ?, ?, ?, ?)`,
+			u.Username, u.PasswordHash, u.Role, disabled, u.CSRFToken,
+		); err != nil {
+			return err
+		}
 	}
-	return os.Rename(tmp, s.path)
+	for _, k := range sd.APIKeys {
+		if _, err := tx.Exec(
+			`INSERT OR IGNORE INTO api_keys (key, label, owner, priority, max_concurrent, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+			k.Key, k.Label, k.Owner, k.Priority, k.MaxConcurrent, k.CreatedAt.Format(time.RFC3339),
+		); err != nil {
+			return err
+		}
+	}
+	for _, t := range sd.ClientTokens {
+		slots := marshalOwnerSlots(t.OwnerSlots)
+		if _, err := tx.Exec(
+			`INSERT OR IGNORE INTO client_tokens (token, name, owner, created_at, owner_slots) VALUES (?, ?, ?, ?, ?)`,
+			t.Token, t.Name, t.Owner, t.CreatedAt.Format(time.RFC3339), slots,
+		); err != nil {
+			return err
+		}
+	}
+	for alias, models := range sd.ModelAliases {
+		for _, model := range models {
+			if _, err := tx.Exec(
+				`INSERT OR IGNORE INTO model_aliases (alias, model) VALUES (?, ?)`,
+				alias, model,
+			); err != nil {
+				return err
+			}
+		}
+	}
+	for _, r := range sd.UpstreamRouters {
+		if _, err := tx.Exec(
+			`INSERT OR IGNORE INTO upstream_routers (url, name, token) VALUES (?, ?, ?)`,
+			r.URL, r.Name, r.Token,
+		); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+func marshalOwnerSlots(m map[string]int) string {
+	if len(m) == 0 {
+		return "{}"
+	}
+	b, _ := json.Marshal(m)
+	return string(b)
+}
+
+// --- Setup ---
+
 func (s *State) NeedsSetup() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return len(s.data.Users) == 0
+	var count int
+	s.db.QueryRow("SELECT COUNT(*) FROM users").Scan(&count)
+	return count == 0
 }
 
 // --- Users ---
 
 func (s *State) LookupUser(username string) (User, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, u := range s.data.Users {
-		if u.Username == username {
-			return u, true
-		}
+	var u User
+	var disabled int
+	err := s.db.QueryRow(
+		`SELECT username, password_hash, role, disabled, csrf_token FROM users WHERE username = ?`,
+		username,
+	).Scan(&u.Username, &u.PasswordHash, &u.Role, &disabled, &u.CSRFToken)
+	if err != nil {
+		return User{}, false
 	}
-	return User{}, false
+	u.Disabled = disabled != 0
+	return u, true
 }
 
 func (s *State) AddUser(u User) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, existing := range s.data.Users {
-		if existing.Username == u.Username {
+	_, err := s.db.Exec(
+		`INSERT INTO users (username, password_hash, role, disabled, csrf_token) VALUES (?, ?, ?, ?, ?)`,
+		u.Username, u.PasswordHash, u.Role, boolInt(u.Disabled), u.CSRFToken,
+	)
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE") {
 			return fmt.Errorf("username %q already exists", u.Username)
 		}
+		return err
 	}
-	s.data.Users = append(s.data.Users, u)
-	return s.save()
+	return nil
 }
 
-// UpdateUser applies fn to the named user and saves. Returns error if not found.
 func (s *State) UpdateUser(username string, fn func(*User)) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i := range s.data.Users {
-		if s.data.Users[i].Username == username {
-			fn(&s.data.Users[i])
-			return s.save()
-		}
+	u, ok := s.LookupUser(username)
+	if !ok {
+		return fmt.Errorf("user not found: %s", username)
 	}
-	return fmt.Errorf("user not found: %s", username)
+	fn(&u)
+	_, err := s.db.Exec(
+		`UPDATE users SET password_hash = ?, role = ?, disabled = ?, csrf_token = ? WHERE username = ?`,
+		u.PasswordHash, u.Role, boolInt(u.Disabled), u.CSRFToken, username,
+	)
+	return err
 }
 
 func (s *State) Users() []User {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]User, len(s.data.Users))
-	copy(out, s.data.Users)
+	rows, err := s.db.Query(`SELECT username, password_hash, role, disabled, csrf_token FROM users ORDER BY username`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []User
+	for rows.Next() {
+		var u User
+		var disabled int
+		if err := rows.Scan(&u.Username, &u.PasswordHash, &u.Role, &disabled, &u.CSRFToken); err == nil {
+			u.Disabled = disabled != 0
+			out = append(out, u)
+		}
+	}
 	return out
 }
 
 func (s *State) ActiveAdminCount() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	n := 0
-	for _, u := range s.data.Users {
-		if u.Role == "admin" && !u.Disabled {
-			n++
-		}
-	}
-	return n
+	var count int
+	s.db.QueryRow(`SELECT COUNT(*) FROM users WHERE role = 'admin' AND disabled = 0`).Scan(&count)
+	return count
 }
 
-// DemoteUser demotes the named user to member, returning an error if the operation
-// would violate the at-least-one-active-admin invariant or if the user is the actor.
 func (s *State) DemoteUser(actor, target string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if actor == target {
 		return fmt.Errorf("cannot demote yourself")
 	}
-	// Count active admins before applying the change.
-	count := 0
-	for _, u := range s.data.Users {
-		if u.Role == "admin" && !u.Disabled {
-			count++
-		}
-	}
-	if count <= 1 {
+	if s.ActiveAdminCount() <= 1 {
 		return fmt.Errorf("cannot demote: at least one active admin must remain")
 	}
-	for i := range s.data.Users {
-		if s.data.Users[i].Username == target {
-			s.data.Users[i].Role = "member"
-			break
-		}
+	res, err := s.db.Exec(`UPDATE users SET role = 'member' WHERE username = ?`, target)
+	if err != nil {
+		return err
 	}
-	return s.save()
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("user not found: %s", target)
+	}
+	return nil
 }
 
 // --- API Keys ---
 
 func (s *State) LookupAPIKey(key string) (APIKey, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, k := range s.data.APIKeys {
-		if k.Key == key {
-			return k, true
-		}
+	var k APIKey
+	var createdAt string
+	err := s.db.QueryRow(
+		`SELECT key, label, owner, priority, max_concurrent, created_at FROM api_keys WHERE key = ?`,
+		key,
+	).Scan(&k.Key, &k.Label, &k.Owner, &k.Priority, &k.MaxConcurrent, &createdAt)
+	if err != nil {
+		return APIKey{}, false
 	}
-	return APIKey{}, false
+	k.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+	return k, true
 }
 
-// APIKeysFor returns keys visible to owner. Admins (isAdmin=true) see all keys.
 func (s *State) APIKeysFor(owner string, isAdmin bool) []APIKey {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if isAdmin {
+		rows, err = s.db.Query(`SELECT key, label, owner, priority, max_concurrent, created_at FROM api_keys ORDER BY owner, label`)
+	} else {
+		rows, err = s.db.Query(`SELECT key, label, owner, priority, max_concurrent, created_at FROM api_keys WHERE owner = ? ORDER BY label`, owner)
+	}
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
 	var out []APIKey
-	for _, k := range s.data.APIKeys {
-		if isAdmin || k.Owner == owner {
+	for rows.Next() {
+		var k APIKey
+		var createdAt string
+		if err := rows.Scan(&k.Key, &k.Label, &k.Owner, &k.Priority, &k.MaxConcurrent, &createdAt); err == nil {
+			k.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
 			out = append(out, k)
 		}
 	}
@@ -251,53 +398,49 @@ func (s *State) APIKeysFor(owner string, isAdmin bool) []APIKey {
 }
 
 func (s *State) AddAPIKey(k APIKey) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, existing := range s.data.APIKeys {
-		if existing.Owner == k.Owner && existing.Label == k.Label {
+	_, err := s.db.Exec(
+		`INSERT INTO api_keys (key, label, owner, priority, max_concurrent, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		k.Key, k.Label, k.Owner, k.Priority, k.MaxConcurrent, k.CreatedAt.Format(time.RFC3339),
+	)
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE") {
 			return fmt.Errorf("label %q already exists for this user", k.Label)
 		}
+		return err
 	}
-	s.data.APIKeys = append(s.data.APIKeys, k)
-	return s.save()
+	return nil
 }
 
-// UpdateAPIKeyPriority changes the priority of the given key. Admin-only operation.
 func (s *State) UpdateAPIKeyPriority(key, priority string) error {
 	switch priority {
 	case "high", "normal", "low":
 	default:
 		return fmt.Errorf("invalid priority %q", priority)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i := range s.data.APIKeys {
-		if s.data.APIKeys[i].Key == key {
-			s.data.APIKeys[i].Priority = priority
-			return s.save()
-		}
+	res, err := s.db.Exec(`UPDATE api_keys SET priority = ? WHERE key = ?`, priority, key)
+	if err != nil {
+		return err
 	}
-	return fmt.Errorf("key not found")
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("key not found")
+	}
+	return nil
 }
 
-// UpdateAPIKeyMaxConcurrent sets the MaxConcurrent limit for a key. 0 = unlimited. Admin-only.
 func (s *State) UpdateAPIKeyMaxConcurrent(key string, limit int) error {
 	if limit < 0 {
 		return fmt.Errorf("max_concurrent must be >= 0")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i := range s.data.APIKeys {
-		if s.data.APIKeys[i].Key == key {
-			s.data.APIKeys[i].MaxConcurrent = limit
-			return s.save()
-		}
+	res, err := s.db.Exec(`UPDATE api_keys SET max_concurrent = ? WHERE key = ?`, limit, key)
+	if err != nil {
+		return err
 	}
-	return fmt.Errorf("key not found")
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("key not found")
+	}
+	return nil
 }
 
-// MaxConcurrentFor satisfies the api.LimitProvider interface.
-// Returns the per-key max concurrent limit (0 = unlimited).
 func (s *State) MaxConcurrentFor(key string) int {
 	k, ok := s.LookupAPIKey(key)
 	if !ok {
@@ -306,32 +449,36 @@ func (s *State) MaxConcurrentFor(key string) int {
 	return k.MaxConcurrent
 }
 
-// RevokeAPIKey removes the key. Non-admins can only revoke their own keys.
 func (s *State) RevokeAPIKey(owner, key string, isAdmin bool) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i, k := range s.data.APIKeys {
-		if k.Key == key && (isAdmin || k.Owner == owner) {
-			s.data.APIKeys = append(s.data.APIKeys[:i], s.data.APIKeys[i+1:]...)
-			return s.save()
-		}
+	var (
+		res sql.Result
+		err error
+	)
+	if isAdmin {
+		res, err = s.db.Exec(`DELETE FROM api_keys WHERE key = ?`, key)
+	} else {
+		res, err = s.db.Exec(`DELETE FROM api_keys WHERE key = ? AND owner = ?`, key, owner)
 	}
-	return fmt.Errorf("key not found")
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("key not found")
+	}
+	return nil
 }
 
 func (s *State) APIKeyCount() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return len(s.data.APIKeys)
+	var count int
+	s.db.QueryRow(`SELECT COUNT(*) FROM api_keys`).Scan(&count)
+	return count
 }
 
-// ValidAPIKey satisfies the api.APIKeyStore interface.
 func (s *State) ValidAPIKey(key string) bool {
 	_, ok := s.LookupAPIKey(key)
 	return ok
 }
 
-// PriorityFor satisfies the api.APIKeyStore interface.
 func (s *State) PriorityFor(key string) types.Priority {
 	k, ok := s.LookupAPIKey(key)
 	if !ok {
@@ -348,7 +495,6 @@ func (s *State) OwnerFor(key string) string {
 	return k.Owner
 }
 
-// LabelFor returns "owner/label" for the given API key, or "" if not found.
 func (s *State) LabelFor(key string) string {
 	k, ok := s.LookupAPIKey(key)
 	if !ok {
@@ -360,23 +506,41 @@ func (s *State) LabelFor(key string) string {
 // --- Clients ---
 
 func (s *State) LookupClientToken(token string) (ClientToken, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, t := range s.data.ClientTokens {
-		if t.Token == token {
-			return t, true
-		}
+	var t ClientToken
+	var createdAt, ownerSlotsJSON string
+	err := s.db.QueryRow(
+		`SELECT token, name, owner, created_at, owner_slots FROM client_tokens WHERE token = ?`,
+		token,
+	).Scan(&t.Token, &t.Name, &t.Owner, &createdAt, &ownerSlotsJSON)
+	if err != nil {
+		return ClientToken{}, false
 	}
-	return ClientToken{}, false
+	t.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+	json.Unmarshal([]byte(ownerSlotsJSON), &t.OwnerSlots)
+	return t, true
 }
 
-// ClientTokensFor returns tokens visible to owner. Admins see all.
 func (s *State) ClientTokensFor(owner string, isAdmin bool) []ClientToken {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if isAdmin {
+		rows, err = s.db.Query(`SELECT token, name, owner, created_at, owner_slots FROM client_tokens ORDER BY owner, name`)
+	} else {
+		rows, err = s.db.Query(`SELECT token, name, owner, created_at, owner_slots FROM client_tokens WHERE owner = ? ORDER BY name`, owner)
+	}
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
 	var out []ClientToken
-	for _, t := range s.data.ClientTokens {
-		if isAdmin || t.Owner == owner {
+	for rows.Next() {
+		var t ClientToken
+		var createdAt, ownerSlotsJSON string
+		if err := rows.Scan(&t.Token, &t.Name, &t.Owner, &createdAt, &ownerSlotsJSON); err == nil {
+			t.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+			json.Unmarshal([]byte(ownerSlotsJSON), &t.OwnerSlots)
 			out = append(out, t)
 		}
 	}
@@ -384,70 +548,79 @@ func (s *State) ClientTokensFor(owner string, isAdmin bool) []ClientToken {
 }
 
 func (s *State) AddClientToken(t ClientToken) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, existing := range s.data.ClientTokens {
-		if existing.Owner == t.Owner && existing.Name == t.Name {
+	_, err := s.db.Exec(
+		`INSERT INTO client_tokens (token, name, owner, created_at, owner_slots) VALUES (?, ?, ?, ?, ?)`,
+		t.Token, t.Name, t.Owner, t.CreatedAt.Format(time.RFC3339), marshalOwnerSlots(t.OwnerSlots),
+	)
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE") {
 			return fmt.Errorf("name %q already exists for this user", t.Name)
 		}
+		return err
 	}
-	s.data.ClientTokens = append(s.data.ClientTokens, t)
-	return s.save()
+	return nil
 }
 
-// RevokeClientToken removes the token. Non-admins can only revoke their own tokens.
 func (s *State) RevokeClientToken(owner, token string, isAdmin bool) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i, t := range s.data.ClientTokens {
-		if t.Token == token && (isAdmin || t.Owner == owner) {
-			s.data.ClientTokens = append(s.data.ClientTokens[:i], s.data.ClientTokens[i+1:]...)
-			return s.save()
-		}
+	var (
+		res sql.Result
+		err error
+	)
+	if isAdmin {
+		res, err = s.db.Exec(`DELETE FROM client_tokens WHERE token = ?`, token)
+	} else {
+		res, err = s.db.Exec(`DELETE FROM client_tokens WHERE token = ? AND owner = ?`, token, owner)
 	}
-	return fmt.Errorf("token not found")
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("token not found")
+	}
+	return nil
 }
 
-// SetClientTokenOwnerSlots sets the owner_slots value for a specific model on the given token.
-// Non-admins may only update their own tokens.
-// slots <= 0 removes the model key (restores full sharing for that model).
 func (s *State) SetClientTokenOwnerSlots(owner, token, model string, slots int, isAdmin bool) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i, t := range s.data.ClientTokens {
-		if t.Token == token && (isAdmin || t.Owner == owner) {
-			if slots <= 0 {
-				delete(s.data.ClientTokens[i].OwnerSlots, model)
-			} else {
-				if s.data.ClientTokens[i].OwnerSlots == nil {
-					s.data.ClientTokens[i].OwnerSlots = make(map[string]int)
-				}
-				s.data.ClientTokens[i].OwnerSlots[model] = slots
-			}
-			return s.save()
-		}
+	t, ok := s.LookupClientToken(token)
+	if !ok || (!isAdmin && t.Owner != owner) {
+		return fmt.Errorf("token not found")
 	}
-	return fmt.Errorf("token not found")
+	if slots <= 0 {
+		delete(t.OwnerSlots, model)
+	} else {
+		if t.OwnerSlots == nil {
+			t.OwnerSlots = make(map[string]int)
+		}
+		t.OwnerSlots[model] = slots
+	}
+	_, err := s.db.Exec(`UPDATE client_tokens SET owner_slots = ? WHERE token = ?`, marshalOwnerSlots(t.OwnerSlots), token)
+	return err
 }
 
 func (s *State) ClientTokenCount() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return len(s.data.ClientTokens)
+	var count int
+	s.db.QueryRow(`SELECT COUNT(*) FROM client_tokens`).Scan(&count)
+	return count
 }
 
 // --- Upstream Routers ---
 
-// GetUpstreamRouters returns a copy of the configured upstream routers.
 func (s *State) GetUpstreamRouters() []UpstreamRouter {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]UpstreamRouter, len(s.data.UpstreamRouters))
-	copy(out, s.data.UpstreamRouters)
+	rows, err := s.db.Query(`SELECT url, name, token FROM upstream_routers ORDER BY url`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []UpstreamRouter
+	for rows.Next() {
+		var r UpstreamRouter
+		if err := rows.Scan(&r.URL, &r.Name, &r.Token); err == nil {
+			out = append(out, r)
+		}
+	}
 	return out
 }
 
-// AddUpstreamRouter adds an upstream router configuration and saves state.
 func (s *State) AddUpstreamRouter(r UpstreamRouter) error {
 	if r.URL == "" || r.Token == "" {
 		return fmt.Errorf("url and token are required")
@@ -456,30 +629,29 @@ func (s *State) AddUpstreamRouter(r UpstreamRouter) error {
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return fmt.Errorf("url must start with http:// or https://")
 	}
-	// Normalise: lowercase scheme+host, strip trailing slash.
 	r.URL = strings.ToLower(strings.TrimRight(r.URL, "/"))
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, existing := range s.data.UpstreamRouters {
-		if existing.URL == r.URL {
+	_, err = s.db.Exec(
+		`INSERT INTO upstream_routers (url, name, token) VALUES (?, ?, ?)`,
+		r.URL, r.Name, r.Token,
+	)
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE") {
 			return fmt.Errorf("upstream %q is already configured", r.URL)
 		}
+		return err
 	}
-	s.data.UpstreamRouters = append(s.data.UpstreamRouters, r)
-	return s.save()
+	return nil
 }
 
-// RemoveUpstreamRouter removes the upstream router with the given URL and saves state.
-func (s *State) RemoveUpstreamRouter(url string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i, r := range s.data.UpstreamRouters {
-		if r.URL == url {
-			s.data.UpstreamRouters = append(s.data.UpstreamRouters[:i], s.data.UpstreamRouters[i+1:]...)
-			return s.save()
-		}
+func (s *State) RemoveUpstreamRouter(rawURL string) error {
+	res, err := s.db.Exec(`DELETE FROM upstream_routers WHERE url = ?`, rawURL)
+	if err != nil {
+		return err
 	}
-	return fmt.Errorf("upstream %q not found", url)
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("upstream %q not found", rawURL)
+	}
+	return nil
 }
 
 // --- Token generation ---
@@ -492,7 +664,6 @@ func genRandom(n int) (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// GenAPIKeyValue returns "sk-{owner}-{32 hex chars}" (128 bits of entropy).
 func GenAPIKeyValue(owner string) (string, error) {
 	r, err := genRandom(16)
 	if err != nil {
@@ -501,7 +672,6 @@ func GenAPIKeyValue(owner string) (string, error) {
 	return fmt.Sprintf("sk-%s-%s", owner, r), nil
 }
 
-// GenClientTokenValue returns "ct-{owner}-{32 hex chars}" (128 bits of entropy).
 func GenClientTokenValue(owner string) (string, error) {
 	r, err := genRandom(16)
 	if err != nil {
@@ -521,7 +691,6 @@ func hashToken(token string) string {
 	return hex.EncodeToString(h[:])
 }
 
-// ValidateCSRF checks the submitted token against the stored hash.
 func (u User) ValidateCSRF(token string) bool {
 	if u.CSRFToken == "" || token == "" {
 		return false
@@ -533,121 +702,84 @@ func (u User) ValidateCSRF(token string) bool {
 // ConsumeCSRF validates a CSRF token for the given user and atomically
 // invalidates it (one-time use). Returns true if valid, false otherwise.
 func (s *State) ConsumeCSRF(username, token string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i := range s.data.Users {
-		if s.data.Users[i].Username == username {
-			u := &s.data.Users[i]
-			if u.CSRFToken == "" || token == "" {
-				return false
-			}
-			h := hashToken(token)
-			if subtle.ConstantTimeCompare([]byte(u.CSRFToken), []byte(h)) != 1 {
-				return false
-			}
-			// Consume: invalidate the token so it cannot be reused.
-			u.CSRFToken = ""
-			if err := s.save(); err != nil {
-				return false
-			}
-			return true
-		}
+	u, ok := s.LookupUser(username)
+	if !ok || u.CSRFToken == "" || token == "" {
+		return false
 	}
-	return false
+	h := hashToken(token)
+	if subtle.ConstantTimeCompare([]byte(u.CSRFToken), []byte(h)) != 1 {
+		return false
+	}
+	s.db.Exec(`UPDATE users SET csrf_token = '' WHERE username = ?`, username)
+	return true
 }
 
 // RefreshCSRFToken generates a new CSRF token for the named user and persists it.
 // Returns the plaintext token (to embed in forms).
 func (s *State) RefreshCSRFToken(username string) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i := range s.data.Users {
-		if s.data.Users[i].Username == username {
-			token, err := generateCSRFToken()
-			if err != nil {
-				return "", err
-			}
-			s.data.Users[i].CSRFToken = hashToken(token)
-			if err := s.save(); err != nil {
-				return "", err
-			}
-			return token, nil
-		}
+	if _, ok := s.LookupUser(username); !ok {
+		return "", fmt.Errorf("user not found: %s", username)
 	}
-	return "", fmt.Errorf("user not found: %s", username)
+	token, err := generateCSRFToken()
+	if err != nil {
+		return "", err
+	}
+	if _, err := s.db.Exec(`UPDATE users SET csrf_token = ? WHERE username = ?`, hashToken(token), username); err != nil {
+		return "", err
+	}
+	return token, nil
 }
 
 // --- Model Aliases ---
 
-// AliasMap returns a copy of the current alias→[]models map.
 func (s *State) AliasMap() map[string][]string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make(map[string][]string, len(s.data.ModelAliases))
-	for k, v := range s.data.ModelAliases {
-		cp := make([]string, len(v))
-		copy(cp, v)
-		out[k] = cp
+	rows, err := s.db.Query(`SELECT alias, model FROM model_aliases ORDER BY alias, model`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := make(map[string][]string)
+	for rows.Next() {
+		var alias, model string
+		if err := rows.Scan(&alias, &model); err == nil {
+			out[alias] = append(out[alias], model)
+		}
 	}
 	return out
 }
 
-// AddAlias appends model to the target list for alias.
-// Returns an error if alias or model is blank, or if the pair already exists.
 func (s *State) AddAlias(alias, model string) error {
 	if alias == "" || model == "" {
 		return fmt.Errorf("alias and model must not be blank")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.data.ModelAliases == nil {
-		s.data.ModelAliases = make(map[string][]string)
-	}
-	for _, existing := range s.data.ModelAliases[alias] {
-		if existing == model {
+	_, err := s.db.Exec(`INSERT INTO model_aliases (alias, model) VALUES (?, ?)`, alias, model)
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE") {
 			return fmt.Errorf("alias %q → %q already exists", alias, model)
 		}
+		return err
 	}
-	s.data.ModelAliases[alias] = append(s.data.ModelAliases[alias], model)
-	return s.save()
+	return nil
 }
 
-// DeleteAlias removes a specific model from the alias's target list.
-// If the list becomes empty, the alias key is removed entirely.
 func (s *State) DeleteAlias(alias, model string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	targets, exists := s.data.ModelAliases[alias]
-	if !exists {
-		return fmt.Errorf("alias %q not found", alias)
+	res, err := s.db.Exec(`DELETE FROM model_aliases WHERE alias = ? AND model = ?`, alias, model)
+	if err != nil {
+		return err
 	}
-	newTargets := targets[:0]
-	found := false
-	for _, t := range targets {
-		if t == model {
-			found = true
-			continue
-		}
-		newTargets = append(newTargets, t)
-	}
-	if !found {
+	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("alias %q → %q not found", alias, model)
 	}
-	if len(newTargets) == 0 {
-		delete(s.data.ModelAliases, alias)
-	} else {
-		s.data.ModelAliases[alias] = newTargets
-	}
-	return s.save()
+	return nil
 }
 
-// DeleteAliasGroup removes an entire alias entry regardless of how many targets it has.
 func (s *State) DeleteAliasGroup(alias string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, exists := s.data.ModelAliases[alias]; !exists {
+	res, err := s.db.Exec(`DELETE FROM model_aliases WHERE alias = ?`, alias)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("alias %q not found", alias)
 	}
-	delete(s.data.ModelAliases, alias)
-	return s.save()
+	return nil
 }
