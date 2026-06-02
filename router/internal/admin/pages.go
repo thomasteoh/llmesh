@@ -178,7 +178,7 @@ func invertAliasMap(aliasMap map[string][]string) map[string][]string {
 	return inv
 }
 
-func (a *Admin) newBasePage(page string, u User) basePage {
+func (a *Admin) newBasePage(page string, u User, r *http.Request) basePage {
 	bp := basePage{
 		Page:          page,
 		Username:      u.Username,
@@ -187,10 +187,12 @@ func (a *Admin) newBasePage(page string, u User) basePage {
 		Name:          a.name,
 		Host:          a.host,
 	}
-	// Generate a fresh CSRF token for each page render (one-time use).
-	csrfToken, err := a.state.RefreshCSRFToken(u.Username)
-	if err == nil && csrfToken != "" {
-		bp.CSRFToken = csrfToken
+	// Read the session's CSRF token (set once at login, stable for the session).
+	// Session-scoped tokens let concurrent tabs for the same user operate independently.
+	if c, err := r.Cookie(sessionCookie); err == nil {
+		if token, ok := a.sessions.getCSRF(c.Value); ok {
+			bp.CSRFToken = token
+		}
 	}
 	return bp
 }
@@ -253,7 +255,7 @@ func (a *Admin) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	activeAliases := a.state.AliasMap()
 	modelAliases := invertAliasMap(activeAliases)
 	data := DashboardPage{
-		basePage:      a.newBasePage("dashboard", u),
+		basePage:      a.newBasePage("dashboard", u, r),
 		TotalRequests: a.reqCount(),
 		ActiveClients: a.hub.ActiveClientCount(),
 		APIKeyCount:   a.state.APIKeyCount(),
@@ -291,13 +293,13 @@ func (a *Admin) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 func (a *Admin) handleAPIKeys(w http.ResponseWriter, r *http.Request) {
 	u := ctxGetUser(r)
-	a.renderAPIKeys(w, u, "", "")
+	a.renderAPIKeys(w, r, u, "", "")
 }
 
-func (a *Admin) renderAPIKeys(w http.ResponseWriter, u User, newKey, formErr string) {
+func (a *Admin) renderAPIKeys(w http.ResponseWriter, r *http.Request, u User, newKey, formErr string) {
 	keys := a.state.APIKeysFor(u.Username, u.Role == "admin")
 	a.render(w, "api-keys", APIKeysPage{
-		basePage:  a.newBasePage("api-keys", u),
+		basePage:  a.newBasePage("api-keys", u, r),
 		Keys:      keys,
 		NewKey:    newKey,
 		FormError: formErr,
@@ -316,12 +318,12 @@ func (a *Admin) handleAPIKeyCreate(w http.ResponseWriter, r *http.Request) {
 		priority = "normal"
 	}
 	if label == "" {
-		a.renderAPIKeys(w, u, "", "Label is required.")
+		a.renderAPIKeys(w, r, u, "", "Label is required.")
 		return
 	}
 	keyVal, err := GenAPIKeyValue(u.Username)
 	if err != nil {
-		a.renderAPIKeys(w, u, "", "Failed to generate key.")
+		a.renderAPIKeys(w, r, u, "", "Failed to generate key.")
 		return
 	}
 	k := APIKey{
@@ -332,10 +334,10 @@ func (a *Admin) handleAPIKeyCreate(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: time.Now().UTC(),
 	}
 	if err := a.state.AddAPIKey(k); err != nil {
-		a.renderAPIKeys(w, u, "", err.Error())
+		a.renderAPIKeys(w, r, u, "", err.Error())
 		return
 	}
-	a.renderAPIKeys(w, u, keyVal, "")
+	a.renderAPIKeys(w, r, u, keyVal, "")
 }
 
 func (a *Admin) handleAPIKeyRevoke(w http.ResponseWriter, r *http.Request) {
@@ -353,11 +355,11 @@ func (a *Admin) handleAPIKeyRevoke(w http.ResponseWriter, r *http.Request) {
 
 func (a *Admin) handleClientTokens(w http.ResponseWriter, r *http.Request) {
 	u := ctxGetUser(r)
-	a.renderClientTokens(w, u, "", "")
+	a.renderClientTokens(w, r, u, "", "")
 }
 
-func (a *Admin) renderClientTokens(w http.ResponseWriter, u User, newToken, formErr string) {
-	bp := a.newBasePage("clients", u)
+func (a *Admin) renderClientTokens(w http.ResponseWriter, r *http.Request, u User, newToken, formErr string) {
+	bp := a.newBasePage("clients", u, r)
 
 	rawTokens := a.state.ClientTokensFor(u.Username, u.Role == "admin")
 
@@ -497,12 +499,12 @@ func (a *Admin) handleClientTokenCreate(w http.ResponseWriter, r *http.Request) 
 	}
 	name := strings.TrimSpace(r.FormValue("name"))
 	if name == "" {
-		a.renderClientTokens(w, u, "", "Name is required.")
+		a.renderClientTokens(w, r, u, "", "Name is required.")
 		return
 	}
 	tokVal, err := GenClientTokenValue(u.Username)
 	if err != nil {
-		a.renderClientTokens(w, u, "", "Failed to generate token.")
+		a.renderClientTokens(w, r, u, "", "Failed to generate token.")
 		return
 	}
 	t := ClientToken{
@@ -512,10 +514,10 @@ func (a *Admin) handleClientTokenCreate(w http.ResponseWriter, r *http.Request) 
 		CreatedAt: time.Now().UTC(),
 	}
 	if err := a.state.AddClientToken(t); err != nil {
-		a.renderClientTokens(w, u, "", err.Error())
+		a.renderClientTokens(w, r, u, "", err.Error())
 		return
 	}
-	a.renderClientTokens(w, u, tokVal, "")
+	a.renderClientTokens(w, r, u, tokVal, "")
 }
 
 func (a *Admin) handleClientTokenRevoke(w http.ResponseWriter, r *http.Request) {
@@ -686,17 +688,17 @@ func (a *Admin) handleModelAliasDelete(w http.ResponseWriter, r *http.Request) {
 
 func (a *Admin) handleHelp(w http.ResponseWriter, r *http.Request) {
 	u := ctxGetUser(r)
-	a.render(w, "help", a.newBasePage("help", u))
+	a.render(w, "help", a.newBasePage("help", u, r))
 }
 
 // --- Settings ---
 
 func (a *Admin) handleSettings(w http.ResponseWriter, r *http.Request) {
 	u := ctxGetUser(r)
-	a.renderSettings(w, u, "", "")
+	a.renderSettings(w, r, u, "", "")
 }
 
-func (a *Admin) renderSettings(w http.ResponseWriter, u User, flash, errMsg string) {
+func (a *Admin) renderSettings(w http.ResponseWriter, r *http.Request, u User, flash, errMsg string) {
 	users := a.state.Users()
 	rows := make([]UserRow, 0, len(users))
 	for _, usr := range users {
@@ -708,7 +710,7 @@ func (a *Admin) renderSettings(w http.ResponseWriter, u User, flash, errMsg stri
 		connected := a.upstreamConnected != nil && a.upstreamConnected(r.URL)
 		upstreamRows = append(upstreamRows, UpstreamRouterRow{UpstreamRouter: r, Connected: connected})
 	}
-	bp := a.newBasePage("settings", u)
+	bp := a.newBasePage("settings", u, r)
 	bp.Flash = flash
 	bp.Error = errMsg
 	a.render(w, "settings", SettingsPage{
@@ -728,11 +730,11 @@ func (a *Admin) handleUpstreamAdd(w http.ResponseWriter, r *http.Request) {
 	url := strings.TrimSpace(r.FormValue("url"))
 	token := strings.TrimSpace(r.FormValue("token"))
 	if url == "" || token == "" {
-		a.renderSettings(w, u, "", "URL and token are required.")
+		a.renderSettings(w, r, u, "", "URL and token are required.")
 		return
 	}
 	if err := a.state.AddUpstreamRouter(UpstreamRouter{Name: name, URL: url, Token: token}); err != nil {
-		a.renderSettings(w, u, "", err.Error())
+		a.renderSettings(w, r, u, "", err.Error())
 		return
 	}
 	if a.upstreamReload != nil {
@@ -749,7 +751,7 @@ func (a *Admin) handleUpstreamRemove(w http.ResponseWriter, r *http.Request) {
 	}
 	upstreamURL := r.FormValue("url")
 	if err := a.state.RemoveUpstreamRouter(upstreamURL); err != nil {
-		a.renderSettings(w, u, "", err.Error())
+		a.renderSettings(w, r, u, "", err.Error())
 		return
 	}
 	a.log.Info("admin: upstream router removed", "actor", u.Username, "url", upstreamURL)
@@ -769,26 +771,26 @@ func (a *Admin) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	newPw := r.FormValue("new")
 	confirm := r.FormValue("confirm")
 	if newPw != confirm {
-		a.renderSettings(w, u, "", "New passwords do not match.")
+		a.renderSettings(w, r, u, "", "New passwords do not match.")
 		return
 	}
 	// Re-fetch from store to get current hash (context copy may be stale after a prior change).
 	fresh, ok := a.state.LookupUser(u.Username)
 	if !ok {
-		a.renderSettings(w, u, "", "Internal error.")
+		a.renderSettings(w, r, u, "", "Internal error.")
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(fresh.PasswordHash), []byte(current)); err != nil {
-		a.renderSettings(w, u, "", "Current password is incorrect.")
+		a.renderSettings(w, r, u, "", "Current password is incorrect.")
 		return
 	}
 	hash, err := HashPassword(newPw)
 	if err != nil {
-		a.renderSettings(w, u, "", "Internal error.")
+		a.renderSettings(w, r, u, "", "Internal error.")
 		return
 	}
 	a.state.UpdateUser(u.Username, func(user *User) { user.PasswordHash = hash })
-	a.renderSettings(w, u, "Password updated.", "")
+	a.renderSettings(w, r, u, "Password updated.", "")
 }
 
 func (a *Admin) handleAddUser(w http.ResponseWriter, r *http.Request) {
@@ -800,23 +802,23 @@ func (a *Admin) handleAddUser(w http.ResponseWriter, r *http.Request) {
 	username := strings.TrimSpace(r.FormValue("username"))
 	password := r.FormValue("password")
 	if username == "" || password == "" {
-		a.renderSettings(w, u, "", "Username and password are required.")
+		a.renderSettings(w, r, u, "", "Username and password are required.")
 		return
 	}
 	if _, exists := a.state.LookupUser(username); exists {
-		a.renderSettings(w, u, "", fmt.Sprintf("Username %q already exists.", username))
+		a.renderSettings(w, r, u, "", fmt.Sprintf("Username %q already exists.", username))
 		return
 	}
 	hash, err := HashPassword(password)
 	if err != nil {
-		a.renderSettings(w, u, "", "Internal error.")
+		a.renderSettings(w, r, u, "", "Internal error.")
 		return
 	}
 	if err := a.state.AddUser(User{Username: username, PasswordHash: hash, Role: "member"}); err != nil {
-		a.renderSettings(w, u, "", err.Error())
+		a.renderSettings(w, r, u, "", err.Error())
 		return
 	}
-	a.renderSettings(w, u, fmt.Sprintf("User %q created.", username), "")
+	a.renderSettings(w, r, u, fmt.Sprintf("User %q created.", username), "")
 }
 
 func (a *Admin) handleUserDisable(w http.ResponseWriter, r *http.Request) {
@@ -827,11 +829,11 @@ func (a *Admin) handleUserDisable(w http.ResponseWriter, r *http.Request) {
 	}
 	target := r.FormValue("username")
 	if target == u.Username {
-		a.renderSettings(w, u, "", "Cannot disable yourself.")
+		a.renderSettings(w, r, u, "", "Cannot disable yourself.")
 		return
 	}
 	if err := a.state.UpdateUser(target, func(user *User) { user.Disabled = true }); err != nil {
-		a.renderSettings(w, u, "", err.Error())
+		a.renderSettings(w, r, u, "", err.Error())
 		return
 	}
 	http.Redirect(w, r, "/portal/settings", http.StatusFound)
@@ -845,7 +847,7 @@ func (a *Admin) handleUserEnable(w http.ResponseWriter, r *http.Request) {
 	}
 	target := r.FormValue("username")
 	if err := a.state.UpdateUser(target, func(user *User) { user.Disabled = false }); err != nil {
-		a.renderSettings(w, u, "", err.Error())
+		a.renderSettings(w, r, u, "", err.Error())
 		return
 	}
 	http.Redirect(w, r, "/portal/settings", http.StatusFound)
@@ -859,7 +861,7 @@ func (a *Admin) handleUserPromote(w http.ResponseWriter, r *http.Request) {
 	}
 	target := r.FormValue("username")
 	if err := a.state.UpdateUser(target, func(user *User) { user.Role = "admin" }); err != nil {
-		a.renderSettings(w, u, "", err.Error())
+		a.renderSettings(w, r, u, "", err.Error())
 		return
 	}
 	http.Redirect(w, r, "/portal/settings", http.StatusFound)
@@ -873,7 +875,7 @@ func (a *Admin) handleUserDemote(w http.ResponseWriter, r *http.Request) {
 	}
 	target := r.FormValue("username")
 	if err := a.state.DemoteUser(u.Username, target); err != nil {
-		a.renderSettings(w, u, "", err.Error())
+		a.renderSettings(w, r, u, "", err.Error())
 		return
 	}
 	http.Redirect(w, r, "/portal/settings", http.StatusFound)

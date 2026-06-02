@@ -160,13 +160,19 @@ func (h *Handler) cancelRequest(reqID string) {
 }
 
 // recordStats records token usage for a completed request.
-// req.Model is already the canonical model name by the time this is called
-// (alias resolved by the scheduler before dispatch).
+// Alias names are resolved to their first underlying model before recording
+// so stats always accumulate under the canonical model name.
 func (h *Handler) recordStats(req *types.InferenceRequest, usage *types.UsageInfo) {
 	if h.Stats == nil || usage == nil {
 		return
 	}
-	h.Stats.Record(req.Model, req.Owner, usage.PromptTokens, usage.CompletionTokens)
+	model := req.Model
+	if h.Aliases != nil {
+		if targets := h.Aliases.AliasMap()[model]; len(targets) > 0 {
+			model = targets[0]
+		}
+	}
+	h.Stats.Record(model, req.Owner, usage.PromptTokens, usage.CompletionTokens)
 }
 
 func (h *Handler) enqueue(

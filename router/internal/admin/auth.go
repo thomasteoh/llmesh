@@ -186,9 +186,9 @@ func (a *Admin) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sid := a.sessions.create(username)
-	// Generate a fresh CSRF token for the user and store it in the session.
-	csrfToken, err := a.state.RefreshCSRFToken(username)
-	if err == nil && csrfToken != "" {
+	// Generate a fresh CSRF token and store it in the session (not in state —
+	// session-scoped tokens let concurrent tabs operate independently).
+	if csrfToken, err := generateCSRFToken(); err == nil {
 		a.sessions.setCSRF(sid, csrfToken)
 	}
 	http.SetCookie(w, &http.Cookie{

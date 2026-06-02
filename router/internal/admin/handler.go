@@ -244,8 +244,9 @@ func (a *Admin) renderStandalone(w http.ResponseWriter, name string, data any) {
 }
 
 // postWithCSRF returns an http.HandlerFunc that only accepts POST requests
-// and validates the CSRF token. It expects the user to already be in context
-// (from requireAuth or requireAdmin). The token is consumed (one-time use).
+// and validates the CSRF token against the session. Each session carries its
+// own CSRF token (set at login and refreshed on each page render) so
+// concurrent tabs for the same user don't invalidate each other.
 func (a *Admin) postWithCSRF(handler func(http.ResponseWriter, *http.Request)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -256,8 +257,13 @@ func (a *Admin) postWithCSRF(handler func(http.ResponseWriter, *http.Request)) h
 		if token == "" {
 			token = r.Header.Get("X-CSRF-Token")
 		}
-		uRaw, ok := r.Context().Value(ctxUser).(User)
-		if !ok || !a.state.ConsumeCSRF(uRaw.Username, token) {
+		c, err := r.Cookie(sessionCookie)
+		if err != nil {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		stored, ok := a.sessions.getCSRF(c.Value)
+		if !ok || stored == "" || token != stored {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
