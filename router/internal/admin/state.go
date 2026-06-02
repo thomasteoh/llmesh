@@ -175,8 +175,10 @@ func createSchema(db *sql.DB) error {
 
 // maybeMigrateJSON imports data from a legacy state.json if the DB has no users yet.
 func (s *State) maybeMigrateJSON(jsonPath, dbfile string) error {
+	// When called with a .db path directly, look for a peer .json file to migrate from.
+	candidateJSON := jsonPath
 	if jsonPath == dbfile {
-		return nil // path was already a .db path, nothing to migrate
+		candidateJSON = strings.TrimSuffix(dbfile, ".db") + ".json"
 	}
 	var count int
 	if err := s.db.QueryRow("SELECT COUNT(*) FROM users").Scan(&count); err != nil {
@@ -185,7 +187,7 @@ func (s *State) maybeMigrateJSON(jsonPath, dbfile string) error {
 	if count > 0 {
 		return nil
 	}
-	data, err := os.ReadFile(jsonPath)
+	data, err := os.ReadFile(candidateJSON)
 	if errors.Is(err, os.ErrNotExist) || len(data) == 0 {
 		return nil
 	}
