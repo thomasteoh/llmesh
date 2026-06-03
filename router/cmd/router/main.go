@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"flag"
 	"fmt"
 	"html/template"
@@ -35,103 +36,167 @@ var sink = logring.New(logring.DefaultCap)
 
 var log = logring.NewLogger(sink, "router", slog.LevelInfo)
 
+//go:embed web/landing.js
+var landingJS string
+
 var landingTmpl = template.Must(template.New("landing").Parse(landingHTML))
 
 const landingHTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{.Name}}</title>
 <style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  :root {
-    --bg: #0a0f1e;
-    --text: #c8d3e8;
-    --muted: #4a5568;
-    --accent: #7c86c8;
-  }
-  html, body {
-    height: 100%;
-    background: var(--bg);
-    color: var(--text);
-    font-family: Georgia, 'Times New Roman', serif;
-  }
-  .page {
-    min-height: 100vh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 48px 24px;
-  }
-  .poem {
-    max-width: 480px;
-    font-size: 15px;
-    line-height: 2;
-    letter-spacing: 0.01em;
-    white-space: pre-wrap;
-    font-family: inherit;
-  }
-  .count {
-    color: var(--accent);
-    font-style: italic;
-  }
-  .footer {
-    margin-top: 48px;
-    font-size: 11px;
-    color: var(--muted);
-    font-family: system-ui, sans-serif;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-  }
-  .links {
-    margin-top: 24px;
-    font-size: 12px;
-    font-family: system-ui, sans-serif;
-    display: flex;
-    gap: 24px;
-  }
-  .links a {
-    color: var(--accent);
-    text-decoration: none;
-    letter-spacing: 0.03em;
-  }
-  .links a:hover { text-decoration: underline; }
-  .links .sep { color: var(--muted); }
-  .api-url {
-    margin-top: 8px;
-    font-size: 11px;
-    font-family: monospace;
-    color: var(--muted);
-  }
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0f1e;--surface:#0f1729;--border:#1b2a44;
+  --text:#c8d3e8;--muted:#4a6280;
+  --accent:#7c86c8;--hi:#9ba7e8;
+  --blue:#64a0ff;--green:#4ec89a;
+  --mono:ui-monospace,'Cascadia Code','Fira Code',monospace;
+  --sans:system-ui,-apple-system,sans-serif
+}
+html,body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:100vh}
+header{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:18px 40px;border-bottom:1px solid var(--border)
+}
+.brand{font:600 15px/1 var(--mono);color:var(--hi);letter-spacing:.04em}
+nav{display:flex;gap:20px}
+nav a{font:13px var(--mono);color:var(--muted);text-decoration:none;letter-spacing:.04em;transition:color .12s}
+nav a:hover{color:var(--text)}
+.hero{padding:52px 40px 32px;max-width:860px;margin:0 auto}
+.hero h1{font:400 clamp(22px,3.8vw,36px)/1.2 var(--sans);letter-spacing:-.015em}
+.meta{margin-top:14px;font:13px var(--mono);color:var(--muted);display:flex;align-items:center;flex-wrap:wrap;gap:6px}
+.meta .count{color:var(--hi);font-weight:600}
+.meta .sep{color:var(--border)}
+.canvas-wrap{padding:0 40px 24px;max-width:860px;margin:0 auto}
+#route-canvas{
+  display:block;width:100%;height:240px;
+  background:var(--surface);border:1px solid var(--border);border-radius:8px
+}
+.caption{text-align:center;font:11px var(--mono);color:var(--muted);letter-spacing:.05em;margin-top:8px}
+.features{
+  max-width:860px;margin:0 auto;padding:0 40px 52px;
+  display:grid;grid-template-columns:repeat(3,1fr);gap:14px
+}
+@media(max-width:660px){
+  header{padding:16px 20px}
+  .hero,.canvas-wrap,.features{padding-left:20px;padding-right:20px}
+  .features{grid-template-columns:1fr}
+}
+.card{
+  background:var(--surface);border:1px solid var(--border);border-radius:8px;
+  padding:20px;transition:border-color .15s
+}
+.card:hover{border-color:#2a3e5e}
+.clabel{font:11px/1 var(--mono);letter-spacing:.09em;text-transform:uppercase;color:var(--accent);margin-bottom:16px}
+.card p{font:13px/1.65 var(--sans);color:var(--muted);margin-top:14px}
+.queue{display:flex;flex-direction:column;gap:9px}
+.lane{display:flex;align-items:center;gap:9px;font:11px var(--mono)}
+.ltag{width:40px;text-align:right;color:var(--muted)}
+.ltag.hi{color:var(--blue)}.ltag.md{color:var(--accent)}
+.btrack{flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden}
+.bfill{height:100%;border-radius:3px}
+.bfill.hi{background:var(--blue);width:88%;animation:bp 1.1s ease-in-out infinite}
+.bfill.md{background:var(--accent);width:58%;animation:bp 1.9s ease-in-out infinite .3s}
+.bfill.lo{background:#223;width:32%;animation:bp 3.2s ease-in-out infinite .7s}
+@keyframes bp{0%,100%{opacity:.5}50%{opacity:1}}
+.lct{font:10px var(--mono);color:var(--muted);width:20px}
+.cb{
+  background:#080e1c;border:1px solid var(--border);border-radius:5px;
+  padding:12px 14px;font:12px/1.75 var(--mono);color:var(--text);
+  overflow-x:auto;white-space:pre
+}
+.hl{color:var(--hi)}.hg{color:var(--green)}.hb{color:var(--blue)}.dm{color:var(--muted)}
+footer{
+  border-top:1px solid var(--border);padding:18px 40px;
+  display:flex;align-items:center;flex-wrap:wrap;gap:12px;
+  font:12px var(--mono);color:var(--muted)
+}
+footer a{color:var(--accent);text-decoration:none}
+footer a:hover{color:var(--hi)}
+footer .sep{color:var(--border)}
 </style>
 </head>
 <body>
-<div class="page">
-  <div>
-    <pre class="poem">In weighted space where meanings nearly meet,
-where every word is just its neighbours' heat,
-<span class="count">{{.Count}}</span> requests have passed through this machine—
-each question asked, each answer in-between.
-
-No memory survives the inference call.
-Each prompt arrives against a blank-slate wall.
-Yet from the residual stream, somehow: sense—
-a next word chosen, improbably dense.
-
-The model knows no silence, holds no shame,
-it does not dream of what you meant to say.
-But token follows token all the same,
-and something close to meaning finds its way.</pre>
-    <div class="links">
-      <a href="/portal">Portal</a>
-      <span class="sep">&mdash;</span>
-      <a href="/health">Health</a>
+<header>
+  <span class="brand">{{.Name}}</span>
+  <nav>
+    <a href="/portal">portal</a>
+    <a href="/health">health</a>
+    <a href="/v1/models">models</a>
+  </nav>
+</header>
+<main>
+  <section class="hero">
+    <h1>distributed local<br>inference router</h1>
+    <p class="meta">
+      <span class="count">{{.Count}}</span>&nbsp;requests served
+      <span class="sep">·</span>
+      <code>https://{{.Host}}/v1</code>
+    </p>
+  </section>
+  <section class="canvas-wrap">
+    <canvas id="route-canvas"></canvas>
+    <p class="caption">live simulation — requests routed across local AI workers</p>
+  </section>
+  <section class="features">
+    <div class="card">
+      <div class="clabel">priority queuing</div>
+      <div class="queue">
+        <div class="lane">
+          <span class="ltag hi">HIGH</span>
+          <div class="btrack"><div class="bfill hi"></div></div>
+          <span class="lct">8</span>
+        </div>
+        <div class="lane">
+          <span class="ltag md">NORM</span>
+          <div class="btrack"><div class="bfill md"></div></div>
+          <span class="lct">5</span>
+        </div>
+        <div class="lane">
+          <span class="ltag">LOW</span>
+          <div class="btrack"><div class="bfill lo"></div></div>
+          <span class="lct">3</span>
+        </div>
+      </div>
+      <p>Three priority tiers with FIFO within each lane. High-priority jobs are always dispatched first, with owner-affinity scheduling.</p>
     </div>
-    <div class="api-url">API: https://{{.Host}}/v1</div>
-    <div class="footer">{{.Name}} &mdash; local inference gateway</div>
-  </div>
-</div>
+    <div class="card">
+      <div class="clabel">model aliases</div>
+      <pre class="cb"><span class="dm"># one name, many workers</span>
+<span class="hl">"qwen"</span>  <span class="dm">&#x2192;</span> <span class="hg">qwen3-4b-instruct</span>
+        <span class="dm">&#x2192;</span> <span class="hg">qwen3-14b-instruct</span>
+
+<span class="dm"># owner affinity: prefers</span>
+<span class="dm"># the requester's own GPU</span></pre>
+      <p>Map one name across multiple models or machines. The scheduler picks the best available worker by affinity and load.</p>
+    </div>
+    <div class="card">
+      <div class="clabel">openai compatible</div>
+      <pre class="cb"><span class="hb">POST</span> /v1/chat/completions
+<span class="dm">Authorization: Bearer sk-&#x2026;</span>
+
+<span class="hl">{</span>
+  <span class="hg">"model"</span><span class="dm">:</span> <span class="dm">"llama-3.2"</span><span class="dm">,</span>
+  <span class="hg">"stream"</span><span class="dm">:</span> <span class="hb">true</span>
+<span class="hl">}</span></pre>
+      <p>Drop-in for the OpenAI API. Works with Claude Code, Open WebUI, and any client that speaks the OpenAI protocol.</p>
+    </div>
+  </section>
+</main>
+<footer>
+  <a href="/portal">portal</a>
+  <span class="sep">·</span>
+  <a href="/health">health</a>
+  <span class="sep">·</span>
+  <a href="/v1/models">models</a>
+  <span class="sep">·</span>
+  <span>{{.Version}}</span>
+</footer>
+<script>{{.JS}}</script>
 </body>
 </html>`
 
@@ -256,10 +321,15 @@ func main() {
 			http.NotFound(w, r)
 			return
 		}
-		data := struct{ Count, Name, Host string }{
-			Count: fmtCount(apiHandler.Count()),
-			Name:  cfg.Name,
-			Host:  cfg.Host,
+		data := struct {
+			Count, Name, Host, Version string
+			JS                         template.JS
+		}{
+			Count:   fmtCount(apiHandler.Count()),
+			Name:    cfg.Name,
+			Host:    cfg.Host,
+			Version: version,
+			JS:      template.JS(landingJS),
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if err := landingTmpl.Execute(w, data); err != nil {
