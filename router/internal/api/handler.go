@@ -406,6 +406,7 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 	defer keepAlive.Stop()
 
 	started := false
+	var firstTokenAt time.Time
 
 	for {
 		select {
@@ -423,6 +424,9 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 				}
 			}
 			resetActivity()
+			if chunk.Delta != "" && firstTokenAt.IsZero() {
+				firstTokenAt = time.Now()
+			}
 			if dedupHash != "" && h.Dedup != nil {
 				h.Dedup.Forward(dedupHash, chunk)
 			}
@@ -433,8 +437,7 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 					flusher.Flush()
 				}
 				if chunk.Done {
-					elapsed := time.Since(req.EnqueuedAt)
-					apiLogger().Info("api: request completed", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "elapsed_ms", elapsed.Milliseconds(), "stream", true, "finish_reason", chunk.FinishReason)
+					logRequestDone(req, chunk.Usage, firstTokenAt, true, chunk.FinishReason)
 					h.recordStats(req, chunk.Usage)
 					for _, l := range translate.AnthropicSSEDone(chunk.FinishReason) {
 						fmt.Fprintf(w, "%s\n\n", l)
@@ -448,8 +451,7 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 					flusher.Flush()
 				}
 				if chunk.Done {
-					elapsed := time.Since(req.EnqueuedAt)
-					apiLogger().Info("api: request completed", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "elapsed_ms", elapsed.Milliseconds(), "stream", true, "finish_reason", chunk.FinishReason)
+					logRequestDone(req, chunk.Usage, firstTokenAt, true, chunk.FinishReason)
 					h.recordStats(req, chunk.Usage)
 					fmt.Fprintf(w, "%s\n\n", translate.OpenAIResponsesSSEDone())
 					flusher.Flush()
@@ -461,8 +463,7 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 					flusher.Flush()
 				}
 				if chunk.Done {
-					elapsed := time.Since(req.EnqueuedAt)
-					apiLogger().Info("api: request completed", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "elapsed_ms", elapsed.Milliseconds(), "stream", true, "finish_reason", chunk.FinishReason)
+					logRequestDone(req, chunk.Usage, firstTokenAt, true, chunk.FinishReason)
 					h.recordStats(req, chunk.Usage)
 					// Emit final chunk with finish_reason and usage before [DONE]
 					fmt.Fprintf(w, "%s\n\n", translate.OpenAISSEChunk(req.ID, chunk))
@@ -568,9 +569,8 @@ func (h *Handler) batchResponse(w http.ResponseWriter, r *http.Request, req *typ
 }
 
 func (h *Handler) writeBatch(w http.ResponseWriter, req *types.InferenceRequest, content, finishReason string, toolCalls json.RawMessage, usage *types.UsageInfo) {
-	elapsed := time.Since(req.EnqueuedAt)
 	h.recordStats(req, usage)
-	apiLogger().Info("api: request completed", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "elapsed_ms", elapsed.Milliseconds(), "stream", false, "finish_reason", finishReason)
+	logRequestDone(req, usage, time.Time{}, false, finishReason)
 	w.Header().Set("Content-Type", "application/json")
 	var resp map[string]any
 	switch req.SourceFmt {
@@ -695,6 +695,36 @@ func (h *Handler) ModelList() http.HandlerFunc {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+// logRequestDone emits the "api: request completed" structured log with timing and token stats.
+// For streaming requests, firstTokenAt is used to compute TTFT (queue wait + prompt eval + first token)
+// and tok_per_sec (completion tokens / generation time). Pass zero time for batch requests.
+func logRequestDone(req *types.InferenceRequest, usage *types.UsageInfo, firstTokenAt time.Time, stream bool, finishReason string) {
+	now := time.Now()
+	elapsed := now.Sub(req.EnqueuedAt)
+	args := []any{
+		"request_id", req.ID,
+		"model", req.Model,
+		"owner", req.Owner,
+		"elapsed_ms", elapsed.Milliseconds(),
+		"stream", stream,
+		"finish_reason", finishReason,
+	}
+	if usage != nil {
+		args = append(args, "prompt_tokens", usage.PromptTokens, "completion_tokens", usage.CompletionTokens)
+		if stream && !firstTokenAt.IsZero() {
+			ttftMs := firstTokenAt.Sub(req.EnqueuedAt).Milliseconds()
+			genDur := now.Sub(firstTokenAt)
+			args = append(args, "ttft_ms", ttftMs)
+			if genDur > 0 {
+				args = append(args, "tok_per_sec", int(float64(usage.CompletionTokens)/genDur.Seconds()))
+			}
+		} else if !stream && elapsed > 0 {
+			args = append(args, "tok_per_sec", int(float64(usage.CompletionTokens)/elapsed.Seconds()))
+		}
+	}
+	apiLogger().Info("api: request completed", args...)
+}
 
 // clientIP extracts the client IP from the request, checking X-Forwarded-For first.
 func clientIP(r *http.Request) string {
