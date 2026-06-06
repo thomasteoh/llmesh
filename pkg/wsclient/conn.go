@@ -33,10 +33,11 @@ type ConnStats interface {
 	IncrError()
 }
 
-// ModelProvider returns the models this connection should advertise on registration.
-// For llmesh-client it probes llama.cpp; for llmesh-shim it reads from config.
+// ModelProvider returns the models this connection should advertise on registration,
+// plus the total number of inference slots detected (e.g. from llama.cpp total_slots).
+// For llmesh-client it probes llama.cpp; for llmesh-shim it reads from config (slots=0).
 type ModelProvider interface {
-	Models(ctx context.Context) []types.ModelInfo
+	Models(ctx context.Context) ([]types.ModelInfo, int)
 }
 
 // JobDispatcher handles a single job received from the router.
@@ -66,7 +67,6 @@ type Conn struct {
 	jobs        JobDispatcher
 	log         *slog.Logger
 
-	sem       chan struct{}
 	mu        sync.Mutex
 	ws        *websocket.Conn
 	cancelsMu sync.Mutex
@@ -92,7 +92,6 @@ func New(
 		models:      models,
 		jobs:        jobs,
 		log:         log,
-		sem:         make(chan struct{}, maxConc),
 		cancels:     make(map[string]context.CancelFunc),
 	}
 }
@@ -216,18 +215,28 @@ func (c *Conn) connect(outerCtx context.Context) error {
 		}
 	}()
 
-	// Register with the router.
-	models := c.models.Models(connCtx)
+	// Probe models and resolve concurrency limit.
+	// detected slots from llama.cpp total_slots; c.maxConc=0 means auto-detect.
+	models, detectedSlots := c.models.Models(connCtx)
+	maxConc := c.maxConc
+	if maxConc <= 0 {
+		maxConc = detectedSlots
+	}
+	if maxConc < 1 {
+		maxConc = 1
+	}
+	sem := make(chan struct{}, maxConc)
+
 	if err := c.send(types.RegisterMsg{
 		Type:          "register",
 		Models:        models,
-		MaxConcurrent: c.maxConc,
+		MaxConcurrent: maxConc,
 		Version:       c.version,
 	}); err != nil {
 		return err
 	}
 	c.st.SetConnected(true)
-	c.log.Info("ws: registered with router", "models", models, "max_concurrent", c.maxConc)
+	c.log.Info("ws: registered with router", "models", models, "max_concurrent", maxConc)
 
 	// Read loop.
 	for {
@@ -262,7 +271,7 @@ func (c *Conn) connect(outerCtx context.Context) error {
 			// Acquire a concurrency slot. Use select so a shutdown (connCtx.Done)
 			// can interrupt the wait and allow cancel messages to be processed.
 			select {
-			case c.sem <- struct{}{}:
+			case sem <- struct{}{}:
 			case <-connCtx.Done():
 				continue
 			}
@@ -275,7 +284,7 @@ func (c *Conn) connect(outerCtx context.Context) error {
 				defer func() {
 					c.st.DecrActive()
 					c.st.IncrDone()
-					<-c.sem
+					<-sem
 					c.cancelsMu.Lock()
 					delete(c.cancels, j.Request.ID)
 					c.cancelsMu.Unlock()

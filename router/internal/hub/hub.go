@@ -74,8 +74,9 @@ type Client struct {
 	ID                string
 	conn              *websocket.Conn
 	send              chan []byte
-	Models            map[string]bool // nil until "register" message received
-	ModelContextSizes map[string]int  // model name → context size in tokens (0 = unknown)
+	Models                 map[string]bool // nil until "register" message received
+	ModelContextSizes      map[string]int  // model name → n_ctx in tokens (0 = unknown)
+	ModelContextTrainSizes map[string]int  // model name → n_ctx_train in tokens (0 = unknown)
 	MaxConcurrent     int             // 0 until "register" message received
 	inFlight          atomic.Int32
 	Name             string
@@ -317,10 +318,14 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 		h.mu.Lock()
 		client.Models = make(map[string]bool)
 		client.ModelContextSizes = make(map[string]int)
+		client.ModelContextTrainSizes = make(map[string]int)
 		for _, m := range msg.Models {
 			client.Models[m.Name] = true
 			if m.ContextSize > 0 {
 				client.ModelContextSizes[m.Name] = m.ContextSize
+			}
+			if m.ContextTrain > 0 {
+				client.ModelContextTrainSizes[m.Name] = m.ContextTrain
 			}
 		}
 		client.MaxConcurrent = msg.MaxConcurrent
@@ -511,21 +516,29 @@ func (h *Hub) ActiveModels() []string {
 }
 
 // ActiveModelInfos returns ModelInfo for all models advertised by connected clients.
-// When multiple clients serve the same model, the largest reported context size wins.
+// When multiple clients serve the same model, the largest reported sizes win.
 func (h *Hub) ActiveModelInfos() []types.ModelInfo {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	seen := make(map[string]int) // model → best context size
+	ctxSizes := make(map[string]int)
+	ctxTrain := make(map[string]int)
 	for _, c := range h.clients {
 		for m := range c.Models {
-			if existing, ok := seen[m]; !ok || c.ModelContextSizes[m] > existing {
-				seen[m] = c.ModelContextSizes[m]
+			if _, ok := ctxSizes[m]; !ok {
+				ctxSizes[m] = 0
+				ctxTrain[m] = 0
+			}
+			if c.ModelContextSizes[m] > ctxSizes[m] {
+				ctxSizes[m] = c.ModelContextSizes[m]
+			}
+			if c.ModelContextTrainSizes[m] > ctxTrain[m] {
+				ctxTrain[m] = c.ModelContextTrainSizes[m]
 			}
 		}
 	}
-	out := make([]types.ModelInfo, 0, len(seen))
-	for m, ctxSize := range seen {
-		out = append(out, types.ModelInfo{Name: m, ContextSize: ctxSize})
+	out := make([]types.ModelInfo, 0, len(ctxSizes))
+	for m := range ctxSizes {
+		out = append(out, types.ModelInfo{Name: m, ContextSize: ctxSizes[m], ContextTrain: ctxTrain[m]})
 	}
 	return out
 }
@@ -921,14 +934,15 @@ func (h *Hub) ConnectedCountByToken(token string) int {
 
 // ConnectedClientInfo holds a snapshot of a connected client for display.
 type ConnectedClientInfo struct {
-	ID                string
-	Name              string
-	Version           string
-	Models            []string
-	ModelContextSizes map[string]int
-	MaxConcurrent     int
-	InFlight          int
-	OwnerSlots        map[string]int // model → slots reserved for owner; 0/unset = fully shared
+	ID                     string
+	Name                   string
+	Version                string
+	Models                 []string
+	ModelContextSizes      map[string]int
+	ModelContextTrainSizes map[string]int
+	MaxConcurrent          int
+	InFlight               int
+	OwnerSlots             map[string]int // model → slots reserved for owner; 0/unset = fully shared
 }
 
 // ConnectedClientsByToken returns a snapshot of all currently connected clients
@@ -949,14 +963,15 @@ func (h *Hub) ConnectedClientsByToken(token string) []ConnectedClientInfo {
 				ownerSlots[k] = v
 			}
 			out = append(out, ConnectedClientInfo{
-				ID:                c.ID,
-				Name:              c.Name,
-				Version:           c.Version,
-				Models:            models,
-				ModelContextSizes: c.ModelContextSizes,
-				MaxConcurrent:     c.MaxConcurrent,
-				InFlight:          c.InFlight(),
-				OwnerSlots:        ownerSlots,
+				ID:                     c.ID,
+				Name:                   c.Name,
+				Version:                c.Version,
+				Models:                 models,
+				ModelContextSizes:      c.ModelContextSizes,
+				ModelContextTrainSizes: c.ModelContextTrainSizes,
+				MaxConcurrent:          c.MaxConcurrent,
+				InFlight:               c.InFlight(),
+				OwnerSlots:             ownerSlots,
 			})
 		}
 	}

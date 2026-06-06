@@ -64,8 +64,9 @@ type InferenceRequest struct {
 
 // ModelInfo describes a model a client supports.
 type ModelInfo struct {
-	Name        string `json:"name"`
-	ContextSize int    `json:"context_size,omitempty"` // context window in tokens; 0 = unknown
+	Name         string `json:"name"`
+	ContextSize  int    `json:"context_size,omitempty"`  // n_ctx: configured context window in tokens; 0 = unknown
+	ContextTrain int    `json:"context_train,omitempty"` // n_ctx_train: model's training context length; 0 = unknown
 }
 
 // RegisterMsg is sent by the client on connect to advertise capabilities.

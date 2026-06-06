@@ -81,25 +81,41 @@ type inferChunk struct {
 	Usage *inferUsage `json:"usage"`
 }
 
-// ProbeContextSize fetches /props from the llama.cpp endpoint and returns the
-// configured context window size (n_ctx). Returns 0 on any error.
-func (c *Client) ProbeContextSize(ctx context.Context) int {
+// Props holds capability information returned by the llama.cpp /props endpoint.
+type Props struct {
+	NCtx         int    // n_ctx: configured context window in tokens
+	NCtxTrain    int    // n_ctx_train: model's training context length
+	TotalSlots   int    // total_slots: parallel inference slots (--parallel flag)
+	ChatTemplate string // chat_template: Jinja template embedded in the model
+}
+
+// ProbeProps fetches /props from the llama.cpp endpoint and returns capability
+// information. Returns zero-value Props on any error.
+func (c *Client) ProbeProps(ctx context.Context) Props {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint+"/props", nil)
 	if err != nil {
-		return 0
+		return Props{}
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return 0
+		return Props{}
 	}
 	defer resp.Body.Close()
-	var props struct {
-		NCtx int `json:"n_ctx"`
+	var p struct {
+		NCtx         int    `json:"n_ctx"`
+		NCtxTrain    int    `json:"n_ctx_train"`
+		TotalSlots   int    `json:"total_slots"`
+		ChatTemplate string `json:"chat_template"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&props); err != nil {
-		return 0
+	if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+		return Props{}
 	}
-	return props.NCtx
+	return Props{
+		NCtx:         p.NCtx,
+		NCtxTrain:    p.NCtxTrain,
+		TotalSlots:   p.TotalSlots,
+		ChatTemplate: p.ChatTemplate,
+	}
 }
 
 // Infer sends the request to llama.cpp and calls cb for each chunk.
