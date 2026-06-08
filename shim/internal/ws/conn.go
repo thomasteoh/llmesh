@@ -43,12 +43,12 @@ type shimModelProvider struct {
 	cfg *shimPkg.Config
 }
 
-func (p *shimModelProvider) Models(_ context.Context) []types.ModelInfo {
+func (p *shimModelProvider) Models(_ context.Context) ([]types.ModelInfo, int) {
 	models := make([]types.ModelInfo, 0, len(p.cfg.Models))
 	for _, m := range p.cfg.Models {
 		models = append(models, types.ModelInfo{Name: m.Name, ContextSize: m.ContextSize})
 	}
-	return models
+	return models, 0
 }
 
 // shimJobDispatcher routes jobs to the appropriate backend via the shim worker.

@@ -96,10 +96,8 @@ func (s *Scheduler) drainQueue() {
 		}
 
 		type candidate struct {
-			clientID       string
-			clientOwner    string
-			clientModels   map[string]bool
-			req            types.InferenceRequest
+			client types.ClientSummary
+			req    types.InferenceRequest
 		}
 
 		var best *candidate
@@ -155,13 +153,8 @@ func (s *Scheduler) drainQueue() {
 					continue
 				}
 			}
-			cand := &candidate{
-				clientID:     c.ID,
-				clientOwner:  c.Owner,
-				clientModels: c.Models,
-				req:          *req,
-			}
-			if best == nil || betterPair(cand.clientOwner, cand.req, best.clientOwner, best.req) {
+			cand := &candidate{client: c, req: *req}
+			if best == nil || betterPair(cand.client, cand.req, best.client, best.req) {
 				best = cand
 			}
 		}
@@ -179,37 +172,65 @@ func (s *Scheduler) drainQueue() {
 
 		// "any" is a system pseudo-model: dispatch to whichever model the selected client serves.
 		if req.Model == "any" {
-			for m := range best.clientModels {
+			for m := range best.client.Models {
 				req.Model = m
 				break
 			}
 		} else if targets, ok := aliases[req.Model]; ok {
 			// Rewrite alias → the specific model name the selected client serves.
 			for _, t := range targets {
-				if best.clientModels[t] {
+				if best.client.Models[t] {
 					req.Model = t
 					break
 				}
 			}
 		}
 
-		s.hub.IncrInFlight(best.clientID)
+		s.hub.IncrInFlight(best.client.ID)
 		job := types.JobMsg{Type: "job", Request: *req}
-		if !s.hub.SendToClient(best.clientID, job) {
-			s.hub.DecrInFlight(best.clientID)
+		if !s.hub.SendToClient(best.client.ID, job) {
+			s.hub.DecrInFlight(best.client.ID)
 			s.queue.Push(*req)
-			s.log.Warn("scheduler: client unavailable, re-queued", "client_id", best.clientID, "request_id", req.ID)
+			s.log.Warn("scheduler: client unavailable, re-queued", "client_id", best.client.ID, "request_id", req.ID)
 			return
 		}
-		s.hub.TrackJob(best.clientID, *req)
-		s.log.Info("scheduler: dispatched", "request_id", req.ID, "origin_id", req.OriginID, "model", req.Model, "owner", req.Owner, "client_id", best.clientID, "client_owner", best.clientOwner)
+		s.hub.TrackJob(best.client.ID, *req)
+		s.log.Info("scheduler: dispatched", "request_id", req.ID, "origin_id", req.OriginID, "model", req.Model, "owner", req.Owner, "client_id", best.client.ID, "client_owner", best.client.Owner)
 	}
 }
 
-// betterPair reports whether (ownerA, reqA) is a better dispatch pair than (ownerB, reqB).
-// Delegates to types.BetterRequest.
-func betterPair(ownerA string, reqA types.InferenceRequest, ownerB string, reqB types.InferenceRequest) bool {
-	return types.BetterRequest(reqA, reqB,
-		ownerA != "" && reqA.Owner == ownerA,
-		ownerB != "" && reqB.Owner == ownerB)
+// betterPair reports whether (cA, reqA) is a better dispatch pair than (cB, reqB).
+// Ordering: affinity > priority tier > FIFO > client load (betterClient).
+// When both candidates hold the same request, client load decides immediately.
+func betterPair(cA types.ClientSummary, reqA types.InferenceRequest, cB types.ClientSummary, reqB types.InferenceRequest) bool {
+	// Same request competing across multiple clients: pure client quality comparison.
+	if reqA.ID == reqB.ID {
+		return betterClient(cA, cB)
+	}
+	aMatch := cA.Owner != "" && reqA.Owner == cA.Owner
+	bMatch := cB.Owner != "" && reqB.Owner == cB.Owner
+	if aMatch != bMatch || reqA.Priority != reqB.Priority {
+		return types.BetterRequest(reqA, reqB, aMatch, bMatch)
+	}
+	if !reqA.EnqueuedAt.Equal(reqB.EnqueuedAt) {
+		return reqA.EnqueuedAt.Before(reqB.EnqueuedAt)
+	}
+	return betterClient(cA, cB)
+}
+
+// betterClient reports whether client a is a better dispatch target than b.
+// Ordering:
+//  1. Unloaded (0 in-flight) before any loaded client — spreads work across machines.
+//  2. Among equally unloaded: higher MaxConcurrent first (0/4 before 0/2).
+//  3. Once all clients are loaded: more free slots first (2/4 before 1/2).
+func betterClient(a, b types.ClientSummary) bool {
+	aUnloaded := a.InFlight == 0
+	bUnloaded := b.InFlight == 0
+	if aUnloaded != bUnloaded {
+		return aUnloaded
+	}
+	if a.InFlight == 0 {
+		return a.MaxConcurrent > b.MaxConcurrent
+	}
+	return (a.MaxConcurrent - a.InFlight) > (b.MaxConcurrent - b.InFlight)
 }

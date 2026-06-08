@@ -38,22 +38,29 @@ func (c *Conn) Run(ctx context.Context) {
 	c.inner.Run(ctx)
 }
 
-// clientModelProvider probes llama.cpp for model context sizes on each (re)connection.
+// clientModelProvider probes llama.cpp for model capabilities on each (re)connection.
 type clientModelProvider struct {
 	cfg *clientPkg.Config
 }
 
-func (p *clientModelProvider) Models(ctx context.Context) []types.ModelInfo {
+func (p *clientModelProvider) Models(ctx context.Context) ([]types.ModelInfo, int) {
 	models := make([]types.ModelInfo, 0, len(p.cfg.Models))
+	totalSlots := 0
 	for _, m := range p.cfg.Models {
 		lc := llamacpp.New(p.cfg.EndpointFor(m.Name))
-		ctxSize := lc.ProbeContextSize(ctx)
-		models = append(models, types.ModelInfo{Name: m.Name, ContextSize: ctxSize})
-		if ctxSize > 0 {
-			log.Info("ws: model context_size", "model", m.Name, "context_size", ctxSize)
+		props := lc.ProbeProps(ctx)
+		models = append(models, types.ModelInfo{Name: m.Name, ContextSize: props.NCtx, ContextTrain: props.NCtxTrain})
+		if props.NCtx > 0 {
+			log.Info("ws: model props", "model", m.Name,
+				"context_size", props.NCtx, "context_train", props.NCtxTrain,
+				"total_slots", props.TotalSlots)
 		}
+		if props.ChatTemplate != "" {
+			p.cfg.SetDetectedTemplate(m.Name, props.ChatTemplate)
+		}
+		totalSlots += props.TotalSlots
 	}
-	return models
+	return models, totalSlots
 }
 
 // clientJobDispatcher dispatches jobs via the llama.cpp worker.
