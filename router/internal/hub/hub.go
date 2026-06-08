@@ -492,6 +492,7 @@ func (h *Hub) AvailableClientList() []ClientSummary {
 			Owner:         c.Owner,
 			Models:        models,
 			MaxConcurrent: c.MaxConcurrent,
+			InFlight:      c.InFlight(),
 			OwnerSlots:    ownerSlots,
 		})
 	}

@@ -135,6 +135,7 @@ type ClientSummary struct {
 	Owner         string
 	Models        map[string]bool
 	MaxConcurrent int
+	InFlight      int            // current in-flight job count
 	OwnerSlots    map[string]int // model → slots reserved for owner; 0/unset = fully shared
 }
 

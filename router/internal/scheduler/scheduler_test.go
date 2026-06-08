@@ -284,3 +284,35 @@ func TestDrainQueue_OwnerSlots_PartialLimit(t *testing.T) {
 		t.Errorf("expected alice's job, got %s", job.Request.ID)
 	}
 }
+
+func cs(inFlight, maxConc int) types.ClientSummary {
+	return types.ClientSummary{InFlight: inFlight, MaxConcurrent: maxConc}
+}
+
+func TestBetterClient(t *testing.T) {
+	cases := []struct {
+		name  string
+		a, b  types.ClientSummary
+		wantA bool
+	}{
+		{"unloaded beats loaded",         cs(0, 2), cs(1, 2), true},
+		{"loaded loses to unloaded",      cs(1, 2), cs(0, 2), false},
+		{"unloaded: higher cap wins",     cs(0, 4), cs(0, 2), true},
+		{"unloaded: lower cap loses",     cs(0, 2), cs(0, 4), false},
+		{"unloaded: equal cap is a tie",  cs(0, 2), cs(0, 2), false},
+		{"loaded: more free slots wins",  cs(2, 4), cs(1, 2), true},
+		{"loaded: fewer free slots loses", cs(1, 2), cs(2, 4), false},
+		{"loaded: equal free slots is a tie", cs(1, 2), cs(1, 2), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := betterClient(tc.a, tc.b)
+			if got != tc.wantA {
+				t.Errorf("betterClient(%d/%d, %d/%d) = %v, want %v",
+					tc.a.InFlight, tc.a.MaxConcurrent,
+					tc.b.InFlight, tc.b.MaxConcurrent,
+					got, tc.wantA)
+			}
+		})
+	}
+}
