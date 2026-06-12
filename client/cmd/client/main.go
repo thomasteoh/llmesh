@@ -14,6 +14,7 @@ import (
 
 	clientPkg "llmesh/client"
 	"llmesh/client/internal/stats"
+	"llmesh/client/internal/updater"
 	"llmesh/client/internal/ws"
 )
 
@@ -81,6 +82,12 @@ Config file fields (YAML):
 
 	if isTerminal(os.Stderr) {
 		go runStatusLine(ctx, st, cfg.MaxConcurrent)
+	}
+
+	if cfg.AutoUpdate && cfg.UpdateURL != "" {
+		go updater.Run(ctx, cfg.UpdateURL, version, func() bool {
+			return st.ActiveJobs.Load() == 0
+		}, log)
 	}
 
 	conn := ws.New(cfg, version, st)
