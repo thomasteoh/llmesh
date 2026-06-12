@@ -153,6 +153,18 @@ func (s *Scheduler) drainQueue() {
 					continue
 				}
 			}
+			// Skip this client if its context window is too small for the estimated token count.
+			if req.WordCount > 0 {
+				resolved := resolveModel(req.Model, c.Models, aliases)
+				if ctxSize := c.ModelContextSizes[resolved]; ctxSize > 0 {
+					if needed := types.EstimateTokens(req.WordCount, req.MaxTokens); needed > ctxSize {
+						s.log.Debug("scheduler: skipping client — context too small",
+							"client_id", c.ID, "model", resolved,
+							"context_size", ctxSize, "estimated_tokens", needed)
+						continue
+					}
+				}
+			}
 			cand := &candidate{client: c, req: *req}
 			if best == nil || betterPair(cand.client, cand.req, best.client, best.req) {
 				best = cand
@@ -170,21 +182,7 @@ func (s *Scheduler) drainQueue() {
 			continue
 		}
 
-		// "any" is a system pseudo-model: dispatch to whichever model the selected client serves.
-		if req.Model == "any" {
-			for m := range best.client.Models {
-				req.Model = m
-				break
-			}
-		} else if targets, ok := aliases[req.Model]; ok {
-			// Rewrite alias → the specific model name the selected client serves.
-			for _, t := range targets {
-				if best.client.Models[t] {
-					req.Model = t
-					break
-				}
-			}
-		}
+		req.Model = resolveModel(req.Model, best.client.Models, aliases)
 
 		s.hub.IncrInFlight(best.client.ID)
 		job := types.JobMsg{Type: "job", Request: *req}
@@ -233,4 +231,25 @@ func betterClient(a, b types.ClientSummary) bool {
 		return a.MaxConcurrent > b.MaxConcurrent
 	}
 	return (a.MaxConcurrent - a.InFlight) > (b.MaxConcurrent - b.InFlight)
+}
+
+// resolveModel maps a request model name to the concrete model name that
+// clientModels actually serves. Handles "any" (pick first available) and
+// aliases (pick the first matching target). Returns reqModel unchanged if it
+// is already a concrete name served by this client.
+func resolveModel(reqModel string, clientModels map[string]bool, aliases map[string][]string) string {
+	if reqModel == "any" {
+		for m := range clientModels {
+			return m
+		}
+		return reqModel
+	}
+	if targets, ok := aliases[reqModel]; ok {
+		for _, t := range targets {
+			if clientModels[t] {
+				return t
+			}
+		}
+	}
+	return reqModel
 }

@@ -306,6 +306,7 @@ func main() {
 		Scheduler:         sched,
 		Canceller:         h,
 		Workers:           h,
+		ContextSizes:      h,
 		InFlight:          h,
 		Limits:            adminHandler.State(),
 		Dedup:             dedup.New(),
