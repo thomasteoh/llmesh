@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"html/template"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -335,6 +337,32 @@ func main() {
 		if err := landingTmpl.Execute(w, data); err != nil {
 			log.Error("landing", "error", err)
 		}
+	})
+	// Dynamic manifest for client auto-update: returns the current version and
+	// the platform-specific binary download URL for that version.
+	// Path: /downloads/manifest/<GOOS>/<GOARCH>
+	mux.HandleFunc("/downloads/manifest/", func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.TrimPrefix(r.URL.Path, "/downloads/manifest/")
+		segs := strings.SplitN(parts, "/", 2)
+		if len(segs) != 2 || segs[0] == "" || segs[1] == "" {
+			http.NotFound(w, r)
+			return
+		}
+		goos, goarch := segs[0], segs[1]
+		if strings.ContainsAny(goos+goarch, "/\\.") {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		scheme := "https"
+		if r.TLS == nil && r.Header.Get("X-Forwarded-Proto") != "https" {
+			scheme = "http"
+		}
+		baseURL := scheme + "://" + r.Host
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"version": version,
+			"url":     fmt.Sprintf("%s/downloads/llmesh-client-%s-%s", baseURL, goos, goarch),
+		})
 	})
 	mux.Handle("/downloads/", http.StripPrefix("/downloads/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Disposition", "attachment")
