@@ -66,6 +66,7 @@ type Conn struct {
 	models      ModelProvider
 	jobs        JobDispatcher
 	log         *slog.Logger
+	onUpdate    func() // called when the router sends an "update" message
 
 	mu        sync.Mutex
 	ws        *websocket.Conn
@@ -94,6 +95,12 @@ func New(
 		log:         log,
 		cancels:     make(map[string]context.CancelFunc),
 	}
+}
+
+// SetOnUpdate registers a callback invoked when the router sends an "update" message.
+// Must be called before Run. Safe to call with nil to clear.
+func (c *Conn) SetOnUpdate(fn func()) {
+	c.onUpdate = fn
 }
 
 // Run connects to the router and reconnects on disconnect. Blocks until ctx is cancelled.
@@ -307,6 +314,11 @@ func (c *Conn) connect(outerCtx context.Context) error {
 				delete(c.cancels, msg.RequestID)
 			}
 			c.cancelsMu.Unlock()
+
+		case "update":
+			if fn := c.onUpdate; fn != nil {
+				go fn()
+			}
 		}
 	}
 }

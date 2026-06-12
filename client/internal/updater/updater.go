@@ -34,30 +34,46 @@ type manifest struct {
 // Run starts the update check loop. Blocks until ctx is cancelled.
 // manifestURL is the URL of the JSON manifest. currentVersion is the running
 // binary's version string (set via -ldflags at build time; "dev" skips updates).
+// autoUpdate enables the periodic hourly check in addition to portal-triggered updates.
+// triggerCh receives a value when the router requests an immediate update check.
 // isIdle reports whether the client currently has zero in-flight jobs.
-func Run(ctx context.Context, manifestURL, currentVersion string, isIdle func() bool, log *slog.Logger) {
+func Run(ctx context.Context, manifestURL, currentVersion string, autoUpdate bool, isIdle func() bool, triggerCh <-chan struct{}, log *slog.Logger) {
 	if manifestURL == "" {
 		return
 	}
 	if currentVersion == "dev" {
-		log.Info("updater: skipping auto-update for dev build")
+		log.Info("updater: skipping updates for dev build")
 		return
 	}
 
-	// Initial delay — give the router connection time to establish before checking.
-	select {
-	case <-time.After(initialDelay):
-	case <-ctx.Done():
-		return
+	doCheck := func() {
+		tryUpdate(ctx, manifestURL, currentVersion, isIdle, log)
 	}
-	tryUpdate(ctx, manifestURL, currentVersion, isIdle, log)
 
-	ticker := time.NewTicker(checkInterval)
-	defer ticker.Stop()
+	var tickerC <-chan time.Time
+	if autoUpdate {
+		// Initial delay — give the router connection time to establish before checking.
+		select {
+		case <-time.After(initialDelay):
+		case <-ctx.Done():
+			return
+		}
+		doCheck()
+		ticker := time.NewTicker(checkInterval)
+		defer ticker.Stop()
+		tickerC = ticker.C
+	}
+
 	for {
 		select {
-		case <-ticker.C:
-			tryUpdate(ctx, manifestURL, currentVersion, isIdle, log)
+		case <-tickerC:
+			doCheck()
+		case _, ok := <-triggerCh:
+			if !ok {
+				return
+			}
+			log.Info("updater: portal-triggered update check")
+			doCheck()
 		case <-ctx.Done():
 			return
 		}

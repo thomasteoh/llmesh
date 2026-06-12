@@ -114,6 +114,11 @@ type CancelMsg struct {
 	RequestID string `json:"request_id"`
 }
 
+// UpdateMsg is sent by the router to request the client perform an in-place binary update.
+type UpdateMsg struct {
+	Type string `json:"type"` // "update"
+}
+
 // ReleaseMsg is sent by a client to return a job to the router queue.
 // The router re-queues the request for another client to handle.
 type ReleaseMsg struct {
@@ -131,12 +136,20 @@ const MaxAttempts = 3
 // Defined here (rather than in the hub package) so the scheduler can depend
 // on it via an interface without importing hub.
 type ClientSummary struct {
-	ID            string
-	Owner         string
-	Models        map[string]bool
-	MaxConcurrent int
-	InFlight      int            // current in-flight job count
-	OwnerSlots    map[string]int // model → slots reserved for owner; 0/unset = fully shared
+	ID                string
+	Owner             string
+	Models            map[string]bool
+	MaxConcurrent     int
+	InFlight          int            // current in-flight job count
+	ModelContextSizes map[string]int // n_ctx per model; 0 = unknown
+	OwnerSlots        map[string]int // model → slots reserved for owner; 0/unset = fully shared
+}
+
+// EstimateTokens returns an approximate token count for a request given an input
+// word count and max completion tokens. Uses 4/3 tokens per word (standard LLM
+// tokeniser approximation). Returns 0 when both inputs are zero.
+func EstimateTokens(wordCount, maxTokens int) int {
+	return wordCount*4/3 + maxTokens
 }
 
 // BetterRequest reports whether request a is a better dispatch choice than b.

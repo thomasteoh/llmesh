@@ -129,6 +129,11 @@
             <td data-label="Status"><span class="badge {{.StatusClass}}">{{.StatusLabel}}</span></td>
             <td data-label="Last seen" class="muted">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
             <td class="cell-actions">
+              <form method="POST" action="/portal/clients/update" class="form-inline" onsubmit="return confirm('Trigger in-place update for connected clients with this token?')">
+                <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+                <input type="hidden" name="token" value="{{.Token}}">
+                <button type="submit" class="btn-secondary btn-xs" title="Trigger update">&#8593;</button>
+              </form>
               <form method="POST" action="/portal/clients/revoke" class="form-inline" onsubmit="return confirm('Revoke this client token? The client will be disconnected and cannot reconnect.')">
                 <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
                 <input type="hidden" name="token" value="{{.Token}}">
@@ -166,6 +171,11 @@
         <td data-label="Status"><span class="badge {{.StatusClass}}">{{.StatusLabel}}</span></td>
         <td data-label="Last seen" class="muted">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
         <td class="cell-actions">
+          <form method="POST" action="/portal/clients/update" class="form-inline" onsubmit="return confirm('Trigger in-place update for connected clients with this token?')">
+            <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+            <input type="hidden" name="token" value="{{.Token}}">
+            <button type="submit" class="btn-secondary btn-xs" title="Trigger update">&#8593;</button>
+          </form>
           <form method="POST" action="/portal/clients/revoke" class="form-inline" onsubmit="return confirm('Revoke this client token? The client will be disconnected and cannot reconnect.')">
             <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
             <input type="hidden" name="token" value="{{.Token}}">

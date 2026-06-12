@@ -91,6 +91,20 @@ Config file fields (YAML):
 	}
 
 	conn := ws.New(cfg, version, st)
+
+	if cfg.UpdateURL != "" {
+		triggerCh := make(chan struct{}, 1)
+		go updater.Run(ctx, cfg.UpdateURL, version, cfg.AutoUpdate, func() bool {
+			return st.ActiveJobs.Load() == 0
+		}, triggerCh, log)
+		conn.SetOnUpdate(func() {
+			select {
+			case triggerCh <- struct{}{}:
+			default:
+			}
+		})
+	}
+
 	conn.Run(ctx) // blocks until ctx cancelled, reconnects on disconnect
 	log.Info("llmesh-client: shut down")
 }
