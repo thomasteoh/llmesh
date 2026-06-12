@@ -65,6 +65,13 @@ type WorkerChecker interface {
 	HasWorkerForModel(model string, aliases map[string][]string) bool
 }
 
+// ContextChecker is satisfied by *hub.Hub (duck typing — no import needed).
+// MaxContextForModel returns the largest n_ctx across all connected clients
+// serving model (or its aliases). Returns 0 if unknown or no clients connected.
+type ContextChecker interface {
+	MaxContextForModel(model string, aliases map[string][]string) int
+}
+
 // OwnerInFlighter is satisfied by *hub.Hub (duck typing — no import needed).
 // OwnerInFlight returns the number of jobs currently in flight for owner.
 type OwnerInFlighter interface {
@@ -106,6 +113,7 @@ type Handler struct {
 	Scheduler         Waker
 	Canceller         Canceller       // optional; nil = no cancellation
 	Workers           WorkerChecker   // optional; nil = skip worker fast-fail
+	ContextSizes      ContextChecker  // optional; nil = skip context size validation
 	InFlight          OwnerInFlighter // optional; nil = skip per-owner concurrency check
 	Limits            LimitProvider   // optional; nil = no per-key concurrency limits
 	Dedup             *dedup.Registry // optional; nil = no coalescing
@@ -239,6 +247,41 @@ func (h *Handler) enqueue(
 			})
 			w.Write(b)
 			return
+		}
+	}
+
+	// Fast-fail: reject if the estimated token count exceeds what every connected
+	// client for this model can handle. If some clients have enough context but are
+	// busy, we queue normally and the scheduler will wait for one of them.
+	if h.ContextSizes != nil {
+		wordCount := messageWordCount(req)
+		if wordCount > 0 {
+			var aliases map[string][]string
+			if h.Aliases != nil {
+				aliases = h.Aliases.AliasMap()
+			}
+			maxCtx := h.ContextSizes.MaxContextForModel(req.Model, aliases)
+			if maxCtx > 0 {
+				needed := types.EstimateTokens(wordCount, req.MaxTokens)
+				if needed > maxCtx {
+					apiLogger().Warn("api: context too large for model",
+						"model", req.Model, "estimated_tokens", needed,
+						"max_context", maxCtx, "ip", clientIP(r))
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusBadRequest)
+					b, _ := json.Marshal(map[string]any{
+						"error": map[string]any{
+							"message": fmt.Sprintf(
+								"estimated token count (%d) exceeds the maximum context size (%d) for model %q",
+								needed, maxCtx, req.Model),
+							"type": "context_length_exceeded",
+							"code": "context_length_exceeded",
+						},
+					})
+					w.Write(b)
+					return
+				}
+			}
 		}
 	}
 
