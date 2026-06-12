@@ -46,9 +46,10 @@ type ClientToken struct {
 // UpstreamRouter configures an upstream (orchestrator) router that this router
 // connects to as a client.
 type UpstreamRouter struct {
-	Name  string `json:"name"`
-	URL   string `json:"url"`   // base URL, e.g. "https://orchestrator.example.com"
-	Token string `json:"token"` // client token issued on the upstream router
+	Name     string `json:"name"`
+	URL      string `json:"url"`      // base URL, e.g. "https://orchestrator.example.com"
+	Token    string `json:"token"`    // client token issued on the upstream router
+	Priority string `json:"priority"` // "high" | "normal" | "low"; default "normal"
 }
 
 // stateData is kept only for migrating legacy state.json files on first startup.
@@ -165,12 +166,19 @@ func createSchema(db *sql.DB) error {
 			PRIMARY KEY (alias, model)
 		);
 		CREATE TABLE IF NOT EXISTS upstream_routers (
-			url   TEXT PRIMARY KEY,
-			name  TEXT NOT NULL DEFAULT '',
-			token TEXT NOT NULL DEFAULT ''
+			url      TEXT PRIMARY KEY,
+			name     TEXT NOT NULL DEFAULT '',
+			token    TEXT NOT NULL DEFAULT '',
+			priority TEXT NOT NULL DEFAULT 'normal'
 		);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+	// Non-destructive migration: add priority column for existing databases.
+	// SQLite returns an error if the column already exists; ignore it.
+	_, _ = db.Exec(`ALTER TABLE upstream_routers ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'`)
+	return nil
 }
 
 // maybeMigrateJSON imports data from a legacy state.json if the DB has no users yet.
@@ -608,7 +616,7 @@ func (s *State) ClientTokenCount() int {
 // --- Upstream Routers ---
 
 func (s *State) GetUpstreamRouters() []UpstreamRouter {
-	rows, err := s.db.Query(`SELECT url, name, token FROM upstream_routers ORDER BY url`)
+	rows, err := s.db.Query(`SELECT url, name, token, COALESCE(priority, 'normal') FROM upstream_routers ORDER BY url`)
 	if err != nil {
 		return nil
 	}
@@ -616,7 +624,7 @@ func (s *State) GetUpstreamRouters() []UpstreamRouter {
 	var out []UpstreamRouter
 	for rows.Next() {
 		var r UpstreamRouter
-		if err := rows.Scan(&r.URL, &r.Name, &r.Token); err == nil {
+		if err := rows.Scan(&r.URL, &r.Name, &r.Token, &r.Priority); err == nil {
 			out = append(out, r)
 		}
 	}
@@ -632,9 +640,12 @@ func (s *State) AddUpstreamRouter(r UpstreamRouter) error {
 		return fmt.Errorf("url must start with http:// or https://")
 	}
 	r.URL = strings.ToLower(strings.TrimRight(r.URL, "/"))
+	if r.Priority == "" {
+		r.Priority = "normal"
+	}
 	_, err = s.db.Exec(
-		`INSERT INTO upstream_routers (url, name, token) VALUES (?, ?, ?)`,
-		r.URL, r.Name, r.Token,
+		`INSERT INTO upstream_routers (url, name, token, priority) VALUES (?, ?, ?, ?)`,
+		r.URL, r.Name, r.Token, r.Priority,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {

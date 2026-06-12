@@ -67,6 +67,7 @@ type APIKeysPage struct {
 	Keys      []APIKey
 	NewKey    string
 	FormError string
+	Users     []string // all usernames, for admin "create on behalf of" datalist
 }
 
 // ClientUserGroup groups a user's client tokens for the admin view.
@@ -82,6 +83,7 @@ type ClientTokensPage struct {
 	Tokens    []ClientTokenRow  // non-admin view: own tokens only
 	NewToken  string
 	FormError string
+	Users     []string // all usernames, for admin "create on behalf of" datalist
 }
 
 type ConnectedClientRow struct {
@@ -298,12 +300,18 @@ func (a *Admin) handleAPIKeys(w http.ResponseWriter, r *http.Request) {
 
 func (a *Admin) renderAPIKeys(w http.ResponseWriter, r *http.Request, u User, newKey, formErr string) {
 	keys := a.state.APIKeysFor(u.Username, u.Role == "admin")
-	a.render(w, "api-keys", APIKeysPage{
+	page := APIKeysPage{
 		basePage:  a.newBasePage("api-keys", u, r),
 		Keys:      keys,
 		NewKey:    newKey,
 		FormError: formErr,
-	})
+	}
+	if u.Role == "admin" {
+		for _, us := range a.state.Users() {
+			page.Users = append(page.Users, us.Username)
+		}
+	}
+	a.render(w, "api-keys", page)
 }
 
 func (a *Admin) handleAPIKeyCreate(w http.ResponseWriter, r *http.Request) {
@@ -321,14 +329,25 @@ func (a *Admin) handleAPIKeyCreate(w http.ResponseWriter, r *http.Request) {
 		a.renderAPIKeys(w, r, u, "", "Label is required.")
 		return
 	}
-	keyVal, err := GenAPIKeyValue(u.Username)
+	// Admins may create a key on behalf of another user.
+	owner := u.Username
+	if u.Role == "admin" {
+		if forUser := strings.TrimSpace(r.FormValue("for_user")); forUser != "" && forUser != u.Username {
+			if _, ok := a.state.LookupUser(forUser); !ok {
+				a.renderAPIKeys(w, r, u, "", fmt.Sprintf("User %q not found.", forUser))
+				return
+			}
+			owner = forUser
+		}
+	}
+	keyVal, err := GenAPIKeyValue(owner)
 	if err != nil {
 		a.renderAPIKeys(w, r, u, "", "Failed to generate key.")
 		return
 	}
 	k := APIKey{
 		Label:     label,
-		Owner:     u.Username,
+		Owner:     owner,
 		Key:       keyVal,
 		Priority:  priority,
 		CreatedAt: time.Now().UTC(),
@@ -485,6 +504,9 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, r *http.Request, u Use
 	}
 	if u.Role == "admin" {
 		page.Groups = buildClientGroups(rows)
+		for _, us := range a.state.Users() {
+			page.Users = append(page.Users, us.Username)
+		}
 	} else {
 		page.Tokens = rows
 	}
@@ -502,14 +524,25 @@ func (a *Admin) handleClientTokenCreate(w http.ResponseWriter, r *http.Request) 
 		a.renderClientTokens(w, r, u, "", "Name is required.")
 		return
 	}
-	tokVal, err := GenClientTokenValue(u.Username)
+	// Admins may create a token on behalf of another user.
+	owner := u.Username
+	if u.Role == "admin" {
+		if forUser := strings.TrimSpace(r.FormValue("for_user")); forUser != "" && forUser != u.Username {
+			if _, ok := a.state.LookupUser(forUser); !ok {
+				a.renderClientTokens(w, r, u, "", fmt.Sprintf("User %q not found.", forUser))
+				return
+			}
+			owner = forUser
+		}
+	}
+	tokVal, err := GenClientTokenValue(owner)
 	if err != nil {
 		a.renderClientTokens(w, r, u, "", "Failed to generate token.")
 		return
 	}
 	t := ClientToken{
 		Name:      name,
-		Owner:     u.Username,
+		Owner:     owner,
 		Token:     tokVal,
 		CreatedAt: time.Now().UTC(),
 	}
@@ -729,11 +762,15 @@ func (a *Admin) handleUpstreamAdd(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.FormValue("name"))
 	url := strings.TrimSpace(r.FormValue("url"))
 	token := strings.TrimSpace(r.FormValue("token"))
+	priority := r.FormValue("priority")
+	if priority == "" {
+		priority = "normal"
+	}
 	if url == "" || token == "" {
 		a.renderSettings(w, r, u, "", "URL and token are required.")
 		return
 	}
-	if err := a.state.AddUpstreamRouter(UpstreamRouter{Name: name, URL: url, Token: token}); err != nil {
+	if err := a.state.AddUpstreamRouter(UpstreamRouter{Name: name, URL: url, Token: token, Priority: priority}); err != nil {
 		a.renderSettings(w, r, u, "", err.Error())
 		return
 	}

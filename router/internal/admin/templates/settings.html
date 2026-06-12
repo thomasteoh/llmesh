@@ -86,7 +86,11 @@
             <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
             <div class="form-group" style="margin-bottom:10px;"><label>Name <span class="muted">(optional label)</span></label><input name="name" placeholder="e.g. orchestrator"></div>
             <div class="form-group" style="margin-bottom:10px;"><label>URL</label><input name="url" placeholder="https://orchestrator.example.com"></div>
-            <div class="form-group" style="margin-bottom:14px;"><label>Token</label><input name="token" placeholder="ct-..."></div>
+            <div class="form-group" style="margin-bottom:10px;"><label>Token</label><input name="token" placeholder="ct-..."></div>
+            <div class="form-group" style="margin-bottom:14px;">
+              <label>Job priority <span class="muted">(applied to jobs routed from this upstream)</span></label>
+              <select name="priority"><option value="normal" selected>normal</option><option value="high">high</option><option value="low">low</option></select>
+            </div>
             <div style="display:flex;gap:8px;">
               <button type="submit" class="btn">Add</button>
               <button type="button" class="btn-secondary" onclick="document.getElementById('upstream-add-form').style.display='none';document.querySelector('[onclick*=upstream-add-form]').style.display=''">Cancel</button>
@@ -98,12 +102,13 @@
       {{if .Upstreams}}
       <div class="table-scroll">
         <table class="data-table">
-          <thead><tr><th>Name</th><th>URL</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>URL</th><th>Priority</th><th>Status</th><th></th></tr></thead>
           <tbody>
             {{range .Upstreams}}
             <tr>
               <td>{{if .Name}}{{.Name}}{{else}}<span class="muted">—</span>{{end}}</td>
               <td class="muted" style="font-family:monospace;font-size:12px;">{{.URL}}</td>
+              <td><span class="badge {{if eq .Priority "high"}}high{{else if eq .Priority "low"}}low{{else}}normal{{end}}">{{if .Priority}}{{.Priority}}{{else}}normal{{end}}</span></td>
               <td>
                 {{if .Connected}}
                   <span class="badge connected">&#x25cf; connected</span>

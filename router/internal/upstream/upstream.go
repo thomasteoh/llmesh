@@ -332,7 +332,7 @@ func (c *Connector) connect(ctx context.Context, u admin.UpstreamRouter) error {
 				// dependency in upstream).
 				req.OriginID = req.ID
 				req.Owner = u.Name
-				req.Priority = types.PriorityNormal
+				req.Priority = types.PriorityFromString(u.Priority)
 				req.APIKeyLabel = ""
 				c.handleJob(jobCtx, send, req)
 			}(msg.Request)
