@@ -331,7 +331,7 @@ func (c *Connector) connect(ctx context.Context, u admin.UpstreamRouter) error {
 				// for correlation; we do not reassign it to avoid extra uuid
 				// dependency in upstream).
 				req.OriginID = req.ID
-				req.Owner = u.Name
+				req.Owner = "upstream:" + u.Name
 				req.Priority = types.PriorityFromString(u.Priority)
 				req.APIKeyLabel = ""
 				c.handleJob(jobCtx, send, req)
