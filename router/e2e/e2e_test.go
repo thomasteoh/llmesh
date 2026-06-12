@@ -121,6 +121,8 @@ func setupTestRouter(t *testing.T) (routerURL, apiKey, clientToken string, clean
 
 	sched := scheduler.New(q, h, adminHandler.State(), slog.Default())
 	sched.Start()
+	h.OnAvailable = func() { sched.Wake() }
+	h.OnRelease = func(req types.InferenceRequest) { q.Push(req); sched.Wake() }
 
 	apiHandler = &api.Handler{
 		Keys:        adminHandler.State(),

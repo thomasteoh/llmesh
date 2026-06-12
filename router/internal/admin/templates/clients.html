@@ -99,6 +99,13 @@
         <label>Name</label>
         <div class="prefix-wrap"><span class="prefix">{{.Username}}/</span><input name="name" placeholder="macbook-pro"></div>
       </div>
+      {{if .IsAdmin}}
+      <div class="form-group" style="flex:1;">
+        <label>For user <span class="muted">(optional)</span></label>
+        <input name="for_user" list="client-user-list" placeholder="{{.Username}}">
+        <datalist id="client-user-list">{{range .Users}}<option value="{{.}}">{{end}}</datalist>
+      </div>
+      {{end}}
       <button type="submit" class="btn">Generate token</button>
     </div>
     {{if .FormError}}<p class="form-error">{{.FormError}}</p>{{end}}
