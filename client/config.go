@@ -25,6 +25,13 @@ type Config struct {
 	MetricsAddr           string        `yaml:"metrics_addr"`            // e.g. ":9091"; empty = disabled
 	RouterActivityTimeout time.Duration `yaml:"router_activity_timeout"` // derive keep-alive interval; 0 = use 60s default
 
+	// AutoUpdate enables periodic hourly checks for a new binary. The manifest URL
+	// is derived automatically from router_url. When a new version is found and the
+	// client is idle (no active jobs), the binary is replaced and the process
+	// re-executes itself. Has no effect on dev builds.
+	// Portal-triggered updates (via the admin UI) work regardless of this setting.
+	AutoUpdate bool `yaml:"auto_update"`
+
 	detectedTemplates sync.Map // model name → chat_template detected from /props; not from config file
 }
 

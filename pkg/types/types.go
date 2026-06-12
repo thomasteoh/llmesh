@@ -114,6 +114,11 @@ type CancelMsg struct {
 	RequestID string `json:"request_id"`
 }
 
+// UpdateMsg is sent by the router to request the client perform an in-place binary update.
+type UpdateMsg struct {
+	Type string `json:"type"` // "update"
+}
+
 // ReleaseMsg is sent by a client to return a job to the router queue.
 // The router re-queues the request for another client to handle.
 type ReleaseMsg struct {

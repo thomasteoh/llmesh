@@ -9,11 +9,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
 	clientPkg "llmesh/client"
 	"llmesh/client/internal/stats"
+	"llmesh/client/internal/updater"
 	"llmesh/client/internal/ws"
 )
 
@@ -33,6 +36,7 @@ Config file fields (YAML):
   router_url      wss:// URL of the llmesh router  (required)
   router_token    client token from the admin UI   (required)
   max_concurrent  parallel jobs limit              (default: 4)
+  auto_update     enable hourly self-update checks (default: false)
   models:
     - name:       model identifier (e.g. llama3.2:3b)
       endpoint:   llama.cpp base URL (e.g. http://localhost:8080)
@@ -84,6 +88,20 @@ Config file fields (YAML):
 	}
 
 	conn := ws.New(cfg, version, st)
+
+	if manifestURL := deriveManifestURL(cfg.RouterURL); manifestURL != "" {
+		triggerCh := make(chan struct{}, 1)
+		go updater.Run(ctx, manifestURL, version, cfg.AutoUpdate, func() bool {
+			return st.ActiveJobs.Load() == 0
+		}, triggerCh, log)
+		conn.SetOnUpdate(func() {
+			select {
+			case triggerCh <- struct{}{}:
+			default:
+			}
+		})
+	}
+
 	conn.Run(ctx) // blocks until ctx cancelled, reconnects on disconnect
 	log.Info("llmesh-client: shut down")
 }
@@ -146,4 +164,22 @@ func formatUptime(d time.Duration) string {
 	default:
 		return fmt.Sprintf("%dd", int(d.Hours()/24))
 	}
+}
+
+// deriveManifestURL converts a wss:// or ws:// router URL to the platform-specific
+// update manifest URL served by that router. Returns "" on unrecognised scheme.
+func deriveManifestURL(routerURL string) string {
+	var scheme, rest string
+	switch {
+	case strings.HasPrefix(routerURL, "wss://"):
+		scheme, rest = "https", strings.TrimPrefix(routerURL, "wss://")
+	case strings.HasPrefix(routerURL, "ws://"):
+		scheme, rest = "http", strings.TrimPrefix(routerURL, "ws://")
+	default:
+		return ""
+	}
+	if idx := strings.Index(rest, "/"); idx >= 0 {
+		rest = rest[:idx]
+	}
+	return fmt.Sprintf("%s://%s/downloads/manifest/%s/%s", scheme, rest, runtime.GOOS, runtime.GOARCH)
 }

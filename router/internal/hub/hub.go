@@ -785,6 +785,38 @@ func (h *Hub) ConnectedVersion(token string) string {
 	return version
 }
 
+// TriggerClientUpdate sends an update request to all connected clients with the given token.
+// Returns the number of clients the message was delivered to.
+func (h *Hub) TriggerClientUpdate(token string) int {
+	msg := types.UpdateMsg{Type: "update"}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return 0
+	}
+	h.mu.RLock()
+	var targets []*Client
+	for _, c := range h.clients {
+		if c.Token == token {
+			targets = append(targets, c)
+		}
+	}
+	h.mu.RUnlock()
+	sent := 0
+	for _, c := range targets {
+		c.sendMu.Lock()
+		if !c.sendClosed {
+			select {
+			case c.send <- data:
+				sent++
+			default:
+				h.log.Warn("hub: send buffer full, dropping update message", "client_id", c.ID)
+			}
+		}
+		c.sendMu.Unlock()
+	}
+	return sent
+}
+
 // CloseByToken closes ALL WebSocket connections for clients with the given token.
 func (h *Hub) CloseByToken(token string) {
 	h.mu.RLock()

@@ -38,6 +38,12 @@ func (c *Conn) Run(ctx context.Context) {
 	c.inner.Run(ctx)
 }
 
+// SetOnUpdate registers a callback invoked when the router requests an in-place update.
+// Must be called before Run.
+func (c *Conn) SetOnUpdate(fn func()) {
+	c.inner.SetOnUpdate(fn)
+}
+
 // clientModelProvider probes llama.cpp for model capabilities on each (re)connection.
 type clientModelProvider struct {
 	cfg *clientPkg.Config
