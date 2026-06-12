@@ -487,16 +487,43 @@ func (h *Hub) AvailableClientList() []ClientSummary {
 		for k, v := range c.OwnerSlots {
 			ownerSlots[k] = v
 		}
+		ctxSizes := make(map[string]int, len(c.ModelContextSizes))
+		for k, v := range c.ModelContextSizes {
+			ctxSizes[k] = v
+		}
 		out = append(out, ClientSummary{
-			ID:            c.ID,
-			Owner:         c.Owner,
-			Models:        models,
-			MaxConcurrent: c.MaxConcurrent,
-			InFlight:      c.InFlight(),
-			OwnerSlots:    ownerSlots,
+			ID:                c.ID,
+			Owner:             c.Owner,
+			Models:            models,
+			MaxConcurrent:     c.MaxConcurrent,
+			InFlight:          c.InFlight(),
+			ModelContextSizes: ctxSizes,
+			OwnerSlots:        ownerSlots,
 		})
 	}
 	return out
+}
+
+// MaxContextForModel returns the largest n_ctx reported by any connected and registered
+// client serving model (or any of its aliases). Checks all clients, not just available
+// ones, so a busy client with large context still counts. Returns 0 if no client is
+// connected for this model or no context sizes have been reported.
+func (h *Hub) MaxContextForModel(model string, aliases map[string][]string) int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	best := 0
+	check := func(name string) {
+		for _, c := range h.clients {
+			if c.Models != nil && c.Models[name] && c.ModelContextSizes[name] > best {
+				best = c.ModelContextSizes[name]
+			}
+		}
+	}
+	check(model)
+	for _, target := range aliases[model] {
+		check(target)
+	}
+	return best
 }
 
 // ActiveModels returns all model names currently advertised by connected clients.
@@ -756,6 +783,38 @@ func (h *Hub) ConnectedVersion(token string) string {
 		}
 	}
 	return version
+}
+
+// TriggerClientUpdate sends an update request to all connected clients with the given token.
+// Returns the number of clients the message was delivered to.
+func (h *Hub) TriggerClientUpdate(token string) int {
+	msg := types.UpdateMsg{Type: "update"}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return 0
+	}
+	h.mu.RLock()
+	var targets []*Client
+	for _, c := range h.clients {
+		if c.Token == token {
+			targets = append(targets, c)
+		}
+	}
+	h.mu.RUnlock()
+	sent := 0
+	for _, c := range targets {
+		c.sendMu.Lock()
+		if !c.sendClosed {
+			select {
+			case c.send <- data:
+				sent++
+			default:
+				h.log.Warn("hub: send buffer full, dropping update message", "client_id", c.ID)
+			}
+		}
+		c.sendMu.Unlock()
+	}
+	return sent
 }
 
 // CloseByToken closes ALL WebSocket connections for clients with the given token.

@@ -164,6 +164,7 @@ func (a *Admin) registerRoutes() {
 		}
 	}))
 	mux.HandleFunc("/portal/clients/revoke", a.requireAuth(a.postWithCSRF(a.handleClientTokenRevoke)))
+	mux.HandleFunc("/portal/clients/update", a.requireAuth(a.postWithCSRF(a.handleClientUpdate)))
 	mux.HandleFunc("/portal/clients/owner-slots", a.requireAuth(a.postWithCSRF(a.handleClientTokenOwnerSlots)))
 	mux.HandleFunc("/portal/clients/config", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
