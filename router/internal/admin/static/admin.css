@@ -202,6 +202,25 @@ main { padding: 24px; }
 .muted { color: var(--text-muted); }
 mono, code { font-family: monospace; font-size: 11px; }
 
+/* ─── Endpoint URL display ───────────────────────────────────── */
+.endpoint-display {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+.endpoint-url {
+  font-family: monospace;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--accent);
+  word-break: break-all;
+  user-select: all;
+}
+
 /* ─── Badges ─────────────────────────────────────────────────── */
 .badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
 .badge.connected    { background: #22c55e1a; color: var(--success); }

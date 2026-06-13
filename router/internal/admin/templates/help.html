@@ -44,8 +44,10 @@
       Navigation <span id="docs-nav-chevron">&#9662;</span>
     </div>
     <div class="docs-nav-items" id="docs-nav-items">
+      <div class="docs-nav-section">Getting started</div>
+      <a class="docs-link active" onclick="showDoc('concepts',this)">Concepts &amp; keys</a>
       <div class="docs-nav-section">Endpoints</div>
-      <a class="docs-link active" onclick="showDoc('openai',this)">OpenAI compatible</a>
+      <a class="docs-link" onclick="showDoc('openai',this)">OpenAI compatible</a>
       <a class="docs-link" onclick="showDoc('anthropic',this)">Anthropic compatible</a>
       <a class="docs-link" onclick="showDoc('responses',this)">Responses API</a>
       <div class="docs-nav-section">Setup</div>
@@ -62,8 +64,73 @@
   </div>
   <div class="docs-content">
 
+    {{/* ── Concepts ───────────────────────────────────────────── */}}
+    <div class="docs-section active" id="concepts">
+      <div class="docs-title">Concepts &amp; keys</div>
+      <div class="docs-subtitle">Start here &mdash; what llmesh is, and the two kinds of keys it uses</div>
+
+      <p class="docs-p">llmesh is a router. It sits in front of the machines that actually run AI models and gives everyone <strong>one address</strong> to send requests to. You point your apps at that address; llmesh forwards each request to whichever connected machine has the right model free, queues it if they are all busy, and streams the answer back.</p>
+
+      <div class="docs-label">Your API endpoint</div>
+      <p class="docs-p">This is the single base URL your apps, agents, and scripts talk to:</p>
+      <div class="docs-code">https://{{.Host}}/v1</div>
+      <p class="docs-p">Anything that already works with OpenAI or Anthropic works here &mdash; just swap in this base URL and one of your API keys. The specific paths underneath it:</p>
+      <div class="table-scroll" style="margin-bottom:16px;">
+        <table class="data-table">
+          <thead><tr><th>Path</th><th>Use it for</th></tr></thead>
+          <tbody>
+            <tr><td><mono>POST https://{{.Host}}/v1/chat/completions</mono></td><td>OpenAI chat completions (most tools)</td></tr>
+            <tr><td><mono>POST https://{{.Host}}/v1/messages</mono></td><td>Anthropic-style messages</td></tr>
+            <tr><td><mono>POST https://{{.Host}}/v1/responses</mono></td><td>OpenAI Responses API</td></tr>
+            <tr><td><mono>GET&nbsp; https://{{.Host}}/v1/models</mono></td><td>List the models currently available</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="docs-p">You can always confirm the address: it is shown at the top of the <a href="/portal/api-keys">API Keys</a> page, and a live list of available models is returned by <mono>GET /v1/models</mono>.</p>
+
+      <div class="docs-label">Two kinds of keys &mdash; don't mix them up</div>
+      <p class="docs-p">llmesh uses two separate kinds of secret, for two different jobs. The prefix tells them apart at a glance.</p>
+      <div class="table-scroll" style="margin-bottom:16px;">
+        <table class="data-table">
+          <thead><tr><th></th><th>API key</th><th>Client token</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Looks like</strong></td><td><mono>sk-alice-&hellip;</mono></td><td><mono>ct-alice-&hellip;</mono></td></tr>
+            <tr><td><strong>Who uses it</strong></td><td>People &amp; apps <em>sending</em> requests (agents, scripts, IDE plugins)</td><td>Worker machines <em>doing</em> the inference (a GPU box, a cloud-API bridge)</td></tr>
+            <tr><td><strong>Direction</strong></td><td>App &rarr; router, over HTTPS</td><td>Worker &rarr; router, over WebSocket</td></tr>
+            <tr><td><strong>Where it goes</strong></td><td>The <mono>Authorization</mono> header of each API call</td><td>The <mono>router_token</mono> field of a worker's <mono>config.yaml</mono></td></tr>
+            <tr><td><strong>Created on</strong></td><td><a href="/portal/api-keys">API Keys</a> page</td><td><a href="/portal/clients">Clients</a> page</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="docs-p">A simple way to remember it: an <strong>API key (<mono>sk-</mono>)</strong> lets someone ask llmesh for an answer. A <strong>client token (<mono>ct-</mono>)</strong> lets a machine offer to produce answers. Requests come in the front door with an <mono>sk-</mono> key; the machines that fulfil them are connected at the back with <mono>ct-</mono> tokens.</p>
+
+      <div class="mermaid-label">How the pieces fit together</div>
+      <div class="mermaid-diagram">
+<pre class="mermaid">
+flowchart LR
+    subgraph Callers["Callers (use sk- keys)"]
+        A1[AI agent]
+        A2[script / SDK]
+    end
+    subgraph Workers["Workers (use ct- tokens)"]
+        W1[llmesh-client<br/>llama.cpp box]
+        W2[llmesh-shim<br/>cloud API bridge]
+    end
+    A1 -->|HTTPS + sk- key| R[llmesh router]
+    A2 -->|HTTPS + sk- key| R
+    R <-->|WebSocket + ct- token| W1
+    R <-->|WebSocket + ct- token| W2
+</pre>
+      </div>
+
+      <div class="docs-label">First steps</div>
+      <p class="docs-p">1. On the <a href="/portal/clients">Clients</a> page, generate a client token and download the pre-filled <mono>config.yaml</mono>. Run an <strong>llmesh-client</strong> next to a llama.cpp server (see <a onclick="showDoc('client-setup',null)" style="cursor:pointer;color:var(--text-muted);text-decoration:underline;">Client config</a>), or an <strong>llmesh-shim</strong> to bridge a cloud API (see <a onclick="showDoc('shim-setup',null)" style="cursor:pointer;color:var(--text-muted);text-decoration:underline;">Shim config</a>).</p>
+      <p class="docs-p">2. On the <a href="/portal/api-keys">API Keys</a> page, generate an API key for whoever or whatever will be sending requests.</p>
+      <p class="docs-p">3. Point your tool at <mono>https://{{.Host}}/v1</mono> with that key. Done.</p>
+    </div>
+
     {{/* ── OpenAI ─────────────────────────────────────────────── */}}
-    <div class="docs-section active" id="openai">
+    <div class="docs-section" id="openai">
       <div class="docs-title">OpenAI-compatible endpoint</div>
       <div class="docs-subtitle">Drop-in replacement for <code>api.openai.com</code></div>
       <div class="docs-code">POST /v1/chat/completions</div>
@@ -110,22 +177,21 @@ client = anthropic.Anthropic(base_url="https://{{.Host}}", api_key="sk-yourkey")
       <div class="docs-label">Full example</div>
       <div class="docs-code">router_url: "wss://{{.Host}}/ws/client"
 router_token: "ct-yourname-yourtoken"
-max_concurrent: 4
+# max_concurrent: 4          # optional - omit to auto-detect from llama.cpp slots
 models:
-  - name: "llama3.2:3b"
-    endpoint: "http://localhost:8080"
-  - name: "unsloth/qwen3-30b-a3b"
+  - endpoint: "http://localhost:8080"     # name auto-detected from this endpoint
+  - name: "unsloth/qwen3-30b-a3b"          # or set it explicitly
     endpoint: "http://localhost:8081"
-    chat_template: "qwen2.5"   # optional template override</div>
+    chat_template: "qwen2.5"               # optional template override</div>
       <div class="docs-label">Fields</div>
       <div class="table-scroll" style="margin-bottom:16px;">
         <table class="data-table">
           <thead><tr><th>Field</th><th>Required</th><th>Default</th><th>Description</th></tr></thead>
           <tbody>
             <tr><td><mono>router_url</mono></td><td>yes</td><td>&mdash;</td><td>WebSocket URL of the router. Use <code>wss://</code> for TLS.</td></tr>
-            <tr><td><mono>router_token</mono></td><td>yes</td><td>&mdash;</td><td>Client token from the <a onclick="showDoc('client-setup',null)" style="cursor:pointer;color:var(--text-muted);text-decoration:underline;">Clients</a> page. Begins with <code>ct-</code>.</td></tr>
-            <tr><td><mono>max_concurrent</mono></td><td>no</td><td>4</td><td>Max parallel jobs. Match to your hardware&rsquo;s capacity.</td></tr>
-            <tr><td><mono>models[].name</mono></td><td>yes</td><td>&mdash;</td><td>Full model name as registered with the router. Aliases are managed server-side &mdash; see <a onclick="showDoc('model-aliases',null)" style="cursor:pointer;color:var(--text-muted);text-decoration:underline;">Model aliases</a>.</td></tr>
+            <tr><td><mono>router_token</mono></td><td>yes</td><td>&mdash;</td><td>Client token from the <a href="/portal/clients">Clients</a> page. Begins with <code>ct-</code>.</td></tr>
+            <tr><td><mono>max_concurrent</mono></td><td>no</td><td>auto</td><td>Max parallel jobs. When omitted, auto-detected from llama.cpp&rsquo;s reported slot count (<mono>total_slots</mono>), falling back to 1. Set explicitly to override.</td></tr>
+            <tr><td><mono>models[].name</mono></td><td>no</td><td>auto</td><td>Model name as callers will request it. When omitted, auto-detected from the endpoint&rsquo;s <mono>/v1/models</mono> at connect time. Aliases are managed server-side &mdash; see <a onclick="showDoc('model-aliases',null)" style="cursor:pointer;color:var(--text-muted);text-decoration:underline;">Model aliases</a>.</td></tr>
             <tr><td><mono>models[].endpoint</mono></td><td>yes</td><td>&mdash;</td><td>llama.cpp base URL. Client appends <code>/v1/chat/completions</code>.</td></tr>
             <tr><td><mono>models[].chat_template</mono></td><td>no</td><td>&mdash;</td><td>Override the model&rsquo;s built-in Jinja2 chat template. llama.cpp applies it server-side. See <a onclick="showDoc('chat-templates',null)" style="cursor:pointer;color:var(--text-muted);text-decoration:underline;">Chat templates</a>.</td></tr>
           </tbody>
@@ -289,7 +355,7 @@ flowchart LR
     A1 --> B
     A2 --> B
     B{router<br/>scheduler}
-    B -->|alias lookup| C[state.json<br/>alias map]
+    B -->|alias lookup| C[state DB<br/>alias map]
     C -->|qwen →<br/>unsloth/qwen-35b| D[dispatch<br/>to matching client]
     D -->|large-moe →<br/>unsloth/qwen-35b| D
 
@@ -476,7 +542,7 @@ flowchart TD
       </div>
 
       <div class="docs-label">1 &mdash; Auth and body</div>
-      <p class="flow-prose">The HTTP goroutine extracts the bearer key and validates it against the API key store (linear scan of <mono>state.json</mono> keys). The request body is read fully into memory with a hard cap of 1 MB.</p>
+      <p class="flow-prose">The HTTP goroutine extracts the bearer key and validates it against the API key store (an embedded SQLite database). The request body is read fully into memory with a hard cap of 1 MB.</p>
 
       <div class="docs-label">2 &mdash; Inbound translation</div>
       <p class="flow-prose">The raw JSON is normalised into a format-agnostic <mono>InferenceRequest</mono>. Message content is stored as raw JSON (<mono>json.RawMessage</mono>), preserving tool_use/tool_result blocks, tool_calls arrays, and multi-part content without modification. Tools and tool_choice are forwarded as-is. The original wire format (<mono>openai</mono> / <mono>anthropic</mono> / <mono>openai-responses</mono>) is stored as <mono>SourceFmt</mono> for the outbound formatter.</p>
@@ -496,7 +562,7 @@ flowchart TD
       </div>
 
       <div class="docs-label">3 &mdash; Model / alias validation</div>
-      <p class="flow-prose">The requested model is checked against connected clients (model names) and the server-side alias map (from <mono>state.json</mono>). If the name is an alias, the target model must be served by a connected client. On failure the request is rejected immediately with HTTP 400 and a list of available models and aliases. The original model string (possibly an alias) is kept in the request for the scheduler.</p>
+      <p class="flow-prose">The requested model is checked against connected clients (model names) and the server-side alias map (from the state database). If the name is an alias, the target model must be served by a connected client. On failure the request is rejected immediately with HTTP 400 and a list of available models and aliases. The original model string (possibly an alias) is kept in the request for the scheduler.</p>
 
       <div class="docs-label">4&ndash;5 &mdash; Queue and correlation</div>
       <p class="flow-prose">A UUID is assigned, priority is read from the API key, owner is set from the API key, and a buffered channel (cap 32) is created in the correlation store. The scheduler is woken via a coalescing signal channel (cap 1).</p>
@@ -522,7 +588,7 @@ flowchart TD
             <tr><td>Request counter</td><td>Atomic int64 in process</td><td>No &mdash; resets on restart</td></tr>
             <tr><td>Token usage stats</td><td>In-memory maps</td><td>No &mdash; resets on restart</td></tr>
             <tr><td>Client last-seen timestamps</td><td>Hub map</td><td>No</td></tr>
-            <tr><td>API keys, users, tokens</td><td><mono>state.json</mono></td><td><strong>Yes</strong></td></tr>
+            <tr><td>API keys, users, tokens, aliases, audit log</td><td>state DB (SQLite)</td><td><strong>Yes</strong></td></tr>
           </tbody>
         </table>
       </div>

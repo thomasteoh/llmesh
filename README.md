@@ -12,11 +12,11 @@ It speaks the same API formats as OpenAI and Anthropic, so anything that already
 
 **Thin and focused.** The router routes requests — it does not run inference, transform outputs, or call external services. One job, done reliably.
 
-**Self-hosted by default.** No accounts to create, no telemetry, no external dependencies at runtime. State lives in a single JSON file on disk.
+**Self-hosted by default.** No accounts to create, no telemetry, no external dependencies at runtime. State lives in an embedded SQLite database on disk.
 
 **Protocol-compatible.** OpenAI and Anthropic wire formats are supported natively. If a tool works with those APIs, it works with llmesh.
 
-**Simple to operate.** One binary per role, configuration in YAML, state in JSON. No database, no message broker, no service mesh required.
+**Simple to operate.** One binary per role, configuration in YAML, state in a single embedded SQLite file. No external database, no message broker, no service mesh required.
 
 **Network-friendly.** Client machines connect *out* to the router over WebSocket — no inbound firewall rules or port forwarding needed on client machines.
 
@@ -47,12 +47,13 @@ The client is a small binary that runs alongside your llama.cpp instance.
 
 ## Architecture
 
-llmesh sits between callers (agents, tools, scripts) and your llama.cpp instances:
+llmesh sits between callers (agents, tools, scripts) and the machines that run your models:
 
-- **Router** — single API endpoint, pools all connected clients, handles authentication, request queuing, and affinity-based scheduling.
-- **Client** — lightweight agent running on each machine with llama.cpp; connects to the router over WebSocket and dispatches inference jobs.
+- **Router** — the single API endpoint. Pools all connected workers, handles authentication, request queuing, and affinity-based scheduling. Runs no inference itself.
+- **Client (llmesh-client)** — a worker that runs next to a llama.cpp server. Connects out to the router over WebSocket and dispatches inference jobs to local llama.cpp.
+- **Shim (llmesh-shim)** — a worker that bridges to an external HTTP API (OpenAI, Anthropic, any OpenAI-compatible server) or a local shell command, instead of llama.cpp. No GPU required. Connects to the router the same way a client does.
 
-Callers only need to know the router URL. Inference runs on local llama.cpp nodes connected as clients over WebSocket.
+Callers only need to know the router URL. Workers connect *out* to the router, so no inbound ports are needed on worker machines.
 
 ### Request Flow
 
@@ -83,6 +84,39 @@ The router dispatches requests to available clients using **client-centric affin
 3. **FIFO** — within the same tier, oldest first
 
 Model aliases allow multiple clients serving different implementations of the same model to be addressed by a single logical name (e.g., `gpt-4o` → `unsloth/qwen3-30b` or `llama3.1:70b`).
+
+---
+
+## Keys and your endpoint
+
+llmesh uses two kinds of secret, for two different jobs. The prefix tells them apart.
+
+| | **API key** | **Client token** |
+|---|---|---|
+| Looks like | `sk-alice-…` | `ct-alice-…` |
+| Who uses it | People and apps **sending** requests (agents, scripts, SDKs) | Worker machines **doing** the inference (a GPU box, a cloud-API bridge) |
+| Direction | App → router, over HTTPS | Worker → router, over WebSocket |
+| Where it goes | The `Authorization` header of each API call | The `router_token` field of a worker's `config.yaml` |
+| Created on | **API Keys** page | **Clients** page |
+
+In short: an **API key (`sk-`)** lets someone ask llmesh for an answer; a **client token (`ct-`)** lets a machine offer to produce answers.
+
+**Your API endpoint** is the single base URL your apps point at:
+
+```
+https://<your-router-host>/v1
+```
+
+That host is the `host` value from the router's `config.yaml`. The portal shows the exact URL at the top of the **API Keys** page, and the WebSocket URL workers use (`wss://<host>/ws/client`) at the top of the **Clients** page. Everything else hangs off the base URL — `/v1/chat/completions`, `/v1/messages`, `/v1/responses`, `/v1/models`.
+
+```bash
+curl https://<your-router-host>/v1/chat/completions \
+  -H "Authorization: Bearer sk-yourkey" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"llama3.2:3b","messages":[{"role":"user","content":"hi"}]}'
+```
+
+The in-app **Help** page (`/portal/help`) has the full reference: SDK snippets, the Anthropic and Responses endpoints, priority tiers, model aliases, tool calling, and the end-to-end request flow.
 
 ---
 
@@ -119,16 +153,17 @@ server:
 docker compose up -d
 ```
 
-The `state.json` file (admin users, API keys, client tokens) is created automatically on first run. It is mounted as a volume and persists across container restarts.
+The state database (admin users, API keys, client tokens, aliases, audit log) is an embedded SQLite file created automatically on first run. It is mounted as a volume and persists across container restarts. A legacy `state.json` from older releases is imported automatically on first startup.
 
 **First-run setup**
 
 Navigate to `http://[HOST]:[PORT]/portal`. On first run you are redirected to the setup wizard to create the initial admin account. All credentials are managed via this UI — there are no credentials in `config.yaml`.
 
 From the admin dashboard you can:
-- **Clients** → Create client tokens (needed to configure each `llmesh-client`)
-- **API Keys** → Create API keys (needed by callers to authenticate requests)
-- **Settings** → Configure model aliases
+- **Clients** → Create client tokens (needed to configure each `llmesh-client` or `llmesh-shim`); also shows your worker connection URL and manages model aliases
+- **API Keys** → Create API keys (needed by callers to authenticate requests); shows your API endpoint URL
+- **Settings** → Manage users and configure upstream routers
+- **Help** → Full API reference and setup guide
 
 ---
 
@@ -147,11 +182,10 @@ Edit `client/config.yaml`:
 ```yaml
 router_url: "wss://llmesh.example.com/ws/client"  # WebSocket URL of the router
 router_token: "ct-admin-xxxxxxxxxxxxxxxx"           # client token from router admin UI
-max_concurrent: 4                                   # max simultaneous inference jobs
+# max_concurrent: 4                                 # optional — omit to auto-detect from llama.cpp slots
 models:
-  - name: "llama3.2:3b"
-    endpoint: "http://host.docker.internal:8080"    # llama.cpp HTTP server
-  - name: "unsloth/qwen3-30b-a3b"
+  - endpoint: "http://host.docker.internal:8080"    # name auto-detected from this endpoint
+  - name: "unsloth/qwen3-30b-a3b"                    # or set the name explicitly
     endpoint: "http://host.docker.internal:8081"
     # chat_template: "qwen2.5"                      # optional: override model's built-in Jinja template
 ```
@@ -160,8 +194,8 @@ models:
 |-------|----------|---------|-------------|
 | `router_url` | Yes | — | WebSocket URL of the router (`wss://` for TLS, `ws://` for plain) |
 | `router_token` | Yes | — | Client token created in the router admin UI |
-| `max_concurrent` | No | `4` | Maximum simultaneous inference jobs this client will handle |
-| `models[].name` | Yes | — | Model name exactly as callers will request it |
+| `max_concurrent` | No | auto | Max simultaneous inference jobs. When omitted, auto-detected from llama.cpp's reported slot count (falls back to 1). Set explicitly to override. |
+| `models[].name` | No | auto | Model name as callers will request it. When omitted, auto-detected from the endpoint's `/v1/models` at connect time. |
 | `models[].endpoint` | Yes | — | HTTP base URL of the llama.cpp server for this model |
 | `models[].chat_template` | No | — | Override the model's built-in Jinja chat template (e.g. `"qwen2.5"`) |
 
@@ -174,6 +208,39 @@ docker compose -f docker-compose.client.yml up -d
 ```
 
 `host.docker.internal` resolves to the Docker host — use this to reach llama.cpp servers running on the same machine outside Docker.
+
+---
+
+### 3. Shim (optional)
+
+Run a shim instead of (or alongside) a client when you want to expose an external API — OpenAI, Anthropic, any OpenAI-compatible server, or a local shell command — through the same router endpoint. No GPU required.
+
+```bash
+cp shim/config.yaml.example shim/config.yaml
+```
+
+Edit `shim/config.yaml` to point each model at a backend, then pass API keys via the environment:
+
+```yaml
+router_url: "wss://llmesh.example.com/ws/client"
+router_token: "ct-admin-xxxxxxxxxxxxxxxx"   # client token, same as a client uses
+models:
+  - name: "gpt-4o"
+    context_size: 128000
+    backend:
+      type: http
+      url: "https://api.openai.com"
+      format: openai           # or: anthropic
+      auth_type: bearer
+      auth_value: "${OPENAI_API_KEY}"
+```
+
+```bash
+export OPENAI_API_KEY=sk-...
+docker compose -f shim/docker-compose.shim.yml up -d
+```
+
+The shim authenticates with a **client token** (`ct-`) exactly like `llmesh-client` — they are interchangeable from the router's point of view. Full field reference (HTTP backends, command adapters, the adapter protocol) is in the **Help** page and the `llmesh-shim(1)` man page.
 
 ---
 
@@ -264,14 +331,22 @@ llmesh/
 │       ├── queue/                # Priority request queue
 │       ├── scheduler/            # Dispatch loop
 │       └── translate/            # OpenAI/Anthropic/Responses format translation
-├── client/                       # Client binary
+├── client/                       # Client binary (llama.cpp worker)
 │   ├── config.yaml.example       # Config template
+│   ├── man/                      # llmesh-client(1) man page
 │   ├── Dockerfile
 │   └── internal/
 │       ├── llamacpp/             # llama.cpp HTTP client
 │       ├── worker/               # Per-job handler
 │       └── ws/                   # WebSocket connection + reconnect
-├── pkg/types/                    # Shared message types
+├── shim/                         # Shim binary (HTTP API / command-adapter worker)
+│   ├── config.yaml.example       # Config template
+│   ├── man/                      # llmesh-shim(1) man page
+│   ├── docker-compose.shim.yml   # Shim service
+│   └── internal/                 # Backends (http, command) + WebSocket connection
+├── pkg/
+│   ├── types/                    # Shared message types
+│   └── wsclient/                 # Shared WebSocket client (used by client + shim)
 ├── docker-compose.yml            # Router service
 └── docker-compose.client.yml     # Client service
 ```

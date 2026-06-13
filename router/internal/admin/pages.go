@@ -649,7 +649,7 @@ func (a *Admin) handleClientTokenConfig(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	yaml := fmt.Sprintf("router_url: \"wss://%s/ws/client\"\nrouter_token: \"%s\"\nmax_concurrent: 4\nmodels:\n  - name: \"llama3.2:3b\"\n    endpoint: \"http://localhost:8080\"\n", a.host, token)
+	yaml := fmt.Sprintf("router_url: \"wss://%s/ws/client\"\nrouter_token: \"%s\"\n# max_concurrent: 4        # optional - omit to auto-detect from llama.cpp slot count\nmodels:\n  - endpoint: \"http://localhost:8080\"   # model name auto-detected from this endpoint's /v1/models\n", a.host, token)
 	w.Header().Set("Content-Type", "application/x-yaml")
 	w.Header().Set("Content-Disposition", `attachment; filename="config.yaml"`)
 	fmt.Fprint(w, yaml)

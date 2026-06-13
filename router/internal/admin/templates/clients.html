@@ -91,8 +91,17 @@
 </div>
 {{end}}
 <div class="card">
+  <div class="card-title">Worker connection URL</div>
+  <p class="field-desc" style="margin-bottom:12px;">Each worker (llmesh-client or llmesh-shim) connects out to the router at this WebSocket URL. Put it in the worker's <code>config.yaml</code> as <code>router_url</code>, along with a client token from below.</p>
+  <div class="endpoint-display">
+    <span class="endpoint-url" id="ws-endpoint-val">wss://{{.Host}}/ws/client</span>
+    <button class="btn-copy" data-copy="wss://{{.Host}}/ws/client" title="Copy worker URL">&#10697;</button>
+  </div>
+  <p class="field-desc" style="margin-top:12px;">After you generate a token, download a ready-to-run <code>config.yaml</code> with this URL and token pre-filled. Setup reference is on the <a href="/portal/help">Help</a> page.</p>
+</div>
+<div class="card">
   <div class="card-title">Add client</div>
-  <p class="field-desc" style="margin-bottom:14px;">A client token authenticates a worker &mdash; either a <strong>llmesh-client</strong> (llama.cpp node) or <strong>llmesh-shim</strong> (cloud API or command adapter) &mdash; to the router. Use it in the worker's config file so the router knows this worker is allowed to receive jobs.</p>
+  <p class="field-desc" style="margin-bottom:14px;">A client token authenticates a worker &mdash; either a <strong>llmesh-client</strong> (llama.cpp node) or <strong>llmesh-shim</strong> (cloud API or command adapter) &mdash; to the router. Use it in the worker's config file so the router knows this worker is allowed to receive jobs. Tokens begin with <code>ct-</code>.</p>
   <form method="POST" action="/portal/clients">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <div class="form-row">
