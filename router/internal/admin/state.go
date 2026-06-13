@@ -171,6 +171,14 @@ func createSchema(db *sql.DB) error {
 			token    TEXT NOT NULL DEFAULT '',
 			priority TEXT NOT NULL DEFAULT 'normal'
 		);
+		CREATE TABLE IF NOT EXISTS audit_log (
+			id        INTEGER PRIMARY KEY AUTOINCREMENT,
+			at        TEXT NOT NULL,
+			actor     TEXT NOT NULL DEFAULT '',
+			action    TEXT NOT NULL DEFAULT '',
+			target    TEXT NOT NULL DEFAULT '',
+			ip        TEXT NOT NULL DEFAULT ''
+		);
 	`)
 	if err != nil {
 		return err
@@ -179,6 +187,50 @@ func createSchema(db *sql.DB) error {
 	// SQLite returns an error if the column already exists; ignore it.
 	_, _ = db.Exec(`ALTER TABLE upstream_routers ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'`)
 	return nil
+}
+
+// AuditEntry is a single entry in the persistent audit log.
+type AuditEntry struct {
+	ID     int64     `json:"id"`
+	At     time.Time `json:"at"`
+	Actor  string    `json:"actor"`
+	Action string    `json:"action"`
+	Target string    `json:"target"`
+	IP     string    `json:"ip"`
+}
+
+// RecordAudit appends an entry to the audit log. Errors are silently dropped
+// since audit logging must never break the action that triggered it.
+func (s *State) RecordAudit(actor, action, target, ip string) {
+	_, _ = s.db.Exec(
+		`INSERT INTO audit_log (at, actor, action, target, ip) VALUES (?, ?, ?, ?, ?)`,
+		time.Now().UTC().Format(time.RFC3339), actor, action, target, ip,
+	)
+}
+
+// GetAuditLog returns up to limit entries from the audit log, newest first.
+func (s *State) GetAuditLog(limit int) ([]AuditEntry, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	rows, err := s.db.Query(
+		`SELECT id, at, actor, action, target, ip FROM audit_log ORDER BY id DESC LIMIT ?`, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AuditEntry
+	for rows.Next() {
+		var e AuditEntry
+		var atStr string
+		if err := rows.Scan(&e.ID, &atStr, &e.Actor, &e.Action, &e.Target, &e.IP); err != nil {
+			continue
+		}
+		e.At, _ = time.Parse(time.RFC3339, atStr)
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 // maybeMigrateJSON imports data from a legacy state.json if the DB has no users yet.
@@ -640,8 +692,13 @@ func (s *State) AddUpstreamRouter(r UpstreamRouter) error {
 		return fmt.Errorf("url must start with http:// or https://")
 	}
 	r.URL = strings.ToLower(strings.TrimRight(r.URL, "/"))
-	if r.Priority == "" {
+	switch r.Priority {
+	case "", "normal":
 		r.Priority = "normal"
+	case "high", "low":
+		// valid
+	default:
+		return fmt.Errorf("priority must be one of: high, normal, low")
 	}
 	_, err = s.db.Exec(
 		`INSERT INTO upstream_routers (url, name, token, priority) VALUES (?, ?, ?, ?)`,
