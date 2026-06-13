@@ -12,7 +12,9 @@ import (
 )
 
 type ModelConfig struct {
-	Name         string `yaml:"name"`
+	// Name is optional. When omitted, the client auto-detects the model name
+	// from the endpoint's /v1/models response at registration time.
+	Name         string `yaml:"name,omitempty"`
 	Endpoint     string `yaml:"endpoint"`
 	ChatTemplate string `yaml:"chat_template,omitempty"` // overrides model's built-in Jinja template
 }
@@ -21,7 +23,7 @@ type Config struct {
 	RouterURL             string        `yaml:"router_url"`
 	RouterToken           string        `yaml:"router_token"`
 	// MaxConcurrent caps the number of simultaneous jobs accepted from the router.
-	// Set to 0 (or omit) to auto-detect from llama.cpp's total_slots on each connection.
+	// When 0 (omitted), auto-detected from the llama.cpp total_slots field (min 1).
 	MaxConcurrent         int           `yaml:"max_concurrent"`
 	Models                []ModelConfig `yaml:"models"`
 	MetricsAddr           string        `yaml:"metrics_addr"`            // e.g. ":9091"; empty = disabled
@@ -35,6 +37,7 @@ type Config struct {
 	AutoUpdate bool `yaml:"auto_update"`
 
 	detectedTemplates sync.Map // model name → chat_template detected from /props; not from config file
+	resolvedNames     sync.Map // endpoint → model name auto-detected from /v1/models when config name is omitted
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -68,18 +71,35 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("max_concurrent must be >= 0")
 	}
 	for i, m := range c.Models {
-		if strings.TrimSpace(m.Name) == "" {
-			return fmt.Errorf("models[%d]: name is required", i)
-		}
+		// Name is optional — when omitted it is auto-detected from the endpoint.
 		if strings.TrimSpace(m.Endpoint) == "" {
-			return fmt.Errorf("models[%d] (%s): endpoint is required", i, m.Name)
+			return fmt.Errorf("models[%d]: endpoint is required", i)
 		}
 		eu, err := url.ParseRequestURI(m.Endpoint)
 		if err != nil || (eu.Scheme != "http" && eu.Scheme != "https") {
-			return fmt.Errorf("models[%d] (%s): endpoint must start with http:// or https://", i, m.Name)
+			return fmt.Errorf("models[%d]: endpoint must start with http:// or https://", i)
 		}
 	}
 	return nil
+}
+
+// effectiveName returns the model's configured name, or the name auto-detected
+// from its endpoint when no name was configured. Returns "" if neither is known.
+func (c *Config) effectiveName(m ModelConfig) string {
+	if m.Name != "" {
+		return m.Name
+	}
+	if v, ok := c.resolvedNames.Load(m.Endpoint); ok {
+		return v.(string)
+	}
+	return ""
+}
+
+// SetResolvedName records a model name auto-detected from the given endpoint.
+func (c *Config) SetResolvedName(endpoint, name string) {
+	if name != "" {
+		c.resolvedNames.Store(endpoint, name)
+	}
 }
 
 // SetDetectedTemplate stores a chat template auto-detected from llama.cpp's /props
@@ -94,7 +114,7 @@ func (c *Config) SetDetectedTemplate(model, template string) {
 // Returns "" if the model is not configured.
 func (c *Config) EndpointFor(model string) string {
 	for _, m := range c.Models {
-		if m.Name == model {
+		if en := c.effectiveName(m); en != "" && en == model {
 			return m.Endpoint
 		}
 	}
@@ -122,7 +142,7 @@ func (c *Config) KeepAliveInterval() time.Duration {
 // Returns "" if neither is set (llama.cpp will use the model's built-in template).
 func (c *Config) ChatTemplateFor(model string) string {
 	for _, m := range c.Models {
-		if m.Name == model && m.ChatTemplate != "" {
+		if en := c.effectiveName(m); en != "" && en == model && m.ChatTemplate != "" {
 			return m.ChatTemplate
 		}
 	}

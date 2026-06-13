@@ -53,16 +53,30 @@ func (p *clientModelProvider) Models(ctx context.Context) ([]types.ModelInfo, in
 	models := make([]types.ModelInfo, 0, len(p.cfg.Models))
 	totalSlots := 0
 	for _, m := range p.cfg.Models {
-		lc := llamacpp.New(p.cfg.EndpointFor(m.Name))
+		lc := llamacpp.New(m.Endpoint)
+
+		// Resolve the model name: explicit config name wins; otherwise ask the
+		// endpoint what model it serves via /v1/models.
+		name := m.Name
+		if name == "" {
+			name = lc.ProbeModelID(ctx)
+			if name == "" {
+				log.Warn("ws: could not auto-detect model name from endpoint, skipping", "endpoint", m.Endpoint)
+				continue
+			}
+			p.cfg.SetResolvedName(m.Endpoint, name)
+			log.Info("ws: auto-detected model name", "endpoint", m.Endpoint, "model", name)
+		}
+
 		props := lc.ProbeProps(ctx)
-		models = append(models, types.ModelInfo{Name: m.Name, ContextSize: props.NCtx, ContextTrain: props.NCtxTrain})
+		models = append(models, types.ModelInfo{Name: name, ContextSize: props.NCtx, ContextTrain: props.NCtxTrain})
 		if props.NCtx > 0 {
-			log.Info("ws: model props", "model", m.Name,
+			log.Info("ws: model props", "model", name,
 				"context_size", props.NCtx, "context_train", props.NCtxTrain,
 				"total_slots", props.TotalSlots)
 		}
 		if props.ChatTemplate != "" {
-			p.cfg.SetDetectedTemplate(m.Name, props.ChatTemplate)
+			p.cfg.SetDetectedTemplate(name, props.ChatTemplate)
 		}
 		totalSlots += props.TotalSlots
 	}

@@ -89,6 +89,7 @@ type ClientTokensPage struct {
 type ConnectedClientRow struct {
 	Name          string
 	Version       string
+	IsRouter      bool // true when Version starts with "router/" (downstream router, not a genuine client)
 	Models        string
 	InFlight      int
 	MaxConcurrent int
@@ -139,6 +140,7 @@ type ClientTokenRow struct {
 	StatusClass string // CSS badge class
 	StatusLabel string // display label with symbol
 	LastSeen    string
+	IsRouter    bool // true when any live connection is a downstream router (version "router/…")
 	Models      []ModelWithAliases
 	ModelSlots  []ModelSlotRow // per-model owner-slot configuration
 	Connections []ConnectedClientRow
@@ -460,9 +462,14 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, r *http.Request, u Use
 						CanCancel:       isAdmin || rec.Req.Owner == u.Username || isTokenOwner,
 					})
 				}
+				isRouter := strings.HasPrefix(ci.Version, "router/")
+				if isRouter {
+					row.IsRouter = true
+				}
 				row.Connections = append(row.Connections, ConnectedClientRow{
 					Name:          ci.Name,
 					Version:       ci.Version,
+					IsRouter:      isRouter,
 					Models:        strings.Join(ci.Models, ", "),
 					InFlight:      ci.InFlight,
 					MaxConcurrent: ci.MaxConcurrent,
