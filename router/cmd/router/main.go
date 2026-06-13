@@ -467,6 +467,13 @@ func main() {
 			}
 		}
 
+		// Drain in-flight requests (already dispatched to workers). This sends a
+		// terminal error chunk to every waiting SSE handler so they close their
+		// streams immediately rather than blocking srv.Shutdown until the 30s timeout.
+		if n := store.DrainAll(); n > 0 {
+			log.Info("shutdown: terminating active SSE streams", "count", n)
+		}
+
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			log.Error("shutdown error", "error", err)
 		}
