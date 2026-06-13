@@ -88,3 +88,30 @@ func (s *Store) Delete(requestID string) {
 		close(ch)
 	}
 }
+
+// DrainAll sends a terminal error chunk to every registered handler then closes
+// all channels. Calling this during shutdown unblocks all waiting SSE handlers
+// so the HTTP server can drain cleanly. Returns the number of entries drained.
+func (s *Store) DrainAll() int {
+	s.mu.Lock()
+	snapshot := make(map[string]chan types.ChunkMsg, len(s.channels))
+	for id, ch := range s.channels {
+		snapshot[id] = ch
+	}
+	s.channels = make(map[string]chan types.ChunkMsg)
+	s.mu.Unlock()
+
+	for id, ch := range snapshot {
+		select {
+		case ch <- types.ChunkMsg{
+			Type:         "chunk",
+			RequestID:    id,
+			Done:         true,
+			FinishReason: "error",
+		}:
+		default:
+		}
+		close(ch)
+	}
+	return len(snapshot)
+}

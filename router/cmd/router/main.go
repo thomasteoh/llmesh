@@ -359,11 +359,21 @@ func main() {
 			scheme = "http"
 		}
 		baseURL := scheme + "://" + r.Host
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
+		binaryName := fmt.Sprintf("llmesh-client-%s-%s", goos, goarch)
+		m := map[string]string{
 			"version": version,
-			"url":     fmt.Sprintf("%s/downloads/llmesh-client-%s-%s", baseURL, goos, goarch),
-		})
+			"url":     baseURL + "/downloads/" + binaryName,
+		}
+		// Include SHA-256 if a sidecar file exists alongside the binary.
+		// The file may contain just the hex digest or sha256sum(1) format (<hash>  <name>).
+		if raw, err := os.ReadFile("/downloads/" + binaryName + ".sha256"); err == nil {
+			hash := strings.TrimSpace(strings.Fields(string(raw))[0])
+			if len(hash) == 64 {
+				m["sha256"] = hash
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(m)
 	})
 	mux.Handle("/downloads/", http.StripPrefix("/downloads/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Disposition", "attachment")
@@ -387,7 +397,29 @@ func main() {
 		h.ServeWS(w, r, ct.Name, ct.Owner, token, ct.OwnerSlots)
 	})
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, `{"status":"ok","version":%q}`+"\n", version)
+		upstreamRouters := adminHandler.State().GetUpstreamRouters()
+		type upstreamStatus struct {
+			URL       string `json:"url"`
+			Name      string `json:"name,omitempty"`
+			Connected bool   `json:"connected"`
+		}
+		upstreams := make([]upstreamStatus, len(upstreamRouters))
+		for i, u := range upstreamRouters {
+			upstreams[i] = upstreamStatus{
+				URL:       u.URL,
+				Name:      u.Name,
+				Connected: conn.Connected(u.URL),
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":      "ok",
+			"version":     version,
+			"clients":     h.ActiveClientCount(),
+			"queue_depth": q.Len(),
+			"active_jobs": len(h.AllInFlightJobs()),
+			"upstreams":   upstreams,
+		})
 	})
 	mux.HandleFunc("/metrics", metricsHandler(apiHandler, q, h, reqStats, h.Latency))
 	mux.Handle("/portal/", adminHandler)
@@ -433,6 +465,13 @@ func main() {
 					FinishReason: "error",
 				})
 			}
+		}
+
+		// Drain in-flight requests (already dispatched to workers). This sends a
+		// terminal error chunk to every waiting SSE handler so they close their
+		// streams immediately rather than blocking srv.Shutdown until the 30s timeout.
+		if n := store.DrainAll(); n > 0 {
+			log.Info("shutdown: terminating active SSE streams", "count", n)
 		}
 
 		if err := srv.Shutdown(shutdownCtx); err != nil {
