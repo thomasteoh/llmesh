@@ -2,7 +2,9 @@ package client
 
 import (
 	"fmt"
+	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -44,7 +46,40 @@ func LoadConfig(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
 	return &cfg, nil
+}
+
+// Validate checks that all required fields are present and well-formed.
+func (c *Config) Validate() error {
+	if c.RouterURL == "" {
+		return fmt.Errorf("router_url is required")
+	}
+	u, err := url.ParseRequestURI(c.RouterURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return fmt.Errorf("router_url must start with http:// or https://")
+	}
+	if c.RouterToken == "" {
+		return fmt.Errorf("router_token is required")
+	}
+	if c.MaxConcurrent < 0 {
+		return fmt.Errorf("max_concurrent must be >= 0")
+	}
+	for i, m := range c.Models {
+		if strings.TrimSpace(m.Name) == "" {
+			return fmt.Errorf("models[%d]: name is required", i)
+		}
+		if strings.TrimSpace(m.Endpoint) == "" {
+			return fmt.Errorf("models[%d] (%s): endpoint is required", i, m.Name)
+		}
+		eu, err := url.ParseRequestURI(m.Endpoint)
+		if err != nil || (eu.Scheme != "http" && eu.Scheme != "https") {
+			return fmt.Errorf("models[%d] (%s): endpoint must start with http:// or https://", i, m.Name)
+		}
+	}
+	return nil
 }
 
 // SetDetectedTemplate stores a chat template auto-detected from llama.cpp's /props
