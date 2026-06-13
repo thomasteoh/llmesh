@@ -23,7 +23,7 @@ type Config struct {
 	RouterURL             string        `yaml:"router_url"`
 	RouterToken           string        `yaml:"router_token"`
 	// MaxConcurrent caps the number of simultaneous jobs accepted from the router.
-	// Set to 0 (or omit) to auto-detect from llama.cpp's total_slots on each connection.
+	// Defaults to 1 when omitted; set a higher value to allow more parallel jobs.
 	MaxConcurrent         int           `yaml:"max_concurrent"`
 	Models                []ModelConfig `yaml:"models"`
 	MetricsAddr           string        `yaml:"metrics_addr"`            // e.g. ":9091"; empty = disabled
@@ -51,6 +51,10 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
+	}
+	// max_concurrent defaults to 1 when omitted; override in config.
+	if cfg.MaxConcurrent == 0 {
+		cfg.MaxConcurrent = 1
 	}
 	return &cfg, nil
 }

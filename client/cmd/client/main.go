@@ -35,7 +35,7 @@ func main() {
 Config file fields (YAML):
   router_url      wss:// URL of the llmesh router  (required)
   router_token    client token from the admin UI   (required)
-  max_concurrent  parallel jobs limit              (default: 4)
+  max_concurrent  parallel jobs limit              (default: 1)
   auto_update     enable hourly self-update checks (default: false)
   models:
     - endpoint:   llama.cpp base URL (e.g. http://localhost:8080)  (required)

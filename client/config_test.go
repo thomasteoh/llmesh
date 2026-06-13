@@ -1,6 +1,8 @@
 package client
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -52,6 +54,37 @@ func TestConfigValidate(t *testing.T) {
 				t.Error("expected error, got nil")
 			}
 		})
+	}
+}
+
+func TestLoadConfig_MaxConcurrentDefault(t *testing.T) {
+	write := func(t *testing.T, body string) string {
+		t.Helper()
+		p := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(p, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	base := "router_url: http://localhost:8080\nrouter_token: tok\nmodels:\n  - endpoint: http://localhost:8081\n"
+
+	// Omitted → defaults to 1.
+	cfg, err := LoadConfig(write(t, base))
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.MaxConcurrent != 1 {
+		t.Errorf("default max_concurrent = %d, want 1", cfg.MaxConcurrent)
+	}
+
+	// Explicit value is preserved.
+	cfg, err = LoadConfig(write(t, base+"max_concurrent: 8\n"))
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.MaxConcurrent != 8 {
+		t.Errorf("explicit max_concurrent = %d, want 8", cfg.MaxConcurrent)
 	}
 }
 
