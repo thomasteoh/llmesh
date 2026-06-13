@@ -57,7 +57,7 @@ func TestConfigValidate(t *testing.T) {
 	}
 }
 
-func TestLoadConfig_MaxConcurrentDefault(t *testing.T) {
+func TestLoadConfig_MaxConcurrent(t *testing.T) {
 	write := func(t *testing.T, body string) string {
 		t.Helper()
 		p := filepath.Join(t.TempDir(), "config.yaml")
@@ -69,13 +69,13 @@ func TestLoadConfig_MaxConcurrentDefault(t *testing.T) {
 
 	base := "router_url: http://localhost:8080\nrouter_token: tok\nmodels:\n  - endpoint: http://localhost:8081\n"
 
-	// Omitted → defaults to 1.
+	// Omitted → 0 (auto-detect from total_slots at connect time).
 	cfg, err := LoadConfig(write(t, base))
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if cfg.MaxConcurrent != 1 {
-		t.Errorf("default max_concurrent = %d, want 1", cfg.MaxConcurrent)
+	if cfg.MaxConcurrent != 0 {
+		t.Errorf("default max_concurrent = %d, want 0 (auto-detect)", cfg.MaxConcurrent)
 	}
 
 	// Explicit value is preserved.
