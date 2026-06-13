@@ -640,8 +640,13 @@ func (s *State) AddUpstreamRouter(r UpstreamRouter) error {
 		return fmt.Errorf("url must start with http:// or https://")
 	}
 	r.URL = strings.ToLower(strings.TrimRight(r.URL, "/"))
-	if r.Priority == "" {
+	switch r.Priority {
+	case "", "normal":
 		r.Priority = "normal"
+	case "high", "low":
+		// valid
+	default:
+		return fmt.Errorf("priority must be one of: high, normal, low")
 	}
 	_, err = s.db.Exec(
 		`INSERT INTO upstream_routers (url, name, token, priority) VALUES (?, ?, ?, ?)`,
