@@ -89,6 +89,36 @@ type Props struct {
 	ChatTemplate string // chat_template: Jinja template embedded in the model
 }
 
+// ProbeModelID fetches /v1/models and returns the id of the first model the
+// endpoint advertises (llama.cpp serves one model per process). Returns "" on
+// any error or if no model is advertised.
+func (c *Client) ProbeModelID(ctx context.Context) string {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint+"/v1/models", nil)
+	if err != nil {
+		return ""
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	var out struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return ""
+	}
+	if len(out.Data) == 0 {
+		return ""
+	}
+	return out.Data[0].ID
+}
+
 // ProbeProps fetches /props from the llama.cpp endpoint and returns capability
 // information. Returns zero-value Props on any error.
 func (c *Client) ProbeProps(ctx context.Context) Props {

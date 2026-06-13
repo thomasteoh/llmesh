@@ -38,8 +38,9 @@ Config file fields (YAML):
   max_concurrent  parallel jobs limit              (default: 4)
   auto_update     enable hourly self-update checks (default: false)
   models:
-    - name:       model identifier (e.g. llama3.2:3b)
-      endpoint:   llama.cpp base URL (e.g. http://localhost:8080)
+    - endpoint:   llama.cpp base URL (e.g. http://localhost:8080)  (required)
+      name:       model identifier (e.g. llama3.2:3b)
+                  optional — auto-detected from the endpoint's /v1/models if omitted
 `)
 	}
 	flag.Parse()
