@@ -129,7 +129,7 @@ func (a *Admin) registerRoutes() {
 	mux.HandleFunc("/portal/setup", a.requireRateLimit(a.handleSetup, 5))
 
 	// Logout requires auth + CSRF
-	mux.HandleFunc("/portal/logout", a.requireAuth(a.postWithCSRF(a.handleLogout)))
+	mux.HandleFunc("/portal/logout", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleLogout)), 20))
 
 	// Protected pages
 	mux.HandleFunc("/portal/", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
@@ -147,25 +147,25 @@ func (a *Admin) registerRoutes() {
 
 	mux.HandleFunc("/portal/api-keys", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
-			a.postWithCSRF(a.handleAPIKeyCreate)(w, r)
+			a.requireRateLimit(a.postWithCSRF(a.handleAPIKeyCreate), 20)(w, r)
 		} else {
 			a.handleAPIKeys(w, r)
 		}
 	}))
-	mux.HandleFunc("/portal/api-keys/revoke", a.requireAuth(a.postWithCSRF(a.handleAPIKeyRevoke)))
-	mux.HandleFunc("/portal/api-keys/priority", a.requireAdmin(a.postWithCSRF(a.handleAPIKeyPriority)))
-	mux.HandleFunc("/portal/api-keys/max-concurrent", a.requireAdmin(a.postWithCSRF(a.handleAPIKeyMaxConcurrent)))
+	mux.HandleFunc("/portal/api-keys/revoke", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleAPIKeyRevoke)), 20))
+	mux.HandleFunc("/portal/api-keys/priority", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleAPIKeyPriority)), 20))
+	mux.HandleFunc("/portal/api-keys/max-concurrent", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleAPIKeyMaxConcurrent)), 20))
 
 	mux.HandleFunc("/portal/clients", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
-			a.postWithCSRF(a.handleClientTokenCreate)(w, r)
+			a.requireRateLimit(a.postWithCSRF(a.handleClientTokenCreate), 20)(w, r)
 		} else {
 			a.handleClientTokens(w, r)
 		}
 	}))
-	mux.HandleFunc("/portal/clients/revoke", a.requireAuth(a.postWithCSRF(a.handleClientTokenRevoke)))
-	mux.HandleFunc("/portal/clients/update", a.requireAuth(a.postWithCSRF(a.handleClientUpdate)))
-	mux.HandleFunc("/portal/clients/owner-slots", a.requireAuth(a.postWithCSRF(a.handleClientTokenOwnerSlots)))
+	mux.HandleFunc("/portal/clients/revoke", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleClientTokenRevoke)), 20))
+	mux.HandleFunc("/portal/clients/update", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleClientUpdate)), 20))
+	mux.HandleFunc("/portal/clients/owner-slots", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleClientTokenOwnerSlots)), 20))
 	mux.HandleFunc("/portal/clients/config", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -181,24 +181,24 @@ func (a *Admin) registerRoutes() {
 		a.handleShimConfig(w, r)
 	}))
 
-	mux.HandleFunc("/portal/model-aliases", a.requireAdmin(a.postWithCSRF(a.handleModelAliasCreate)))
-	mux.HandleFunc("/portal/model-aliases/delete", a.requireAdmin(a.postWithCSRF(a.handleModelAliasDelete)))
+	mux.HandleFunc("/portal/model-aliases", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleModelAliasCreate)), 20))
+	mux.HandleFunc("/portal/model-aliases/delete", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleModelAliasDelete)), 20))
 
-	mux.HandleFunc("/portal/jobs/cancel", a.requireAuth(a.postWithCSRF(a.handleJobCancel)))
-	mux.HandleFunc("/portal/queue/cancel", a.requireAdmin(a.postWithCSRF(a.handleQueueCancel)))
+	mux.HandleFunc("/portal/jobs/cancel", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleJobCancel)), 20))
+	mux.HandleFunc("/portal/queue/cancel", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleQueueCancel)), 20))
 
 	// Help page.
 	mux.HandleFunc("/portal/help", a.requireAuth(a.handleHelp))
 
 	mux.HandleFunc("/portal/settings", a.requireAuth(a.handleSettings))
-	mux.HandleFunc("/portal/settings/password", a.requireAuth(a.postWithCSRF(a.handleChangePassword)))
-	mux.HandleFunc("/portal/settings/users", a.requireAdmin(a.postWithCSRF(a.handleAddUser)))
-	mux.HandleFunc("/portal/settings/users/disable", a.requireAdmin(a.postWithCSRF(a.handleUserDisable)))
-	mux.HandleFunc("/portal/settings/users/enable", a.requireAdmin(a.postWithCSRF(a.handleUserEnable)))
-	mux.HandleFunc("/portal/settings/users/promote", a.requireAdmin(a.postWithCSRF(a.handleUserPromote)))
-	mux.HandleFunc("/portal/settings/users/demote", a.requireAdmin(a.postWithCSRF(a.handleUserDemote)))
-	mux.HandleFunc("/portal/settings/upstream/add", a.requireAdmin(a.postWithCSRF(a.handleUpstreamAdd)))
-	mux.HandleFunc("/portal/settings/upstream/remove", a.requireAdmin(a.postWithCSRF(a.handleUpstreamRemove)))
+	mux.HandleFunc("/portal/settings/password", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleChangePassword)), 10))
+	mux.HandleFunc("/portal/settings/users", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleAddUser)), 20))
+	mux.HandleFunc("/portal/settings/users/disable", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleUserDisable)), 20))
+	mux.HandleFunc("/portal/settings/users/enable", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleUserEnable)), 20))
+	mux.HandleFunc("/portal/settings/users/promote", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleUserPromote)), 20))
+	mux.HandleFunc("/portal/settings/users/demote", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleUserDemote)), 20))
+	mux.HandleFunc("/portal/settings/upstream/add", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleUpstreamAdd)), 20))
+	mux.HandleFunc("/portal/settings/upstream/remove", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleUpstreamRemove)), 20))
 
 	// Dashboard JSON API
 	mux.HandleFunc("/portal/api/dashboard", a.requireAuth(a.handleDashboardJSON))
