@@ -209,6 +209,9 @@ func (a *Admin) registerRoutes() {
 	// Logs JSON API (admin-only)
 	mux.HandleFunc("/portal/api/logs", a.requireAdmin(a.handleLogsJSON))
 
+	// Audit log JSON API (admin-only)
+	mux.HandleFunc("/portal/api/audit", a.requireAdmin(a.handleAuditLogJSON))
+
 	a.mux = mux
 }
 
