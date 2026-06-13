@@ -3,6 +3,7 @@ package admin
 import (
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -12,11 +13,10 @@ import (
 
 // rateLimiter implements a per-IP token bucket rate limiter for admin endpoints.
 type rateLimiter struct {
-	mu       sync.Mutex
-	clients  map[string]*clientEntry
-	limiter  *rate.Limiter
-	window   time.Duration
-	cleanup  time.Duration
+	mu      sync.Mutex
+	clients map[string]*clientEntry
+	window  time.Duration
+	cleanup time.Duration
 }
 
 type clientEntry struct {
@@ -32,19 +32,26 @@ func newRateLimiter(window time.Duration, cleanupEvery time.Duration) *rateLimit
 	}
 }
 
-// Allow checks if the given IP is allowed to make a request at the specified limit.
-// Returns false if the rate limit is exceeded.
+// Allow reports whether a request from ip is permitted under the given per-window
+// limit. Buckets are keyed by (ip, limit) so endpoints with different limits get
+// independent budgets — e.g. the login page's 5/min does not share a bucket with
+// the 20/min admin mutations. The burst equals the limit, so a client may make
+// up to `limit` requests immediately before the bucket refills.
 func (rl *rateLimiter) Allow(ip string, limit float64) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	entry, ok := rl.clients[ip]
+	key := ip + ":" + strconv.FormatFloat(limit, 'f', -1, 64)
+	entry, ok := rl.clients[key]
 	if !ok {
-		rl.clients[ip] = &clientEntry{
-			limiter:  rate.NewLimiter(rate.Limit(limit/rl.window.Seconds()), 1),
-			lastSeen: time.Now(),
+		burst := int(limit)
+		if burst < 1 {
+			burst = 1
 		}
-		return true
+		entry = &clientEntry{
+			limiter: rate.NewLimiter(rate.Limit(limit/rl.window.Seconds()), burst),
+		}
+		rl.clients[key] = entry
 	}
 
 	entry.lastSeen = time.Now()
