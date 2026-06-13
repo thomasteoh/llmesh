@@ -38,8 +38,9 @@
   <td colspan="4" style="padding:0;">
     <div class="client-connections">
       {{range .Connections}}
-      <div class="conn-row">
+      <div class="conn-row{{if .IsRouter}} conn-row-router{{end}}">
         <span class="conn-name">{{.Name}}</span>
+        {{if .IsRouter}}<span class="badge muted-badge" title="Downstream router — not a client binary">router</span>{{end}}
         {{if .Version}}<span class="conn-version">{{.Version}}</span>{{end}}
         <span class="conn-models" title="{{.Models}}">{{.Models}}</span>
         <span class="conn-capacity">{{.InFlight}} / {{.MaxConcurrent}}</span>
@@ -136,11 +137,15 @@
             <td data-label="Status"><span class="badge {{.StatusClass}}">{{.StatusLabel}}</span></td>
             <td data-label="Last seen" class="muted">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
             <td class="cell-actions">
+              {{if .IsRouter}}
+              <span class="badge muted-badge" style="margin-right:4px;" title="Downstream router — update not applicable">router</span>
+              {{else}}
               <form method="POST" action="/portal/clients/update" class="form-inline" onsubmit="return confirm('Trigger in-place update for connected clients with this token?')">
                 <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
                 <input type="hidden" name="token" value="{{.Token}}">
                 <button type="submit" class="btn-secondary btn-xs" title="Trigger update">&#8593;</button>
               </form>
+              {{end}}
               <form method="POST" action="/portal/clients/revoke" class="form-inline" onsubmit="return confirm('Revoke this client token? The client will be disconnected and cannot reconnect.')">
                 <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
                 <input type="hidden" name="token" value="{{.Token}}">
@@ -178,11 +183,15 @@
         <td data-label="Status"><span class="badge {{.StatusClass}}">{{.StatusLabel}}</span></td>
         <td data-label="Last seen" class="muted">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
         <td class="cell-actions">
+          {{if .IsRouter}}
+          <span class="badge muted-badge" style="margin-right:4px;" title="Downstream router — update not applicable">router</span>
+          {{else}}
           <form method="POST" action="/portal/clients/update" class="form-inline" onsubmit="return confirm('Trigger in-place update for connected clients with this token?')">
             <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
             <input type="hidden" name="token" value="{{.Token}}">
             <button type="submit" class="btn-secondary btn-xs" title="Trigger update">&#8593;</button>
           </form>
+          {{end}}
           <form method="POST" action="/portal/clients/revoke" class="form-inline" onsubmit="return confirm('Revoke this client token? The client will be disconnected and cannot reconnect.')">
             <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
             <input type="hidden" name="token" value="{{.Token}}">
