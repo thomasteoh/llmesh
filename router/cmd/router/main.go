@@ -359,11 +359,21 @@ func main() {
 			scheme = "http"
 		}
 		baseURL := scheme + "://" + r.Host
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
+		binaryName := fmt.Sprintf("llmesh-client-%s-%s", goos, goarch)
+		m := map[string]string{
 			"version": version,
-			"url":     fmt.Sprintf("%s/downloads/llmesh-client-%s-%s", baseURL, goos, goarch),
-		})
+			"url":     baseURL + "/downloads/" + binaryName,
+		}
+		// Include SHA-256 if a sidecar file exists alongside the binary.
+		// The file may contain just the hex digest or sha256sum(1) format (<hash>  <name>).
+		if raw, err := os.ReadFile("/downloads/" + binaryName + ".sha256"); err == nil {
+			hash := strings.TrimSpace(strings.Fields(string(raw))[0])
+			if len(hash) == 64 {
+				m["sha256"] = hash
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(m)
 	})
 	mux.Handle("/downloads/", http.StripPrefix("/downloads/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Disposition", "attachment")

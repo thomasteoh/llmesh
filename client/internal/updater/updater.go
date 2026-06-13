@@ -8,6 +8,8 @@ package updater
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -29,6 +32,7 @@ const (
 type manifest struct {
 	Version   string `json:"version"` // e.g. "v1.2.3"
 	BinaryURL string `json:"url"`     // direct download link for the new binary
+	SHA256    string `json:"sha256"`  // hex-encoded SHA-256 of the binary; verified when present
 }
 
 // Run starts the update check loop. Blocks until ctx is cancelled.
@@ -154,13 +158,26 @@ func applyUpdate(ctx context.Context, m *manifest, isIdle func() bool, log *slog
 		return fmt.Errorf("download server returned %d", resp.StatusCode)
 	}
 
-	if _, err := io.Copy(tmp, resp.Body); err != nil {
+	h := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(tmp, h), resp.Body); err != nil {
 		tmp.Close()
 		return fmt.Errorf("write binary: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp file: %w", err)
 	}
+
+	if m.SHA256 != "" {
+		got := hex.EncodeToString(h.Sum(nil))
+		want := strings.ToLower(strings.TrimSpace(m.SHA256))
+		if got != want {
+			return fmt.Errorf("SHA-256 mismatch: got %s, want %s", got, want)
+		}
+		log.Info("updater: binary integrity verified", "sha256", got)
+	} else {
+		log.Warn("updater: manifest has no sha256 field — skipping integrity check")
+	}
+
 	if err := os.Chmod(tmpPath, 0755); err != nil {
 		return fmt.Errorf("chmod binary: %w", err)
 	}
