@@ -24,6 +24,10 @@ var LeaseDuration = 20 * time.Minute
 // MaxAttempts aliases types.MaxAttempts for backward compatibility within this package.
 const MaxAttempts = types.MaxAttempts
 
+// maxReadBytes caps incoming WebSocket frame size to prevent a malicious client
+// from sending a single oversized message that OOMs the router process.
+const maxReadBytes = 16 << 20 // 16 MiB
+
 // isValidOrigin validates the Origin header against the Host header.
 // It allows empty origin (non-browser clients) and host-based matching
 // (scheme+host from Origin must match Host).
@@ -204,6 +208,7 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token
 		h.log.Error("hub: ws upgrade error", "error", err)
 		return
 	}
+	conn.SetReadLimit(maxReadBytes)
 
 	client := &Client{
 		ID:         uuid.New().String(),

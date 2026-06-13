@@ -145,6 +145,7 @@ func (c *Conn) connect(outerCtx context.Context) error {
 	if err != nil {
 		return err
 	}
+	conn.SetReadLimit(16 << 20) // 16 MiB — prevents OOM from oversized router frames
 
 	// connCtx is cancelled when this connection closes or graceful shutdown completes.
 	// Intentionally not derived from outerCtx so we control when job goroutines are cancelled.
