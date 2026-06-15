@@ -216,7 +216,7 @@ func fmtCount(n int64) string {
 
 func main() {
 	configPath := flag.String("config", "/config.yaml", "path to config file")
-	statePath := flag.String("state", "/state.json", "path to state.json")
+	statePath := flag.String("state", "/state.json", "path to the state database (SQLite); a legacy state.json at this path is migrated automatically")
 	flag.Parse()
 
 	cfg, err := routerPkg.LoadConfig(*configPath)
