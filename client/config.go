@@ -61,8 +61,8 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("router_url is required")
 	}
 	u, err := url.ParseRequestURI(c.RouterURL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
-		return fmt.Errorf("router_url must start with http:// or https://")
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "ws" && u.Scheme != "wss") {
+		return fmt.Errorf("router_url must start with http://, https://, ws:// or wss://")
 	}
 	if c.RouterToken == "" {
 		return fmt.Errorf("router_token is required")
