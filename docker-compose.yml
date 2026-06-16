@@ -4,9 +4,11 @@ services:
       context: .
       dockerfile: router/Dockerfile
     image: llmesh-router
+    command: ["-state", "/data/state.db"]
     ports:
       - "53002:53002"
     volumes:
       - ./router/config.yaml:/config.yaml:ro,z
-      - ./router/state.json:/state.json:z
+      # State is an embedded SQLite database; a legacy state.json in this dir is migrated automatically.
+      - ./router/data:/data:z
     restart: unless-stopped
