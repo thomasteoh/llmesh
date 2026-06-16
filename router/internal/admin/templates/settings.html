@@ -1,11 +1,11 @@
 {{define "content"}}
 <div class="tab-container">
   <div class="tab-bar underline">
-    <button class="tab-btn active" onclick="showSettingsTab('tab-password', this)">Password</button>
+    <button class="tab-btn active" data-tab-target="tab-password" data-tab-hash>Password</button>
     {{if .IsAdmin}}
-    <button class="tab-btn" onclick="showSettingsTab('tab-users', this)">Users</button>
-    <button class="tab-btn" id="tab-btn-upstreams" onclick="showSettingsTab('tab-upstreams', this)">Upstreams</button>
-    <button class="tab-btn" onclick="showSettingsTab('tab-logs', this)">Logs</button>
+    <button class="tab-btn" data-tab-target="tab-users" data-tab-hash>Users</button>
+    <button class="tab-btn" data-tab-target="tab-upstreams" data-tab-hash>Upstreams</button>
+    <button class="tab-btn" data-tab-target="tab-logs" data-tab-hash data-tab-onactivate="logs">Logs</button>
     {{end}}
   </div>
 
@@ -16,9 +16,9 @@
         <div class="card-title">Change password</div>
         <form method="POST" action="/portal/settings/password">
           <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-          <div class="form-group" style="margin-bottom:12px;"><label>Current password</label><input name="current" type="password"></div>
-          <div class="form-group" style="margin-bottom:12px;"><label>New password</label><input name="new" type="password"></div>
-          <div class="form-group" style="margin-bottom:14px;"><label>Confirm new password</label><input name="confirm" type="password"></div>
+          <div class="form-group mb-3"><label>Current password</label><input name="current" type="password"></div>
+          <div class="form-group mb-3"><label>New password</label><input name="new" type="password"></div>
+          <div class="form-group mb-4"><label>Confirm new password</label><input name="confirm" type="password"></div>
           <button type="submit" class="btn">Update password</button>
         </form>
       </div>
@@ -28,7 +28,7 @@
   {{if .IsAdmin}}
   {{/* ── Users tab ── */}}
   <div id="tab-users" class="tab-panel">
-    <div style="margin-top:8px;">
+    <div class="mt-2">
       <div class="section-header">
         <div class="section-title">Users</div>
         <form method="POST" action="/portal/settings/users" class="inline-form">
@@ -43,19 +43,19 @@
           <thead><tr><th>Username</th><th>Role</th><th>Status</th><th></th></tr></thead>
           <tbody>
             {{range .Users}}
-            <tr{{if .Disabled}} style="opacity:0.6;"{{end}}>
+            <tr{{if .Disabled}} class="row-dim"{{end}}>
               <td>{{.Username}}{{if .IsSelf}} <span class="muted">(you)</span>{{end}}</td>
-              <td><span class="badge {{.Role}}">{{.Role}}</span></td>
-              <td><span class="badge {{if .Disabled}}disabled{{else}}active{{end}}">{{if .Disabled}}disabled{{else}}active{{end}}</span></td>
+              <td>{{template "status-badge" dict "Class" .Role "Label" .Role}}</td>
+              <td>{{if .Disabled}}{{template "status-badge" dict "Class" "disabled" "Label" "disabled"}}{{else}}{{template "status-badge" dict "Class" "active" "Label" "active"}}{{end}}</td>
               <td class="cell-actions">
                 {{if not .IsSelf}}
-                <div style="display:flex;gap:6px;justify-content:flex-end;">
+                <div class="flex gap-1 justify-end">
                   {{if .Disabled}}
-                    <form method="POST" action="/portal/settings/users/enable" class="form-inline"><input type="hidden" name="_csrf" value="{{$.CSRFToken}}"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-success">Enable</button></form>
+                    {{template "action-button" dict "Action" "/portal/settings/users/enable" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Class" "btn-success" "Label" "Enable"}}
                   {{else}}
-                    {{if eq .Role "admin"}}<form method="POST" action="/portal/settings/users/demote" class="form-inline" onsubmit="return confirm('Demote {{.Username}} from admin to member?')"><input type="hidden" name="_csrf" value="{{$.CSRFToken}}"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-secondary">Demote</button></form>{{end}}
-                    {{if eq .Role "member"}}<form method="POST" action="/portal/settings/users/promote" class="form-inline"><input type="hidden" name="_csrf" value="{{$.CSRFToken}}"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-secondary">Promote</button></form>{{end}}
-                    <form method="POST" action="/portal/settings/users/disable" class="form-inline" onsubmit="return confirm('Disable {{.Username}}? They will not be able to sign in.')"><input type="hidden" name="_csrf" value="{{$.CSRFToken}}"><input type="hidden" name="username" value="{{.Username}}"><button type="submit" class="btn-danger">Disable</button></form>
+                    {{if eq .Role "admin"}}{{template "action-button" dict "Action" "/portal/settings/users/demote" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Confirm" (printf "Demote %s from admin to member?" .Username) "Class" "btn-secondary" "Label" "Demote"}}{{end}}
+                    {{if eq .Role "member"}}{{template "action-button" dict "Action" "/portal/settings/users/promote" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Class" "btn-secondary" "Label" "Promote"}}{{end}}
+                    {{template "action-button" dict "Action" "/portal/settings/users/disable" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Confirm" (printf "Disable %s? They will not be able to sign in." .Username) "Class" "btn-danger" "Label" "Disable"}}
                   {{end}}
                 </div>
                 {{end}}
@@ -71,29 +71,29 @@
 
   {{/* ── Upstreams tab ── */}}
   <div id="tab-upstreams" class="tab-panel">
-    <div style="margin-top:8px;">
+    <div class="mt-2">
       <div class="section-header">
         <div class="section-title">Upstream routers</div>
-        <button class="btn-secondary" onclick="document.getElementById('upstream-add-form').style.display='block';this.style.display='none'">+</button>
+        <button class="btn-secondary" data-toggle-target="upstream-add-form">+ Add</button>
       </div>
-      <p class="table-hint" style="margin-bottom:12px;">Connect this router to an orchestrator router as a client. Create a client token on the upstream router, then add it here. Models are advertised automatically.</p>
+      <p class="table-hint mb-3">Connect this router to an orchestrator router as a client. Create a client token on the upstream router, then add it here. Models are advertised automatically.</p>
 
-      {{/* Add form — hidden until + is clicked */}}
-      <div id="upstream-add-form" style="display:none;margin-bottom:16px;">
+      {{/* Add form — hidden until "+ Add" is clicked */}}
+      <div id="upstream-add-form" class="hidden mb-4">
         <div class="card">
           <div class="card-title">Add upstream router</div>
           <form method="POST" action="/portal/settings/upstream/add">
             <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-            <div class="form-group" style="margin-bottom:10px;"><label>Name <span class="muted">(optional label)</span></label><input name="name" placeholder="e.g. orchestrator"></div>
-            <div class="form-group" style="margin-bottom:10px;"><label>URL</label><input name="url" placeholder="https://orchestrator.example.com"></div>
-            <div class="form-group" style="margin-bottom:10px;"><label>Token</label><input name="token" placeholder="ct-..."></div>
-            <div class="form-group" style="margin-bottom:14px;">
+            <div class="form-group mb-3"><label>Name <span class="muted">(optional label)</span></label><input name="name" placeholder="e.g. orchestrator"></div>
+            <div class="form-group mb-3"><label>URL</label><input name="url" placeholder="https://orchestrator.example.com"></div>
+            <div class="form-group mb-3"><label>Token</label><input name="token" placeholder="ct-..."></div>
+            <div class="form-group mb-4">
               <label>Job priority <span class="muted">(applied to jobs routed from this upstream)</span></label>
               <select name="priority"><option value="normal" selected>normal</option><option value="high">high</option><option value="low">low</option></select>
             </div>
-            <div style="display:flex;gap:8px;">
+            <div class="flex gap-2">
               <button type="submit" class="btn">Add</button>
-              <button type="button" class="btn-secondary" onclick="document.getElementById('upstream-add-form').style.display='none';document.querySelector('[onclick*=upstream-add-form]').style.display=''">Cancel</button>
+              <button type="button" class="btn-secondary" data-toggle-target="upstream-add-form">Cancel</button>
             </div>
           </form>
         </div>
@@ -107,21 +107,11 @@
             {{range .Upstreams}}
             <tr>
               <td>{{if .Name}}{{.Name}}{{else}}<span class="muted">—</span>{{end}}</td>
-              <td class="muted" style="font-family:monospace;font-size:12px;">{{.URL}}</td>
-              <td><span class="badge {{if eq .Priority "high"}}high{{else if eq .Priority "low"}}low{{else}}normal{{end}}">{{if .Priority}}{{.Priority}}{{else}}normal{{end}}</span></td>
-              <td>
-                {{if .Connected}}
-                  <span class="badge connected">&#x25cf; connected</span>
-                {{else}}
-                  <span class="badge offline">&#x25cb; connecting&hellip;</span>
-                {{end}}
-              </td>
+              <td class="muted text-mono">{{.URL}}</td>
+              <td>{{if eq .Priority "high"}}{{template "status-badge" dict "Class" "high" "Label" "high"}}{{else if eq .Priority "low"}}{{template "status-badge" dict "Class" "low" "Label" "low"}}{{else}}{{template "status-badge" dict "Class" "normal" "Label" "normal"}}{{end}}</td>
+              <td>{{if .Connected}}{{template "status-badge" dict "Class" "connected" "Label" "● connected"}}{{else}}{{template "status-badge" dict "Class" "offline" "Label" "○ connecting…"}}{{end}}</td>
               <td class="cell-actions">
-                <form method="POST" action="/portal/settings/upstream/remove" class="form-inline" data-confirm="Remove upstream {{.URL}}?" onsubmit="return confirm(this.dataset.confirm)">
-                  <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-                  <input type="hidden" name="url" value="{{.URL}}">
-                  <button type="submit" class="btn-danger">Remove</button>
-                </form>
+                {{template "action-button" dict "Action" "/portal/settings/upstream/remove" "CSRF" $.CSRFToken "Fields" (dict "url" .URL) "Confirm" (printf "Remove upstream %s?" .URL) "Class" "btn-danger btn-xs icon-btn" "Label" "✕" "Title" "Remove"}}
               </td>
             </tr>
             {{end}}
@@ -138,13 +128,13 @@
   <div id="tab-logs" class="tab-panel">
     <div class="logs-toolbar">
       <div class="tab-bar" id="log-cat-tabs">
-        <button class="tab-btn active" onclick="showLogCat('router', this)">router</button>
-        <button class="tab-btn" onclick="showLogCat('hub', this)">hub</button>
-        <button class="tab-btn" onclick="showLogCat('scheduler', this)">scheduler</button>
-        <button class="tab-btn" onclick="showLogCat('api', this)">api</button>
-        <button class="tab-btn" onclick="showLogCat('admin', this)">admin</button>
+        <button class="tab-btn active" data-log-cat="router">router</button>
+        <button class="tab-btn" data-log-cat="hub">hub</button>
+        <button class="tab-btn" data-log-cat="scheduler">scheduler</button>
+        <button class="tab-btn" data-log-cat="api">api</button>
+        <button class="tab-btn" data-log-cat="admin">admin</button>
       </div>
-      <span class="muted" id="logs-last-updated" style="font-size:11px;"></span>
+      <span class="muted log-updated" id="logs-last-updated"></span>
     </div>
     <div id="logs-container" class="logs-container">
       <div class="logs-empty">Select a category above to load logs.</div>
@@ -152,11 +142,4 @@
   </div>
   {{end}}
 </div>
-<script>
-// Jump to the upstreams tab if the URL hash says so
-if (window.location.hash === '#tab-upstreams') {
-  const btn = document.getElementById('tab-btn-upstreams');
-  if (btn) btn.click();
-}
-</script>
 {{end}}

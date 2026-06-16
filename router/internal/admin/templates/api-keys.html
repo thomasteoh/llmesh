@@ -10,12 +10,9 @@
 {{end}}
 <div class="card">
   <div class="card-title">Your API endpoint</div>
-  <p class="field-desc" style="margin-bottom:12px;">Point any OpenAI- or Anthropic-compatible tool at this base URL and authenticate with one of your keys below. This is the only address your apps need.</p>
-  <div class="endpoint-display">
-    <span class="endpoint-url" id="api-endpoint-val">https://{{.Host}}/v1</span>
-    <button class="btn-copy" data-copy="https://{{.Host}}/v1" title="Copy endpoint URL">&#10697;</button>
-  </div>
-  <p class="field-desc" style="margin-top:12px;">
+  <p class="field-desc mb-3">Point any OpenAI- or Anthropic-compatible tool at this base URL and authenticate with one of your keys below. This is the only address your apps need.</p>
+  {{template "endpoint-display" dict "URL" (printf "https://%s/v1" .Host) "ValId" "api-endpoint-val"}}
+  <p class="field-desc mt-3">
     Send the key as a header:
     <code>Authorization: Bearer sk-&hellip;</code> (OpenAI / Responses) or
     <code>x-api-key: sk-&hellip;</code> (Anthropic at <code>https://{{.Host}}/v1/messages</code>).
@@ -24,11 +21,11 @@
 </div>
 <div class="card">
   <div class="card-title">Add API key</div>
-  <p class="field-desc" style="margin-bottom:14px;">An API key authenticates callers (e.g. AI agents, scripts) to the router. Include it in your request header so the router knows who is making the call and applies the correct priority tier. Keys begin with <code>sk-</code>.</p>
+  <p class="field-desc mb-3">An API key authenticates callers (e.g. AI agents, scripts) to the router. Include it in your request header so the router knows who is making the call and applies the correct priority tier. Keys begin with <code>sk-</code>.</p>
   <form method="POST" action="/portal/api-keys">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <div class="form-row">
-      <div class="form-group" style="flex:2;">
+      <div class="form-group flex-2">
         <label>Label</label>
         <div class="prefix-wrap"><span class="prefix">{{.Username}}/</span><input name="label" placeholder="prod-agents"></div>
       </div>
@@ -55,10 +52,10 @@
       {{range .Keys}}
       <tr>
         <td data-label="Label"><span class="muted">{{.Owner}}/</span>{{.Label}}</td>
-        <td data-label="Key" class="muted" style="font-family:monospace;font-size:11px;">{{truncate .Key 20}}&hellip; <button class="btn-copy" data-copy="{{.Key}}" title="Copy full key">&#10697;</button></td>
+        <td data-label="Key" class="muted text-mono text-xs">{{truncate .Key 20}}&hellip; <button class="btn-copy" data-copy="{{.Key}}" title="Copy full key">&#10697;</button></td>
         <td data-label="Priority">
           {{if $.IsAdmin}}
-          <form method="POST" action="/portal/api-keys/priority" style="display:inline-flex;align-items:center;gap:4px;">
+          <form method="POST" action="/portal/api-keys/priority" class="inline-flex items-center gap-1">
             <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
             <input type="hidden" name="key" value="{{.Key}}">
             <select name="priority" class="priority-inline priority-{{.Priority}}" title="Change priority">
@@ -73,12 +70,8 @@
           {{end}}
         </td>
         <td data-label="Created" class="muted">{{.CreatedAt.Format "2006-01-02"}}</td>
-        <td>
-          <form method="POST" action="/portal/api-keys/revoke" class="form-inline" onsubmit="return confirm('Revoke this API key? This cannot be undone.')">
-            <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-            <input type="hidden" name="key" value="{{.Key}}">
-            <button type="submit" class="btn-danger">Revoke</button>
-          </form>
+        <td class="cell-actions">
+          {{template "action-button" dict "Action" "/portal/api-keys/revoke" "CSRF" $.CSRFToken "Fields" (dict "key" .Key) "Confirm" "Revoke this API key? This cannot be undone." "Class" "btn-danger btn-xs icon-btn" "Label" "✕" "Title" "Revoke"}}
         </td>
       </tr>
       {{else}}

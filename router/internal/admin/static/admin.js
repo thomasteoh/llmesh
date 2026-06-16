@@ -1,23 +1,10 @@
-/* ─── CSRF helpers ──────────────────────────────────────────── */
-
-function getCSRFToken() {
-  var input = document.querySelector('input[name="_csrf"]');
-  return input ? input.value : '';
-}
-
-/* ─── Confirm helper ────────────────────────────────────────── */
-
-function confirmAction(msg) {
-  return window.confirm(msg);
-}
-
 /* ─── Theme ─────────────────────────────────────────────────── */
 
 function applyTheme(theme) {
   document.documentElement.setAttribute('data-theme', theme);
   var btn = document.getElementById('theme-toggle');
   if (btn) {
-    btn.textContent = theme === 'dark' ? '\u2600' : '\u263e'; // ☀ / ☾
+    btn.textContent = theme === 'dark' ? '☀' : '☾'; // ☀ / ☾
     btn.setAttribute('aria-label', theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
   }
 }
@@ -34,7 +21,7 @@ function toggleTheme() {
   var theme = document.documentElement.getAttribute('data-theme') || 'dark';
   var btn = document.getElementById('theme-toggle');
   if (btn) {
-    btn.textContent = theme === 'dark' ? '\u2600' : '\u263e';
+    btn.textContent = theme === 'dark' ? '☀' : '☾';
     btn.setAttribute('aria-label', theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
   }
 })();
@@ -55,52 +42,64 @@ function toggleSection(id) {
   var open = body.classList.toggle('open');
   if (header) {
     var arrow = header.querySelector('.toggle-arrow');
-    if (arrow) arrow.textContent = open ? '\u25b4' : '\u25be'; // ▴ / ▾
+    if (arrow) arrow.textContent = open ? '▴' : '▾'; // ▴ / ▾
   }
 }
 
-/* ─── Docs nav ──────────────────────────────────────────────── */
+/* ─── Tabs (unified) ────────────────────────────────────────────
 
-function showDoc(id, el) {
-  document.querySelectorAll('.docs-section').forEach(function(s) {
-    s.classList.remove('active');
-  });
-  document.querySelectorAll('.docs-link').forEach(function(a) {
-    a.classList.remove('active');
-  });
-  var section = document.getElementById(id);
-  if (section) section.classList.add('active');
-  if (el) el.classList.add('active');
-  // Close mobile docs nav after selection
-  var items = document.getElementById('docs-nav-items');
-  if (items) items.classList.remove('open');
-  var chevron = document.getElementById('docs-nav-chevron');
-  if (chevron) chevron.textContent = '\u25be'; // ▾
-  // Persist section in URL hash
-  try { history.replaceState(null, '', '#' + id); } catch(e) {}
-  // Render mermaid diagrams in newly visible section
-  if (window.__renderDiagrams) window.__renderDiagrams();
-}
+   One declarative system drives every panel-based tab (settings,
+   download OS tabs). Markup:
 
-// showTab activates panelId and marks btn active within the nearest .tab-container.
-function showTab(panelId, btn) {
-  var panel = document.getElementById(panelId);
-  if (!panel) return;
-  var container = btn ? btn.closest('.tab-container') : panel.closest('.tab-container');
+     <div class="tab-container">
+       <div class="tab-bar [underline]">
+         <button class="tab-btn" data-tab-target="panel-id"
+                 [data-tab-hash] [data-tab-store="group"]
+                 [data-tab-onactivate="logs"]>…</button>
+       </div>
+       <div id="panel-id" class="tab-panel">…</div>
+     </div>
+
+   data-tab-hash    → reflect the active panel id in the URL hash
+   data-tab-store   → remember the selection in localStorage under this key
+   data-tab-onactivate="logs" → start the log poller when shown
+*/
+
+function activateTab(btn) {
+  var targetId = btn.getAttribute('data-tab-target');
+  var panel = document.getElementById(targetId);
+  var container = btn.closest('.tab-container') || (panel && panel.closest('.tab-container'));
   if (container) {
     container.querySelectorAll('.tab-panel').forEach(function(p) { p.classList.remove('active'); });
     container.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.remove('active'); });
   }
-  panel.classList.add('active');
-  if (btn) btn.classList.add('active');
+  if (panel) panel.classList.add('active');
+  btn.classList.add('active');
+
+  if (btn.hasAttribute('data-tab-hash')) {
+    try { history.replaceState(null, '', '#' + targetId); } catch(e) {}
+  }
+  var store = btn.getAttribute('data-tab-store');
+  if (store) {
+    try { localStorage.setItem('llmesh-tab-' + store, targetId); } catch(e) {}
+  }
+  if (btn.getAttribute('data-tab-onactivate') === 'logs') ensureLogsLoaded();
 }
 
-function showOsTab(groupId, tabId) {
-  var group = document.getElementById(groupId);
-  if (!group) return;
-  var tab = group.querySelector('[data-tab="' + tabId + '"]');
-  showTab(tabId, tab);
-  try { localStorage.setItem('llmesh-os-tab-' + groupId, tabId); } catch(e) {}
+/* ─── Docs nav (help page sidebar) ──────────────────────────── */
+
+function showDoc(id, el) {
+  document.querySelectorAll('.docs-section').forEach(function(s) { s.classList.remove('active'); });
+  document.querySelectorAll('.docs-link').forEach(function(a) { a.classList.remove('active'); });
+  var section = document.getElementById(id);
+  if (section) section.classList.add('active');
+  if (el) el.classList.add('active');
+  var items = document.getElementById('docs-nav-items');
+  if (items) items.classList.remove('open');
+  var chevron = document.getElementById('docs-nav-chevron');
+  if (chevron) chevron.textContent = '▾'; // ▾
+  try { history.replaceState(null, '', '#' + id); } catch(e) {}
+  if (window.__renderDiagrams) window.__renderDiagrams();
 }
 
 function toggleDocsNav() {
@@ -108,110 +107,96 @@ function toggleDocsNav() {
   var chevron = document.getElementById('docs-nav-chevron');
   if (!items) return;
   var open = items.classList.toggle('open');
-  if (chevron) chevron.textContent = open ? '\u25b4' : '\u25be'; // ▴ / ▾
+  if (chevron) chevron.textContent = open ? '▴' : '▾'; // ▴ / ▾
 }
 
-/* ─── Settings tabs ─────────────────────────────────────────── */
+/* ─── Polling helper ─────────────────────────────────────────────
+   poll(url, intervalMs, onData) fetches JSON on an interval, pausing
+   while the browser tab is hidden. `url` may be a string or a function
+   returning the current URL. Returns { tick, start, stop }. */
 
-function showSettingsTab(id, btn) {
-  showTab(id, btn);
-  try { history.replaceState(null, '', '#' + id); } catch(e) {}
-  if (id === 'tab-logs') ensureLogsLoaded();
+function poll(url, intervalMs, onData) {
+  var timer = null;
+  function resolveUrl() { return typeof url === 'function' ? url() : url; }
+  function tick() {
+    fetch(resolveUrl())
+      .then(function(r) { if (!r.ok) throw new Error('non-ok'); return r.json(); })
+      .then(onData)
+      .catch(function() {});
+  }
+  function start() { if (!timer) { tick(); timer = setInterval(tick, intervalMs); } }
+  function stop() { if (timer) { clearInterval(timer); timer = null; } }
+  document.addEventListener('visibilitychange', function() {
+    if (document.hidden) stop(); else start();
+  });
+  start();
+  return { tick: tick, start: start, stop: stop };
 }
 
 /* ─── Log viewer ─────────────────────────────────────────────── */
 
-var _logCurrentCat = 'router';
-var _logInterval = null;
+var _logsPoller = null;
 
-function showLogCat(cat, btn) {
-  _logCurrentCat = cat;
-  document.querySelectorAll('#log-cat-tabs .tab-btn').forEach(function(t) {
-    t.classList.remove('active');
-  });
-  if (btn) btn.classList.add('active');
-  fetchLogs();
+function currentLogCat() {
+  var b = document.querySelector('#log-cat-tabs .tab-btn.active');
+  return b ? b.getAttribute('data-log-cat') : 'router';
 }
 
 function ensureLogsLoaded() {
-  fetchLogs();
-  if (!_logInterval) {
-    _logInterval = setInterval(fetchLogs, 5000);
-    // Pause polling when the browser tab goes to background; resume on return.
-    document.addEventListener('visibilitychange', function() {
-      if (document.hidden) {
-        clearInterval(_logInterval);
-        _logInterval = null;
-      } else if (document.getElementById('tab-logs') &&
-                 document.getElementById('tab-logs').classList.contains('active')) {
-        fetchLogs();
-        _logInterval = setInterval(fetchLogs, 5000);
-      }
-    });
-  }
+  if (_logsPoller) { _logsPoller.start(); _logsPoller.tick(); return; }
+  _logsPoller = poll(function() {
+    return '/portal/api/logs?category=' + encodeURIComponent(currentLogCat()) + '&limit=200';
+  }, 5000, renderLogs);
 }
 
-function fetchLogs() {
+function renderLogs(data) {
   var container = document.getElementById('logs-container');
   if (!container) return;
-  fetch('/portal/api/logs?category=' + encodeURIComponent(_logCurrentCat) + '&limit=200')
-    .then(function(r) {
-      if (!r.ok) throw new Error('non-ok');
-      return r.json();
-    })
-    .then(function(data) {
-      var wasAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 2;
-      container.innerHTML = '';
-      if (!data.entries || data.entries.length === 0) {
-        var empty = document.createElement('div');
-        empty.className = 'logs-empty';
-        empty.textContent = 'No log entries yet.';
-        container.appendChild(empty);
-      } else {
-        data.entries.forEach(function(e) {
-          var row = document.createElement('div');
-          row.className = 'log-row';
+  var wasAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 2;
+  container.innerHTML = '';
+  if (!data.entries || data.entries.length === 0) {
+    var empty = document.createElement('div');
+    empty.className = 'logs-empty';
+    empty.textContent = 'No log entries yet.';
+    container.appendChild(empty);
+  } else {
+    data.entries.forEach(function(e) {
+      var row = document.createElement('div');
+      row.className = 'log-row';
 
-          var tEl = document.createElement('span');
-          tEl.className = 'log-time';
-          try {
-            var d = new Date(e.time);
-            tEl.textContent = d.toLocaleTimeString();
-          } catch(_) { tEl.textContent = e.time || ''; }
-          row.appendChild(tEl);
+      var tEl = document.createElement('span');
+      tEl.className = 'log-time';
+      try { tEl.textContent = new Date(e.time).toLocaleTimeString(); }
+      catch(_) { tEl.textContent = e.time || ''; }
+      row.appendChild(tEl);
 
-          var lvEl = document.createElement('span');
-          lvEl.className = 'log-level ' + (e.level || '');
-          lvEl.textContent = e.level || '';
-          row.appendChild(lvEl);
+      var lvEl = document.createElement('span');
+      lvEl.className = 'log-level ' + (e.level || '');
+      lvEl.textContent = e.level || '';
+      row.appendChild(lvEl);
 
-          var msgEl = document.createElement('span');
-          msgEl.className = 'log-msg';
-          msgEl.textContent = e.msg || '';
-          row.appendChild(msgEl);
+      var msgEl = document.createElement('span');
+      msgEl.className = 'log-msg';
+      msgEl.textContent = e.msg || '';
+      row.appendChild(msgEl);
 
-          if (e.attrs && Object.keys(e.attrs).length > 0) {
-            var attrEl = document.createElement('span');
-            attrEl.className = 'log-attrs';
-            var pairs = [];
-            for (var k in e.attrs) {
-              if (Object.prototype.hasOwnProperty.call(e.attrs, k)) {
-                pairs.push(k + '=' + e.attrs[k]);
-              }
-            }
-            attrEl.textContent = pairs.join(' ');
-            attrEl.title = pairs.join('\n');
-            row.appendChild(attrEl);
-          }
-
-          container.appendChild(row);
-        });
-        if (wasAtBottom) container.scrollTop = container.scrollHeight;
+      if (e.attrs && Object.keys(e.attrs).length > 0) {
+        var attrEl = document.createElement('span');
+        attrEl.className = 'log-attrs';
+        var pairs = [];
+        for (var k in e.attrs) {
+          if (Object.prototype.hasOwnProperty.call(e.attrs, k)) pairs.push(k + '=' + e.attrs[k]);
+        }
+        attrEl.textContent = pairs.join(' ');
+        attrEl.title = pairs.join('\n');
+        row.appendChild(attrEl);
       }
-      var lu = document.getElementById('logs-last-updated');
-      if (lu) lu.textContent = 'updated ' + new Date().toLocaleTimeString();
-    })
-    .catch(function() {});
+      container.appendChild(row);
+    });
+    if (wasAtBottom) container.scrollTop = container.scrollHeight;
+  }
+  var lu = document.getElementById('logs-last-updated');
+  if (lu) lu.textContent = 'updated ' + new Date().toLocaleTimeString();
 }
 
 /* ─── Clients filter + pagination ──────────────────────────── */
@@ -259,7 +244,7 @@ function initClientGroups() {
     if (pageInfo) {
       var pageStr = 'Page ' + (currentPage + 1) + ' of ' + totalPages;
       pageInfo.textContent = total < allGroups.length
-        ? total + ' user' + (total !== 1 ? 's' : '') + ' matched \u00b7 ' + pageStr
+        ? total + ' user' + (total !== 1 ? 's' : '') + ' matched · ' + pageStr
         : pageStr;
     }
     if (summary) {
@@ -298,36 +283,31 @@ function initDashboard() {
     tdName.textContent = c.name || '';
     tr.appendChild(tdName);
 
-    var cls = c.status === 'connected' ? 'connected'
-            : c.status === 'offline'   ? 'offline'
-            : 'never_connected';
-    var lbl = c.status === 'connected'     ? '\u25cf connected'
-            : c.status === 'offline'       ? '\u25cb offline'
-            : '\u25cb never connected';
+    // Status class + label come straight from the server (single source of truth).
     var tdStatus = document.createElement('td');
     tdStatus.setAttribute('data-label', 'Status');
     var span = document.createElement('span');
-    span.className = 'badge ' + cls;
-    span.textContent = lbl;
+    span.className = 'badge ' + (c.status_class || '');
+    span.textContent = c.status_label || c.status || '';
     tdStatus.appendChild(span);
     tr.appendChild(tdStatus);
 
     var tdLast = document.createElement('td');
     tdLast.className = 'muted';
     tdLast.setAttribute('data-label', 'Last seen');
-    tdLast.textContent = c.last_seen || '\u2014';
+    tdLast.textContent = c.last_seen || '—';
     tr.appendChild(tdLast);
 
     var tdModels = document.createElement('td');
     tdModels.className = 'muted';
     tdModels.setAttribute('data-label', 'Models');
-    tdModels.textContent = c.models || '\u2014';
+    tdModels.textContent = c.models || '—';
     tr.appendChild(tdModels);
 
     var tdVersion = document.createElement('td');
     tdVersion.className = 'muted';
     tdVersion.setAttribute('data-label', 'Version');
-    tdVersion.textContent = c.version || '\u2014';
+    tdVersion.textContent = c.version || '—';
     tr.appendChild(tdVersion);
 
     return tr;
@@ -386,111 +366,28 @@ function initDashboard() {
     }
   }
 
-  function refresh() {
-    fetch('/portal/api/dashboard').then(function(r) {
-      if (!r.ok) throw new Error('non-ok');
-      return r.json();
-    }).then(function(d) {
-      var el;
-      el = document.getElementById('req-count');      if (el) el.textContent = d.total_requests;
-      el = document.getElementById('active-clients'); if (el) el.textContent = d.active_clients;
-      el = document.getElementById('api-key-count'); if (el) el.textContent = d.api_key_count;
-      el = document.getElementById('token-count');   if (el) el.textContent = d.token_count;
+  function onData(d) {
+    var el;
+    el = document.getElementById('req-count');      if (el) el.textContent = d.total_requests;
+    el = document.getElementById('active-clients'); if (el) el.textContent = d.active_clients;
+    el = document.getElementById('api-key-count');  if (el) el.textContent = d.api_key_count;
+    el = document.getElementById('token-count');    if (el) el.textContent = d.token_count;
 
-      tbody.innerHTML = '';
-      if (d.clients && d.clients.length) {
-        d.clients.forEach(function(c) { tbody.appendChild(buildRow(c)); });
-      } else {
-        tbody.appendChild(emptyRow());
-      }
-
-      refreshStats(d);
-
-      var lu = document.getElementById('last-updated');
-      if (lu) lu.textContent = 'Updated ' + new Date().toLocaleTimeString();
-    }).catch(function() {});
-  }
-
-  setInterval(refresh, 10000);
-}
-
-/* ─── Click delegation ──────────────────────────────────────── */
-
-document.addEventListener('click', function(e) {
-  // Close mobile nav when clicking outside
-  var navLinks = document.getElementById('nav-links');
-  var navToggle = document.getElementById('nav-toggle');
-  if (navLinks && navLinks.classList.contains('open')) {
-    if (navToggle && !navLinks.contains(e.target) && !navToggle.contains(e.target)) {
-      navLinks.classList.remove('open');
-    }
-  }
-
-  // Copy to clipboard via data-copy attribute
-  var copyBtn = e.target.closest('[data-copy]');
-  if (copyBtn) {
-    var text = copyBtn.getAttribute('data-copy');
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText(text).catch(function() { fallbackCopy(text); });
+    tbody.innerHTML = '';
+    if (d.clients && d.clients.length) {
+      d.clients.forEach(function(c) { tbody.appendChild(buildRow(c)); });
     } else {
-      fallbackCopy(text);
+      tbody.appendChild(emptyRow());
     }
-    copyFeedback(copyBtn);
-    return;
+
+    refreshStats(d);
+
+    var lu = document.getElementById('last-updated');
+    if (lu) lu.textContent = 'Updated ' + new Date().toLocaleTimeString();
   }
 
-  // Copy from element via data-copy-from attribute
-  var copyFromBtn = e.target.closest('[data-copy-from]');
-  if (copyFromBtn) {
-    var src = document.getElementById(copyFromBtn.getAttribute('data-copy-from'));
-    if (src) {
-      var val = src.textContent || src.value || '';
-      if (navigator.clipboard) {
-        navigator.clipboard.writeText(val).catch(function() { fallbackCopy(val); });
-      } else {
-        fallbackCopy(val);
-      }
-      copyFeedback(copyFromBtn);
-    }
-    return;
-  }
-
-  // Copy code block via data-copy-code attribute
-  var codeBtn = e.target.closest('[data-copy-code]');
-  if (codeBtn) {
-    var codeEl = document.getElementById(codeBtn.getAttribute('data-copy-code'));
-    if (codeEl) {
-      var codeText = codeEl.textContent || '';
-      if (navigator.clipboard) {
-        navigator.clipboard.writeText(codeText).catch(function() { fallbackCopy(codeText); });
-      } else {
-        fallbackCopy(codeText);
-      }
-      copyFeedback(codeBtn);
-    }
-  }
-});
-
-function copyFeedback(btn) {
-  var orig = btn.textContent;
-  if (orig === '\u2713') return; // already showing ✓
-  btn.textContent = '\u2713';
-  setTimeout(function() { btn.textContent = orig; }, 1200);
+  poll('/portal/api/dashboard', 10000, onData);
 }
-
-function fallbackCopy(text) {
-  var ta = document.createElement('textarea');
-  ta.value = text;
-  ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;';
-  document.body.appendChild(ta);
-  ta.focus();
-  ta.select();
-  try { document.execCommand('copy'); } catch(e) {}
-  document.body.removeChild(ta);
-}
-
-/* ─── Init ──────────────────────────────────────────────────── */
-
 
 /* ─── Live job stats polling ─────────────────────────────────── */
 
@@ -516,59 +413,128 @@ function initJobStats() {
     return parts.length ? ' · ' + parts.join(' · ') : '';
   }
 
-  function refresh() {
-    fetch('/portal/api/jobs').then(function(r) {
-      if (!r.ok) return null;
-      return r.json();
-    }).then(function(jobs) {
-      if (!jobs) return;
-      jobs.forEach(function(j) {
-        var row = document.querySelector('[data-job-id="' + j.id + '"]');
-        if (!row) return;
+  poll('/portal/api/jobs', 2000, function(jobs) {
+    if (!jobs) return;
+    jobs.forEach(function(j) {
+      var row = document.querySelector('[data-job-id="' + j.id + '"]');
+      if (!row) return;
+      row.classList.toggle('job-processing', j.phase === 'processing');
+      row.classList.toggle('job-generating',  j.phase === 'generating');
+      var liveEl = row.querySelector('.job-stats-live');
+      if (liveEl) liveEl.textContent = buildStats(j, liveEl);
+    });
+  });
+}
 
-        // Update phase class and dot
-        row.classList.toggle('job-processing', j.phase === 'processing');
-        row.classList.toggle('job-generating',  j.phase === 'generating');
+/* ─── Click delegation ──────────────────────────────────────── */
 
-        // Update live stats text
-        var liveEl = row.querySelector('.job-stats-live');
-        if (liveEl) liveEl.textContent = buildStats(j, liveEl);
-      });
-    }).catch(function() {});
+document.addEventListener('click', function(e) {
+  // Tabs: any button with data-tab-target
+  var tabBtn = e.target.closest('[data-tab-target]');
+  if (tabBtn) { activateTab(tabBtn); return; }
+
+  // Log category selector
+  var logCatBtn = e.target.closest('[data-log-cat]');
+  if (logCatBtn) {
+    document.querySelectorAll('#log-cat-tabs .tab-btn').forEach(function(t) { t.classList.remove('active'); });
+    logCatBtn.classList.add('active');
+    if (_logsPoller) _logsPoller.tick();
+    return;
   }
 
-  refresh();
-  setInterval(refresh, 2000);
+  // Toggle visibility of a target element via data-toggle-target (e.g. reveal a form)
+  var toggleBtn = e.target.closest('[data-toggle-target]');
+  if (toggleBtn) {
+    var tgt = document.getElementById(toggleBtn.getAttribute('data-toggle-target'));
+    if (tgt) tgt.classList.toggle('hidden');
+    return;
+  }
+
+  // Close mobile nav when clicking outside
+  var navLinks = document.getElementById('nav-links');
+  var navToggle = document.getElementById('nav-toggle');
+  if (navLinks && navLinks.classList.contains('open')) {
+    if (navToggle && !navLinks.contains(e.target) && !navToggle.contains(e.target)) {
+      navLinks.classList.remove('open');
+    }
+  }
+
+  // Copy to clipboard via data-copy (literal text), data-copy-from (element
+  // text/value), or data-copy-code (code block text).
+  var copyBtn = e.target.closest('[data-copy]');
+  if (copyBtn) { copyText(copyBtn.getAttribute('data-copy'), copyBtn); return; }
+
+  var copyFromBtn = e.target.closest('[data-copy-from]');
+  if (copyFromBtn) {
+    var src = document.getElementById(copyFromBtn.getAttribute('data-copy-from'));
+    if (src) copyText(src.textContent || src.value || '', copyFromBtn);
+    return;
+  }
+
+  var codeBtn = e.target.closest('[data-copy-code]');
+  if (codeBtn) {
+    var codeEl = document.getElementById(codeBtn.getAttribute('data-copy-code'));
+    if (codeEl) copyText(codeEl.textContent || '', codeBtn);
+  }
+});
+
+function copyText(text, btn) {
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(text).catch(function() { fallbackCopy(text); });
+  } else {
+    fallbackCopy(text);
+  }
+  copyFeedback(btn);
 }
+
+function copyFeedback(btn) {
+  var orig = btn.textContent;
+  if (orig === '✓') return; // already showing ✓
+  btn.textContent = '✓';
+  setTimeout(function() { btn.textContent = orig; }, 1200);
+}
+
+function fallbackCopy(text) {
+  var ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  try { document.execCommand('copy'); } catch(e) {}
+  document.body.removeChild(ta);
+}
+
+/* ─── Init ──────────────────────────────────────────────────── */
 
 document.addEventListener('DOMContentLoaded', function() {
   initDashboard();
   initClientGroups();
   initJobStats();
 
-  // Restore settings tab or docs section from URL hash
+  // Restore OS download tab selection from localStorage.
+  document.querySelectorAll('.tab-btn[data-tab-store]').forEach(function(btn) {
+    var store = btn.getAttribute('data-tab-store');
+    try {
+      var saved = localStorage.getItem('llmesh-tab-' + store);
+      if (saved && btn.getAttribute('data-tab-target') === saved) activateTab(btn);
+    } catch(e) {}
+  });
+
+  // Restore settings tab or docs section from URL hash.
   var hash = window.location.hash.slice(1);
   if (hash) {
     var hashSection = document.getElementById(hash);
     if (hashSection && hashSection.classList.contains('tab-panel')) {
-      var tabBtn = document.querySelector('.tab-btn[onclick*="\'' + hash + '\'"]');
-      showSettingsTab(hash, tabBtn);
+      var tabBtn = document.querySelector('.tab-btn[data-tab-target="' + hash + '"]');
+      if (tabBtn) activateTab(tabBtn);
     } else if (hashSection && hashSection.classList.contains('docs-section')) {
       var hashLink = document.querySelector('.docs-link[onclick*="\'' + hash + '\'"]');
       showDoc(hash, hashLink);
     }
   }
 
-  // Restore OS tab selection from localStorage
-  document.querySelectorAll('[id]').forEach(function(group) {
-    if (!group.id.endsWith('-tab-group')) return;
-    try {
-      var saved = localStorage.getItem('llmesh-os-tab-' + group.id);
-      if (saved && document.getElementById(saved)) showOsTab(group.id, saved);
-    } catch(e) {}
-  });
-
-  // Auto-inject copy buttons into all .docs-code blocks
+  // Auto-inject copy buttons into all .docs-code blocks.
   document.querySelectorAll('.docs-code').forEach(function(el, i) {
     var id = 'code-block-' + i;
     el.id = id;
@@ -579,7 +545,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var btn = document.createElement('button');
     btn.className = 'btn-code-copy';
     btn.setAttribute('data-copy-code', id);
-    btn.textContent = '\u2398'; // ⎘
+    btn.textContent = '⎘'; // ⎘
     btn.title = 'Copy';
     wrap.appendChild(btn);
   });

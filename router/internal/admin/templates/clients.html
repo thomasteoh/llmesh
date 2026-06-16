@@ -57,11 +57,7 @@
             {{if gt .Attempts 1}}<span class="badge job-badge-retry" title="{{.Attempts}} dispatch attempts">&#x21BA;{{.Attempts}}</span>{{end}}
             <span class="job-owner">{{if .APIKeyLabel}}{{.APIKeyLabel}}{{else}}{{.Owner}}{{end}}</span>
             {{if .CanCancel}}
-            <form method="POST" action="/portal/jobs/cancel" class="form-inline" onsubmit="return confirm('Cancel this job?')">
-              <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-              <input type="hidden" name="request_id" value="{{.ID}}">
-              <button type="submit" class="btn-danger btn-xs" title="Cancel job" aria-label="Cancel job">&#x2715;</button>
-            </form>
+            {{template "action-button" dict "Action" "/portal/jobs/cancel" "CSRF" $.CSRFToken "Fields" (dict "request_id" .ID) "Confirm" "Cancel this job?" "Class" "btn-danger btn-xs icon-btn" "Label" "✕" "Title" "Cancel job"}}
             {{end}}
           </div>
           <div class="job-row-stats">
@@ -92,25 +88,22 @@
 {{end}}
 <div class="card">
   <div class="card-title">Worker connection URL</div>
-  <p class="field-desc" style="margin-bottom:12px;">Each worker (llmesh-client or llmesh-shim) connects out to the router at this WebSocket URL. Put it in the worker's <code>config.yaml</code> as <code>router_url</code>, along with a client token from below.</p>
-  <div class="endpoint-display">
-    <span class="endpoint-url" id="ws-endpoint-val">wss://{{.Host}}/ws/client</span>
-    <button class="btn-copy" data-copy="wss://{{.Host}}/ws/client" title="Copy worker URL">&#10697;</button>
-  </div>
-  <p class="field-desc" style="margin-top:12px;">After you generate a token, download a ready-to-run <code>config.yaml</code> with this URL and token pre-filled. Setup reference is on the <a href="/portal/help">Help</a> page.</p>
+  <p class="field-desc mb-3">Each worker (llmesh-client or llmesh-shim) connects out to the router at this WebSocket URL. Put it in the worker's <code>config.yaml</code> as <code>router_url</code>, along with a client token from below.</p>
+  {{template "endpoint-display" dict "URL" (printf "wss://%s/ws/client" .Host) "ValId" "ws-endpoint-val"}}
+  <p class="field-desc mt-3">After you generate a token, download a ready-to-run <code>config.yaml</code> with this URL and token pre-filled. Setup reference is on the <a href="/portal/help">Help</a> page.</p>
 </div>
 <div class="card">
   <div class="card-title">Add client</div>
-  <p class="field-desc" style="margin-bottom:14px;">A client token authenticates a worker &mdash; either a <strong>llmesh-client</strong> (llama.cpp node) or <strong>llmesh-shim</strong> (cloud API or command adapter) &mdash; to the router. Use it in the worker's config file so the router knows this worker is allowed to receive jobs. Tokens begin with <code>ct-</code>.</p>
+  <p class="field-desc mb-3">A client token authenticates a worker &mdash; either a <strong>llmesh-client</strong> (llama.cpp node) or <strong>llmesh-shim</strong> (cloud API or command adapter) &mdash; to the router. Use it in the worker's config file so the router knows this worker is allowed to receive jobs. Tokens begin with <code>ct-</code>.</p>
   <form method="POST" action="/portal/clients">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <div class="form-row">
-      <div class="form-group" style="flex:2;">
+      <div class="form-group flex-2">
         <label>Name</label>
         <div class="prefix-wrap"><span class="prefix">{{.Username}}/</span><input name="name" placeholder="macbook-pro"></div>
       </div>
       {{if .IsAdmin}}
-      <div class="form-group" style="flex:1;">
+      <div class="form-group">
         <label>For user <span class="muted">(optional)</span></label>
         <input name="for_user" list="client-user-list" placeholder="{{.Username}}">
         <datalist id="client-user-list">{{range .Users}}<option value="{{.}}">{{end}}</datalist>
@@ -134,7 +127,7 @@
   <div class="user-group" data-username="{{.Username}}" data-clients="{{range .Tokens}}{{.Name}} {{range .Connections}}{{.Name}} {{end}}{{end}}">
     <div class="user-group-header">
       <span class="user-group-name">{{.Username}}</span>
-      {{if .HasLive}}<span class="badge connected" style="font-size:10px;padding:1px 6px;">&#9679; live</span>{{end}}
+      {{if .HasLive}}<span class="badge connected badge-sm">&#9679; live</span>{{end}}
     </div>
     <div class="table-scroll">
       <table class="data-table">
@@ -143,23 +136,17 @@
           {{range .Tokens}}
           <tr>
             <td data-label="Client">{{.Name}} <button class="btn-copy" data-copy="{{.Token}}" title="Copy token">&#10697;</button></td>
-            <td data-label="Status"><span class="badge {{.StatusClass}}">{{.StatusLabel}}</span></td>
+            <td data-label="Status">{{template "status-badge" dict "Class" .StatusClass "Label" .StatusLabel}}</td>
             <td data-label="Last seen" class="muted">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
             <td class="cell-actions">
-              {{if .IsRouter}}
-              <span class="badge muted-badge" style="margin-right:4px;" title="Downstream router — update not applicable">router</span>
-              {{else}}
-              <form method="POST" action="/portal/clients/update" class="form-inline" onsubmit="return confirm('Trigger in-place update for connected clients with this token?')">
-                <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-                <input type="hidden" name="token" value="{{.Token}}">
-                <button type="submit" class="btn-secondary btn-xs" title="Trigger update">&#8593;</button>
-              </form>
-              {{end}}
-              <form method="POST" action="/portal/clients/revoke" class="form-inline" onsubmit="return confirm('Revoke this client token? The client will be disconnected and cannot reconnect.')">
-                <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-                <input type="hidden" name="token" value="{{.Token}}">
-                <button type="submit" class="btn-danger btn-xs" title="Revoke">&#x2715;</button>
-              </form>
+              <div class="flex gap-1 justify-end items-center">
+                {{if .IsRouter}}
+                <span class="badge muted-badge" title="Downstream router — update not applicable">router</span>
+                {{else}}
+                {{template "action-button" dict "Action" "/portal/clients/update" "CSRF" $.CSRFToken "Fields" (dict "token" .Token) "Confirm" "Trigger in-place update for connected clients with this token?" "Class" "btn-secondary btn-xs icon-btn" "Label" "↑" "Title" "Trigger update"}}
+                {{end}}
+                {{template "action-button" dict "Action" "/portal/clients/revoke" "CSRF" $.CSRFToken "Fields" (dict "token" .Token) "Confirm" "Revoke this client token? The client will be disconnected and cannot reconnect." "Class" "btn-danger btn-xs icon-btn" "Label" "✕" "Title" "Revoke"}}
+              </div>
             </td>
           </tr>
           {{template "conn-subrow" .}}
@@ -171,7 +158,7 @@
   </div>
   {{end}}
   {{else}}
-  <p class="muted" style="padding:12px 0;">No users with client tokens.</p>
+  <p class="muted mt-3 mb-3">No users with client tokens.</p>
   {{end}}
 </div>
 <div id="pagination-controls" class="pagination" style="display:none;">
@@ -189,23 +176,17 @@
       {{range .Tokens}}
       <tr>
         <td data-label="Name">{{.Name}} <button class="btn-copy" data-copy="{{.Token}}" title="Copy token">&#10697;</button></td>
-        <td data-label="Status"><span class="badge {{.StatusClass}}">{{.StatusLabel}}</span></td>
+        <td data-label="Status">{{template "status-badge" dict "Class" .StatusClass "Label" .StatusLabel}}</td>
         <td data-label="Last seen" class="muted">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
         <td class="cell-actions">
-          {{if .IsRouter}}
-          <span class="badge muted-badge" style="margin-right:4px;" title="Downstream router — update not applicable">router</span>
-          {{else}}
-          <form method="POST" action="/portal/clients/update" class="form-inline" onsubmit="return confirm('Trigger in-place update for connected clients with this token?')">
-            <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-            <input type="hidden" name="token" value="{{.Token}}">
-            <button type="submit" class="btn-secondary btn-xs" title="Trigger update">&#8593;</button>
-          </form>
-          {{end}}
-          <form method="POST" action="/portal/clients/revoke" class="form-inline" onsubmit="return confirm('Revoke this client token? The client will be disconnected and cannot reconnect.')">
-            <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-            <input type="hidden" name="token" value="{{.Token}}">
-            <button type="submit" class="btn-danger btn-xs" title="Revoke">&#x2715;</button>
-          </form>
+          <div class="flex gap-1 justify-end items-center">
+            {{if .IsRouter}}
+            <span class="badge muted-badge" title="Downstream router — update not applicable">router</span>
+            {{else}}
+            {{template "action-button" dict "Action" "/portal/clients/update" "CSRF" $.CSRFToken "Fields" (dict "token" .Token) "Confirm" "Trigger in-place update for connected clients with this token?" "Class" "btn-secondary btn-xs icon-btn" "Label" "↑" "Title" "Trigger update"}}
+            {{end}}
+            {{template "action-button" dict "Action" "/portal/clients/revoke" "CSRF" $.CSRFToken "Fields" (dict "token" .Token) "Confirm" "Revoke this client token? The client will be disconnected and cannot reconnect." "Class" "btn-danger btn-xs icon-btn" "Label" "✕" "Title" "Revoke"}}
+          </div>
         </td>
       </tr>
       {{template "conn-subrow" .}}
@@ -218,16 +199,16 @@
 </div>
 {{end}}
 
-<div class="card" style="margin-top:24px;">
+<div class="card mt-6">
   <div class="card-title">Downloads</div>
-  <div class="docs-subtitle" style="margin-top:4px;margin-bottom:16px;">Pre-built binaries for llmesh-client</div>
+  <div class="docs-subtitle mt-1 mb-4">Pre-built binaries for llmesh-client</div>
 
   <div id="os-tab-group" class="tab-container">
     <div class="tab-bar">
-      <div class="tab-btn active" data-tab="os-linux-amd64" onclick="showOsTab('os-tab-group','os-linux-amd64')">linux / amd64</div>
-      <div class="tab-btn" data-tab="os-linux-arm64" onclick="showOsTab('os-tab-group','os-linux-arm64')">linux / arm64</div>
-      <div class="tab-btn" data-tab="os-darwin-amd64" onclick="showOsTab('os-tab-group','os-darwin-amd64')">macOS / Intel</div>
-      <div class="tab-btn" data-tab="os-darwin-arm64" onclick="showOsTab('os-tab-group','os-darwin-arm64')">macOS / Apple Silicon</div>
+      <button class="tab-btn active" data-tab-target="os-linux-amd64" data-tab-store="os-tab-group">linux / amd64</button>
+      <button class="tab-btn" data-tab-target="os-linux-arm64" data-tab-store="os-tab-group">linux / arm64</button>
+      <button class="tab-btn" data-tab-target="os-darwin-amd64" data-tab-store="os-tab-group">macOS / Intel</button>
+      <button class="tab-btn" data-tab-target="os-darwin-arm64" data-tab-store="os-tab-group">macOS / Apple Silicon</button>
     </div>
     <div class="tab-content">
       <div class="tab-panel active" id="os-linux-amd64">
@@ -249,7 +230,7 @@
     </div>
   </div>
 
-  <div class="collapsible" style="margin-top:20px;">
+  <div class="collapsible mt-5">
     <div class="collapsible-header" data-toggle="client-run-section" onclick="toggleSection('client-run-section')">
       <span class="toggle-arrow">&#9662;</span> Config &amp; run instructions
     </div>
@@ -257,9 +238,9 @@
       <div class="docs-label">Run</div>
       <div class="docs-code">chmod +x llmesh-client
 ./llmesh-client -config ./config.yaml</div>
-      <p class="field-desc" style="margin-top:12px;">macOS: remove quarantine before first run</p>
+      <p class="field-desc mt-3">macOS: remove quarantine before first run</p>
       <div class="docs-code">xattr -cr llmesh-client</div>
-      <div class="docs-label" style="margin-top:16px;">Config file</div>
+      <div class="docs-label mt-4">Config file</div>
       <p class="field-desc">Create a <mono>config.yaml</mono> alongside the binary. A pre-filled file with your token is available above after generating a token.</p>
       <div class="docs-code">router_url: "wss://{{.Host}}/ws/client"
 router_token: "ct-yourname-yourtoken"   # from Clients page
@@ -271,8 +252,8 @@ models:
     endpoint: "http://localhost:8081"
     chat_template: "qwen2.5"            # optional template override
 # Aliases are managed server-side in the admin UI &mdash; Clients page.</div>
-      <p class="field-desc" style="margin-top:12px;">
-        Man page: <a href="/downloads/llmesh-client.1" download style="color:var(--text-muted);">llmesh-client.1</a>
+      <p class="field-desc mt-3">
+        Man page: <a href="/downloads/llmesh-client.1" download class="link-muted">llmesh-client.1</a>
         &nbsp;&mdash;&nbsp;
         install with <mono>sudo install -m644 llmesh-client.1 /usr/local/share/man/man1/</mono>
       </p>
@@ -280,16 +261,16 @@ models:
   </div>
 </div>
 
-<div class="card" style="margin-top:24px;">
+<div class="card mt-6">
   <div class="card-title">llmesh-shim downloads</div>
-  <div class="docs-subtitle" style="margin-top:4px;margin-bottom:16px;">Routes requests to external HTTP APIs or command adapters. No GPU required.</div>
+  <div class="docs-subtitle mt-1 mb-4">Routes requests to external HTTP APIs or command adapters. No GPU required.</div>
 
   <div id="shim-tab-group" class="tab-container">
     <div class="tab-bar">
-      <div class="tab-btn active" data-tab="shim-linux-amd64" onclick="showOsTab('shim-tab-group','shim-linux-amd64')">linux / amd64</div>
-      <div class="tab-btn" data-tab="shim-linux-arm64" onclick="showOsTab('shim-tab-group','shim-linux-arm64')">linux / arm64</div>
-      <div class="tab-btn" data-tab="shim-darwin-amd64" onclick="showOsTab('shim-tab-group','shim-darwin-amd64')">macOS / Intel</div>
-      <div class="tab-btn" data-tab="shim-darwin-arm64" onclick="showOsTab('shim-tab-group','shim-darwin-arm64')">macOS / Apple Silicon</div>
+      <button class="tab-btn active" data-tab-target="shim-linux-amd64" data-tab-store="shim-tab-group">linux / amd64</button>
+      <button class="tab-btn" data-tab-target="shim-linux-arm64" data-tab-store="shim-tab-group">linux / arm64</button>
+      <button class="tab-btn" data-tab-target="shim-darwin-amd64" data-tab-store="shim-tab-group">macOS / Intel</button>
+      <button class="tab-btn" data-tab-target="shim-darwin-arm64" data-tab-store="shim-tab-group">macOS / Apple Silicon</button>
     </div>
     <div class="tab-content">
       <div class="tab-panel active" id="shim-linux-amd64">
@@ -311,7 +292,7 @@ models:
     </div>
   </div>
 
-  <div class="collapsible" style="margin-top:20px;">
+  <div class="collapsible mt-5">
     <div class="collapsible-header" data-toggle="shim-run-section" onclick="toggleSection('shim-run-section')">
       <span class="toggle-arrow">&#9662;</span> Config &amp; run instructions
     </div>
@@ -319,9 +300,9 @@ models:
       <div class="docs-label">Run</div>
       <div class="docs-code">chmod +x llmesh-shim
 ./llmesh-shim -config ./shim-config.yaml</div>
-      <p class="field-desc" style="margin-top:12px;">macOS: remove quarantine before first run</p>
+      <p class="field-desc mt-3">macOS: remove quarantine before first run</p>
       <div class="docs-code">xattr -cr llmesh-shim</div>
-      <div class="docs-label" style="margin-top:16px;">Config file</div>
+      <div class="docs-label mt-4">Config file</div>
       <p class="field-desc">Create a <mono>shim-config.yaml</mono> alongside the binary. A pre-filled file with your token is available above after generating a token. API keys are read from environment variables.</p>
       <div class="docs-code">router_url: "wss://{{.Host}}/ws/client"
 router_token: "ct-yourname-yourtoken"
@@ -350,15 +331,15 @@ models:
   #   backend:
   #     type: command
   #     command: "/path/to/adapter.sh"</div>
-      <p class="field-desc" style="margin-top:12px;">
-        Man page: <a href="/downloads/llmesh-shim.1" download style="color:var(--text-muted);">llmesh-shim.1</a>
+      <p class="field-desc mt-3">
+        Man page: <a href="/downloads/llmesh-shim.1" download class="link-muted">llmesh-shim.1</a>
         &nbsp;&mdash;&nbsp;
         install with <mono>sudo install -m644 llmesh-shim.1 /usr/local/share/man/man1/</mono>
       </p>
-      <p class="field-desc" style="margin-top:8px;">
-        Docker Compose: <a href="/downloads/docker-compose.shim.yml" download style="color:var(--text-muted);">docker-compose.shim.yml</a>
+      <p class="field-desc mt-2">
+        Docker Compose: <a href="/downloads/docker-compose.shim.yml" download class="link-muted">docker-compose.shim.yml</a>
         &nbsp;&mdash;&nbsp;
-        example config: <a href="/downloads/llmesh-shim-config.yaml.example" download style="color:var(--text-muted);">shim-config.yaml.example</a>
+        example config: <a href="/downloads/llmesh-shim-config.yaml.example" download class="link-muted">shim-config.yaml.example</a>
       </p>
     </div>
   </div>
