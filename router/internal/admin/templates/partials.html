@@ -1,0 +1,40 @@
+{{- /*
+partials.html — shared, reusable template components.
+
+Parsed alongside every layout page (see parseTemplates). Invoke with the `dict`
+helper to pass named arguments, e.g.:
+
+  {{template "action-button" dict
+      "Action" "/portal/api-keys/revoke"
+      "CSRF" $.CSRFToken
+      "Fields" (dict "key" .Key)
+      "Confirm" "Revoke this API key?"
+      "Class" "btn-danger btn-xs icon-btn"
+      "Label" "✕"
+      "Title" "Revoke"}}
+*/ -}}
+
+{{- /* action-button: a single-action POST form (CSRF + optional confirm).
+       Args: Action, CSRF, Fields (map of hidden name->value),
+             Confirm (optional), Class (button class), Label, Title (optional),
+             Aria (optional). */ -}}
+{{define "action-button"}}
+<form method="POST" action="{{.Action}}" class="form-inline"{{if .Confirm}} onsubmit="return confirm('{{.Confirm}}')"{{end}}>
+  <input type="hidden" name="_csrf" value="{{.CSRF}}">
+  {{range $k, $v := .Fields}}<input type="hidden" name="{{$k}}" value="{{$v}}">{{end}}
+  <button type="submit" class="{{.Class}}"{{if .Title}} title="{{.Title}}"{{end}}{{if .Aria}} aria-label="{{.Aria}}"{{else if .Title}} aria-label="{{.Title}}"{{end}}>{{.Label}}</button>
+</form>
+{{end}}
+
+{{- /* status-badge: connection/state badge.
+       Args: Class (CSS modifier), Label. */ -}}
+{{define "status-badge"}}<span class="badge {{.Class}}">{{.Label}}</span>{{end}}
+
+{{- /* endpoint-display: a copyable URL box. Page keeps its own card + prose.
+       Args: URL, ValId (optional element id). */ -}}
+{{define "endpoint-display"}}
+<div class="endpoint-display">
+  <span class="endpoint-url"{{if .ValId}} id="{{.ValId}}"{{end}}>{{.URL}}</span>
+  <button class="btn-copy" data-copy="{{.URL}}" title="Copy URL">&#10697;</button>
+</div>
+{{end}}

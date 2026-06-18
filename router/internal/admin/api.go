@@ -2,7 +2,6 @@ package admin
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -19,23 +18,25 @@ type statRowJSON struct {
 }
 
 type dashboardJSON struct {
-	TotalRequests  int64             `json:"total_requests"`
-	ActiveClients  int               `json:"active_clients"`
-	APIKeyCount    int               `json:"api_key_count"`
-	TokenCount     int               `json:"token_count"`
-	ActiveModels   []string            `json:"active_models"`
-	ActiveAliases  map[string][]string `json:"active_aliases"`
-	Clients        []clientJSON      `json:"clients"`
-	StatsByModel   []statRowJSON     `json:"stats_by_model,omitempty"`
-	StatsByUser    []statRowJSON     `json:"stats_by_user,omitempty"`
+	TotalRequests int64               `json:"total_requests"`
+	ActiveClients int                 `json:"active_clients"`
+	APIKeyCount   int                 `json:"api_key_count"`
+	TokenCount    int                 `json:"token_count"`
+	ActiveModels  []string            `json:"active_models"`
+	ActiveAliases map[string][]string `json:"active_aliases"`
+	Clients       []clientJSON        `json:"clients"`
+	StatsByModel  []statRowJSON       `json:"stats_by_model,omitempty"`
+	StatsByUser   []statRowJSON       `json:"stats_by_user,omitempty"`
 }
 
 type clientJSON struct {
-	Name     string `json:"name"`
-	Status   string `json:"status"`
-	LastSeen string `json:"last_seen,omitempty"`
-	Models   string `json:"models,omitempty"`
-	Version  string `json:"version,omitempty"`
+	Name        string `json:"name"`
+	Status      string `json:"status"`
+	StatusClass string `json:"status_class"`
+	StatusLabel string `json:"status_label"`
+	LastSeen    string `json:"last_seen,omitempty"`
+	Models      string `json:"models,omitempty"`
+	Version     string `json:"version,omitempty"`
 }
 
 func toStatRowJSON(rows []StatRow) []statRowJSON {
@@ -113,21 +114,15 @@ func (a *Admin) handleDashboardJSON(w http.ResponseWriter, r *http.Request) {
 	for _, t := range tokens {
 		c := clientJSON{Name: t.Owner + "/" + t.Name}
 		connCount := a.hub.ConnectedCountByToken(t.Token)
+		ls := a.hub.LastSeenTime(t.Token)
+		c.Status, c.StatusClass, c.StatusLabel = clientStatusBadge(connCount, !ls.IsZero())
 		if connCount > 0 {
-			if connCount == 1 {
-				c.Status = "connected"
-			} else {
-				c.Status = fmt.Sprintf("%d connected", connCount)
-			}
 			mods := a.hub.ConnectedModels(t.Token)
 			sort.Strings(mods)
 			c.Models = strings.Join(mods, ", ")
 			c.Version = a.hub.ConnectedVersion(t.Token)
-		} else if ls := a.hub.LastSeenTime(t.Token); !ls.IsZero() {
-			c.Status = "offline"
+		} else if !ls.IsZero() {
 			c.LastSeen = humanTime(ls)
-		} else {
-			c.Status = "never_connected"
 		}
 		clients = append(clients, c)
 	}
@@ -153,10 +148,10 @@ func (a *Admin) handleDashboardJSON(w http.ResponseWriter, r *http.Request) {
 // ─── Jobs API ─────────────────────────────────────────────────────────────────
 
 type jobStatJSON struct {
-	ID             string `json:"id"`
-	Phase          string `json:"phase"`            // "processing" | "generating"
-	DeltaCount     int64  `json:"delta_count"`      // tokens generated so far
-	TTFTMs         int64  `json:"ttft_ms,omitempty"` // time-to-first-token in ms
+	ID              string `json:"id"`
+	Phase           string `json:"phase"`                    // "processing" | "generating"
+	DeltaCount      int64  `json:"delta_count"`              // tokens generated so far
+	TTFTMs          int64  `json:"ttft_ms,omitempty"`        // time-to-first-token in ms
 	FirstChunkAtISO string `json:"first_chunk_at,omitempty"` // RFC3339
 }
 
