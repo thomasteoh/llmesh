@@ -248,16 +248,16 @@ fields.
 .nf
 llmesh\-shim \-config /etc/llmesh/shim.yaml
 .fi
-.SS Run inside Docker (recommended)
-Download
-.IR docker\-compose.shim.yml ,
-.IR config.yaml.example ,
-and set your API keys:
+.SS Run inside Docker
+Clone the llmesh repository, place your filled-in configuration at
+.IR shim/config.yaml ,
+set your API keys, then build and run from the repository root:
 .nf
 export OPENAI_API_KEY=sk\-...
 export ANTHROPIC_API_KEY=sk\-ant\-...
 docker compose \-f docker\-compose.shim.yml up \-d
 .fi
+The compose file builds the image from source.
 .SS OpenAI backend
 .nf
 models:

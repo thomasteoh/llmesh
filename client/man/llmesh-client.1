@@ -97,17 +97,14 @@ when forwarding jobs.
 .nf
 llmesh\-client \-config /etc/llmesh/client.yaml
 .fi
-.SS Run inside Docker (recommended)
-Download
-.I docker-compose.client.yml
-and
-.I config.yaml.example
-from the router admin UI (Docs \(-> Client files), rename the example to
-.IR config.yaml ,
-fill in your token, then:
+.SS Run inside Docker
+Clone the llmesh repository, place your filled-in configuration at
+.IR client/config.yaml ,
+then build and run from the repository root:
 .nf
 docker compose \-f docker\-compose.client.yml up \-d
 .fi
+The compose file builds the image from source.
 .SS Run directly on the host
 Start llama.cpp on port 8080:
 .nf

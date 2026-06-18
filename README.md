@@ -237,7 +237,7 @@ models:
 
 ```bash
 export OPENAI_API_KEY=sk-...
-docker compose -f shim/docker-compose.shim.yml up -d
+docker compose -f docker-compose.shim.yml up -d
 ```
 
 The shim authenticates with a **client token** (`ct-`) exactly like `llmesh-client` — they are interchangeable from the router's point of view. Full field reference (HTTP backends, command adapters, the adapter protocol) is in the **Help** page and the `llmesh-shim(1)` man page.
@@ -248,8 +248,9 @@ The shim authenticates with a **client token** (`ct-`) exactly like `llmesh-clie
 
 ```bash
 git clone https://github.com/thomasteoh/llmesh && cd llmesh
-docker compose build
-docker compose -f docker-compose.client.yml build
+docker compose build                                # router
+docker compose -f docker-compose.client.yml build   # client
+docker compose -f docker-compose.shim.yml build      # shim
 ```
 
 ---
@@ -342,13 +343,13 @@ llmesh/
 ├── shim/                         # Shim binary (HTTP API / command-adapter worker)
 │   ├── config.yaml.example       # Config template
 │   ├── man/                      # llmesh-shim(1) man page
-│   ├── docker-compose.shim.yml   # Shim service
 │   └── internal/                 # Backends (http, command) + WebSocket connection
 ├── pkg/
 │   ├── types/                    # Shared message types
 │   └── wsclient/                 # Shared WebSocket client (used by client + shim)
-├── docker-compose.yml            # Router service
-└── docker-compose.client.yml     # Client service
+├── docker-compose.yml            # Router service (build from source)
+├── docker-compose.client.yml     # Client service (build from source)
+└── docker-compose.shim.yml       # Shim service (build from source)
 ```
 
 ---

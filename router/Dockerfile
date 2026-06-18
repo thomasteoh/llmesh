@@ -33,10 +33,8 @@ RUN if [ "${INCLUDE_CLIENTS}" = "true" ]; then \
 RUN if [ "${INCLUDE_CLIENTS}" = "true" ]; then \
       mkdir -p /downloads && \
       cp client/man/llmesh-client.1 /downloads/ && \
-      cp client/docker-compose.client.yml /downloads/ && \
       cp router/config.yaml.example /downloads/ && \
       cp shim/man/llmesh-shim.1 /downloads/ && \
-      cp shim/docker-compose.shim.yml /downloads/ && \
       cp shim/config.yaml.example /downloads/llmesh-shim-config.yaml.example; \
     fi
 
