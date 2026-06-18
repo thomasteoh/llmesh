@@ -75,7 +75,7 @@
       <p class="docs-p">This is the single base URL your apps, agents, and scripts talk to:</p>
       <div class="docs-code">https://{{.Host}}/v1</div>
       <p class="docs-p">Anything that already works with OpenAI or Anthropic works here &mdash; just swap in this base URL and one of your API keys. The specific paths underneath it:</p>
-      <div class="table-scroll" style="margin-bottom:16px;">
+      <div class="table-scroll mb-4">
         <table class="data-table">
           <thead><tr><th>Path</th><th>Use it for</th></tr></thead>
           <tbody>
@@ -90,7 +90,7 @@
 
       <div class="docs-label">Two kinds of keys &mdash; don't mix them up</div>
       <p class="docs-p">llmesh uses two separate kinds of secret, for two different jobs. The prefix tells them apart at a glance.</p>
-      <div class="table-scroll" style="margin-bottom:16px;">
+      <div class="table-scroll mb-4">
         <table class="data-table">
           <thead><tr><th></th><th>API key</th><th>Client token</th></tr></thead>
           <tbody>
@@ -124,7 +124,7 @@ flowchart LR
       </div>
 
       <div class="docs-label">First steps</div>
-      <p class="docs-p">1. On the <a href="/portal/clients">Clients</a> page, generate a client token and download the pre-filled <mono>config.yaml</mono>. Run an <strong>llmesh-client</strong> next to a llama.cpp server (see <a onclick="showDoc('client-setup',null)" style="cursor:pointer;color:var(--text-muted);text-decoration:underline;">Client config</a>), or an <strong>llmesh-shim</strong> to bridge a cloud API (see <a onclick="showDoc('shim-setup',null)" style="cursor:pointer;color:var(--text-muted);text-decoration:underline;">Shim config</a>).</p>
+      <p class="docs-p">1. On the <a href="/portal/clients">Clients</a> page, generate a client token and download the pre-filled <mono>config.yaml</mono>. Run an <strong>llmesh-client</strong> next to a llama.cpp server (see <a class="docs-xref" onclick="showDoc('client-setup',null)">Client config</a>), or an <strong>llmesh-shim</strong> to bridge a cloud API (see <a class="docs-xref" onclick="showDoc('shim-setup',null)">Shim config</a>).</p>
       <p class="docs-p">2. On the <a href="/portal/api-keys">API Keys</a> page, generate an API key for whoever or whatever will be sending requests.</p>
       <p class="docs-p">3. Point your tool at <mono>https://{{.Host}}/v1</mono> with that key. Done.</p>
     </div>
@@ -184,16 +184,16 @@ models:
     endpoint: "http://localhost:8081"
     chat_template: "qwen2.5"               # optional template override</div>
       <div class="docs-label">Fields</div>
-      <div class="table-scroll" style="margin-bottom:16px;">
+      <div class="table-scroll mb-4">
         <table class="data-table">
           <thead><tr><th>Field</th><th>Required</th><th>Default</th><th>Description</th></tr></thead>
           <tbody>
             <tr><td><mono>router_url</mono></td><td>yes</td><td>&mdash;</td><td>WebSocket URL of the router. Use <code>wss://</code> for TLS.</td></tr>
             <tr><td><mono>router_token</mono></td><td>yes</td><td>&mdash;</td><td>Client token from the <a href="/portal/clients">Clients</a> page. Begins with <code>ct-</code>.</td></tr>
             <tr><td><mono>max_concurrent</mono></td><td>no</td><td>auto</td><td>Max parallel jobs. When omitted, auto-detected from llama.cpp&rsquo;s reported slot count (<mono>total_slots</mono>), falling back to 1. Set explicitly to override.</td></tr>
-            <tr><td><mono>models[].name</mono></td><td>no</td><td>auto</td><td>Model name as callers will request it. When omitted, auto-detected from the endpoint&rsquo;s <mono>/v1/models</mono> at connect time. Aliases are managed server-side &mdash; see <a onclick="showDoc('model-aliases',null)" style="cursor:pointer;color:var(--text-muted);text-decoration:underline;">Model aliases</a>.</td></tr>
+            <tr><td><mono>models[].name</mono></td><td>no</td><td>auto</td><td>Model name as callers will request it. When omitted, auto-detected from the endpoint&rsquo;s <mono>/v1/models</mono> at connect time. Aliases are managed server-side &mdash; see <a class="docs-xref" onclick="showDoc('model-aliases',null)">Model aliases</a>.</td></tr>
             <tr><td><mono>models[].endpoint</mono></td><td>yes</td><td>&mdash;</td><td>llama.cpp base URL. Client appends <code>/v1/chat/completions</code>.</td></tr>
-            <tr><td><mono>models[].chat_template</mono></td><td>no</td><td>&mdash;</td><td>Override the model&rsquo;s built-in Jinja2 chat template. llama.cpp applies it server-side. See <a onclick="showDoc('chat-templates',null)" style="cursor:pointer;color:var(--text-muted);text-decoration:underline;">Chat templates</a>.</td></tr>
+            <tr><td><mono>models[].chat_template</mono></td><td>no</td><td>&mdash;</td><td>Override the model&rsquo;s built-in Jinja2 chat template. llama.cpp applies it server-side. See <a class="docs-xref" onclick="showDoc('chat-templates',null)">Chat templates</a>.</td></tr>
           </tbody>
         </table>
       </div>
@@ -237,7 +237,7 @@ models:
       type: command
       command: "python3 /path/to/adapter.py"</div>
       <div class="docs-label">Top-level fields</div>
-      <div class="table-scroll" style="margin-bottom:16px;">
+      <div class="table-scroll mb-4">
         <table class="data-table">
           <thead><tr><th>Field</th><th>Required</th><th>Default</th><th>Description</th></tr></thead>
           <tbody>
@@ -251,7 +251,7 @@ models:
         </table>
       </div>
       <div class="docs-label">HTTP backend fields (<mono>type: http</mono>)</div>
-      <div class="table-scroll" style="margin-bottom:16px;">
+      <div class="table-scroll mb-4">
         <table class="data-table">
           <thead><tr><th>Field</th><th>Required</th><th>Description</th></tr></thead>
           <tbody>
@@ -264,7 +264,7 @@ models:
         </table>
       </div>
       <div class="docs-label">Command adapter fields (<mono>type: command</mono>)</div>
-      <div class="table-scroll" style="margin-bottom:16px;">
+      <div class="table-scroll mb-4">
         <table class="data-table">
           <thead><tr><th>Field</th><th>Required</th><th>Description</th></tr></thead>
           <tbody>
@@ -548,7 +548,7 @@ flowchart TD
       <p class="flow-prose">The raw JSON is normalised into a format-agnostic <mono>InferenceRequest</mono>. Message content is stored as raw JSON (<mono>json.RawMessage</mono>), preserving tool_use/tool_result blocks, tool_calls arrays, and multi-part content without modification. Tools and tool_choice are forwarded as-is. The original wire format (<mono>openai</mono> / <mono>anthropic</mono> / <mono>openai-responses</mono>) is stored as <mono>SourceFmt</mono> for the outbound formatter.</p>
 
       <div class="docs-label">Fields not forwarded</div>
-      <div class="table-scroll" style="margin-bottom:16px;">
+      <div class="table-scroll mb-4">
         <table class="data-table">
           <thead><tr><th>Field</th><th>Reason</th></tr></thead>
           <tbody>
@@ -577,7 +577,7 @@ flowchart TD
       <p class="flow-prose"><mono>correlation.Send</mono> is non-blocking: if the 32-slot channel is full the chunk is silently dropped. The HTTP goroutine drains the channel and writes SSE events, flushing after each token or tool-call delta.</p>
 
       <div class="docs-label">Data lifetime</div>
-      <div class="table-scroll" style="margin-bottom:16px;">
+      <div class="table-scroll mb-4">
         <table class="data-table">
           <thead><tr><th>Data</th><th>Lives in</th><th>Persisted?</th></tr></thead>
           <tbody>

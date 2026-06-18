@@ -20,12 +20,7 @@
         <span class="alias-badge">
           {{.}}
           {{if $.IsAdmin}}
-          <form method="POST" action="/portal/model-aliases/delete" class="form-inline" onsubmit="return confirm('Remove alias \u201c{{.}}\u201d?')">
-            <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-            <input type="hidden" name="alias" value="{{.}}">
-            <input type="hidden" name="model" value="{{$model}}">
-            <button type="submit" class="alias-badge-del" title="Remove alias">&#x2715;</button>
-          </form>
+          {{template "action-button" dict "Action" "/portal/model-aliases/delete" "CSRF" $.CSRFToken "Fields" (dict "alias" . "model" $model) "Confirm" (printf "Remove alias %s?" .) "Class" "alias-badge-del" "Label" "\u2715" "Title" "Remove alias"}}
           {{end}}
         </span>
         {{end}}
@@ -90,7 +85,7 @@
       {{range .Clients}}
       <tr>
         <td data-label="Client">{{.Name}}</td>
-        <td data-label="Status"><span class="badge {{.StatusClass}}">{{.StatusLabel}}</span></td>
+        <td data-label="Status">{{template "status-badge" dict "Class" .StatusClass "Label" .StatusLabel}}</td>
         <td data-label="Last seen" class="muted">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
         <td data-label="Models" class="muted">{{if .Models}}{{.Models}}{{else}}&mdash;{{end}}</td>
         <td data-label="Version" class="muted">{{if .Version}}{{.Version}}{{else}}&mdash;{{end}}</td>
@@ -103,14 +98,14 @@
 </div>
 
 {{if or .IsAdmin .QueueItems}}
-<div class="collapsible" style="margin-top:24px;" id="queue-section-wrap">
+<div class="collapsible mt-6" id="queue-section-wrap">
   <div class="collapsible-header queue-header" data-toggle="queue-section" onclick="toggleSection('queue-section')">
     <span class="toggle-arrow">&#9662;</span>
     Job queue
     <span class="queue-count badge {{if gt .QueueLen 0}}active{{else}}muted-badge{{end}}" id="queue-count">{{.QueueLen}}</span>
   </div>
   <div class="collapsible-body {{if gt .QueueLen 0}}open{{end}}" id="queue-section">
-    <div class="table-scroll" style="margin-top:8px;">
+    <div class="table-scroll mt-2">
       <table class="data-table">
         <thead><tr><th>User</th><th>Key</th><th>Model</th><th>Priority</th><th>Words</th><th>Waiting</th><th></th></tr></thead>
         <tbody id="queue-tbody">
@@ -119,18 +114,14 @@
             <td data-label="User">{{.Owner}}</td>
             <td data-label="Key" class="muted">{{if .APIKeyLabel}}{{.APIKeyLabel}}{{else}}&mdash;{{end}}</td>
             <td data-label="Model" class="muted">{{.Model}}</td>
-            <td data-label="Priority"><span class="badge {{.Priority}}">{{.Priority}}</span></td>
+            <td data-label="Priority">{{template "status-badge" dict "Class" .Priority "Label" .Priority}}</td>
             <td data-label="Words" class="muted">{{if .WordCount}}{{.WordCount}}{{else}}&mdash;{{end}}</td>
             <td data-label="Waiting" class="muted">
               {{if .EnqueuedAtISO}}<span data-since="{{.EnqueuedAtISO}}" title="queued {{.EnqueuedAt}}">—</span>{{else}}{{.EnqueuedAt}}{{end}}
             </td>
-            <td>
+            <td class="cell-actions">
               {{if .CanCancel}}
-              <form method="POST" action="/portal/queue/cancel" class="form-inline" onsubmit="return confirm('Remove this request from the queue?')">
-                <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-                <input type="hidden" name="request_id" value="{{.ID}}">
-                <button type="submit" class="btn-danger btn-xs" title="Cancel" aria-label="Cancel queued job">&#x2715;</button>
-              </form>
+              {{template "action-button" dict "Action" "/portal/queue/cancel" "CSRF" $.CSRFToken "Fields" (dict "request_id" .ID) "Confirm" "Remove this request from the queue?" "Class" "btn-danger btn-xs icon-btn" "Label" "✕" "Title" "Cancel"}}
               {{end}}
             </td>
           </tr>

@@ -13,6 +13,24 @@ import (
 	"llmesh/router/internal/stats"
 )
 
+// clientStatusBadge is the single source of truth for how a client token's
+// connection state maps to a status key, CSS badge class, and display label.
+// Used by both the server-rendered pages and the dashboard JSON API so the
+// badge never has to be reconstructed in JavaScript.
+func clientStatusBadge(connCount int, hasLastSeen bool) (status, class, label string) {
+	switch {
+	case connCount == 1:
+		return "connected", "connected", "● connected"
+	case connCount > 1:
+		s := fmt.Sprintf("%d connected", connCount)
+		return s, "multi_connected", "● " + s
+	case hasLastSeen:
+		return "offline", "offline", "○ offline"
+	default:
+		return "never_connected", "never_connected", "○ never connected"
+	}
+}
+
 // --- Shared page data types ---
 
 type basePage struct {
@@ -228,29 +246,15 @@ func (a *Admin) handleDashboard(w http.ResponseWriter, r *http.Request) {
 			Token: t.Token,
 		}
 		connCount := a.hub.ConnectedCountByToken(t.Token)
+		ls := a.hub.LastSeenTime(t.Token)
+		row.Status, row.StatusClass, row.StatusLabel = clientStatusBadge(connCount, !ls.IsZero())
 		if connCount > 0 {
-			if connCount == 1 {
-				row.Status = "connected"
-				row.StatusClass = "connected"
-				row.StatusLabel = "\u25cf connected"
-			} else {
-				row.Status = fmt.Sprintf("%d connected", connCount)
-				row.StatusClass = "multi_connected"
-				row.StatusLabel = fmt.Sprintf("\u25cf %d connected", connCount)
-			}
 			mods := a.hub.ConnectedModels(t.Token)
 			sort.Strings(mods)
 			row.Models = strings.Join(mods, ", ")
 			row.Version = a.hub.ConnectedVersion(t.Token)
-		} else if ls := a.hub.LastSeenTime(t.Token); !ls.IsZero() {
-			row.Status = "offline"
-			row.StatusClass = "offline"
-			row.StatusLabel = "\u25cb offline"
+		} else if !ls.IsZero() {
 			row.LastSeen = humanTime(ls)
-		} else {
-			row.Status = "never_connected"
-			row.StatusClass = "never_connected"
-			row.StatusLabel = "\u25cb never connected"
 		}
 		clients = append(clients, row)
 	}
@@ -393,15 +397,7 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, r *http.Request, u Use
 		row := ClientTokenRow{ClientToken: t, CSRFToken: bp.CSRFToken}
 		connInfos := a.hub.ConnectedClientsByToken(t.Token)
 		if len(connInfos) > 0 {
-			if len(connInfos) == 1 {
-				row.Status = "connected"
-				row.StatusClass = "connected"
-				row.StatusLabel = "\u25cf connected"
-			} else {
-				row.Status = fmt.Sprintf("%d connected", len(connInfos))
-				row.StatusClass = "multi_connected"
-				row.StatusLabel = fmt.Sprintf("\u25cf %d connected", len(connInfos))
-			}
+			row.Status, row.StatusClass, row.StatusLabel = clientStatusBadge(len(connInfos), false)
 			mods := a.hub.ConnectedModels(t.Token)
 			sort.Strings(mods)
 			for _, m := range mods {
@@ -477,14 +473,10 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, r *http.Request, u Use
 				})
 			}
 		} else if ls := a.hub.LastSeenTime(t.Token); !ls.IsZero() {
-			row.Status = "offline"
-			row.StatusClass = "offline"
-			row.StatusLabel = "\u25cb offline"
+			row.Status, row.StatusClass, row.StatusLabel = clientStatusBadge(0, true)
 			row.LastSeen = humanTime(ls)
 		} else {
-			row.Status = "never_connected"
-			row.StatusClass = "never_connected"
-			row.StatusLabel = "\u25cb never connected"
+			row.Status, row.StatusClass, row.StatusLabel = clientStatusBadge(0, false)
 		}
 		// Build ModelSlots: union of live model names and OwnerSlots keys (offline
 		// tokens may have limits on models they no longer advertise).

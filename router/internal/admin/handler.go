@@ -93,6 +93,22 @@ func (a *Admin) parseTemplates() error {
 			return s[:n]
 		},
 		"not": func(b bool) bool { return !b },
+		// dict builds a map from alternating key/value pairs so partials can be
+		// invoked with named arguments, e.g. {{template "action-button" dict "Action" "/x" ...}}.
+		"dict": func(pairs ...any) (map[string]any, error) {
+			if len(pairs)%2 != 0 {
+				return nil, fmt.Errorf("dict: odd number of arguments")
+			}
+			m := make(map[string]any, len(pairs)/2)
+			for i := 0; i < len(pairs); i += 2 {
+				key, ok := pairs[i].(string)
+				if !ok {
+					return nil, fmt.Errorf("dict: key %d is not a string", i)
+				}
+				m[key] = pairs[i+1]
+			}
+			return m, nil
+		},
 	}
 
 	layoutPages := []string{"dashboard", "api-keys", "clients", "settings", "help"}
@@ -101,6 +117,7 @@ func (a *Admin) parseTemplates() error {
 		t, err := template.New("layout.html").Funcs(funcMap).ParseFS(
 			adminFS,
 			"templates/layout.html",
+			"templates/partials.html",
 			"templates/"+name+".html",
 		)
 		if err != nil {
