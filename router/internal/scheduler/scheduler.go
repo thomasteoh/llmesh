@@ -89,19 +89,53 @@ func (s *Scheduler) loop() {
 // the job is sent to the client.
 func (s *Scheduler) drainQueue() {
 	aliases := s.aliases.AliasMap()
+
+	// Snapshot the available clients once per drain. Copying each client's
+	// Models/OwnerSlots/context maps is the expensive part, and none of those
+	// change mid-drain — only in-flight counts do, and those we track locally
+	// below. A concurrent job completion only frees slots, so a stale snapshot
+	// is safe (at worst slightly conservative; the resulting OnAvailable wakes
+	// the scheduler again).
+	clients := s.hub.AvailableClientList()
+	if len(clients) == 0 {
+		return
+	}
+
+	// Local in-flight accounting layered on the snapshot so we don't re-list
+	// (and re-copy maps) on every dispatch iteration.
+	inFlight := make(map[string]int, len(clients))
+	for _, c := range clients {
+		inFlight[c.ID] = c.InFlight
+	}
+	// nonOwner[clientID][model] tracks non-owner jobs for a model on a client.
+	// Seeded lazily from the hub's live count on first access, then incremented
+	// locally as we dispatch within this drain.
+	nonOwner := make(map[string]map[string]int)
+	nonOwnerCount := func(clientID, owner, model string) int {
+		m := nonOwner[clientID]
+		if m == nil {
+			m = make(map[string]int)
+			nonOwner[clientID] = m
+		}
+		if v, ok := m[model]; ok {
+			return v
+		}
+		v := s.hub.NonOwnerInFlight(clientID, owner, model)
+		m[model] = v
+		return v
+	}
+
+	type candidate struct {
+		client types.ClientSummary
+		req    types.InferenceRequest
+	}
+
 	for {
-		clients := s.hub.AvailableClientList()
-		if len(clients) == 0 {
-			return
-		}
-
-		type candidate struct {
-			client types.ClientSummary
-			req    types.InferenceRequest
-		}
-
 		var best *candidate
 		for _, c := range clients {
+			if inFlight[c.ID] >= c.MaxConcurrent {
+				continue
+			}
 			req := s.queue.PeekBestForClient(c.Models, aliases, c.Owner)
 			if req == nil {
 				continue
@@ -146,7 +180,7 @@ func (s *Scheduler) drainQueue() {
 						"model", ownerSlotsKey, "owner_reserved", ownerReserved)
 					continue
 				}
-				if s.hub.NonOwnerInFlight(c.ID, c.Owner, inFlightModel) >= nonOwnerCap {
+				if nonOwnerCount(c.ID, c.Owner, inFlightModel) >= nonOwnerCap {
 					s.log.Debug("scheduler: owner-slot cap reached for model",
 						"client_id", c.ID, "model", inFlightModel,
 						"non_owner_cap", nonOwnerCap)
@@ -165,7 +199,11 @@ func (s *Scheduler) drainQueue() {
 					}
 				}
 			}
-			cand := &candidate{client: c, req: *req}
+			// Compare using the locally-tracked in-flight count, not the
+			// snapshot's stale value, so load-spreading stays accurate.
+			cc := c
+			cc.InFlight = inFlight[c.ID]
+			cand := &candidate{client: cc, req: *req}
 			if best == nil || betterPair(cand.client, cand.req, best.client, best.req) {
 				best = cand
 			}
@@ -184,6 +222,18 @@ func (s *Scheduler) drainQueue() {
 
 		req.Model = resolveModel(req.Model, best.client.Models, aliases)
 
+		// Seed the local non-owner base from the hub before tracking this job, so
+		// the base excludes the job we are about to dispatch.
+		isNonOwner := req.Owner != best.client.Owner
+		if isNonOwner {
+			if nonOwner[best.client.ID] == nil {
+				nonOwner[best.client.ID] = make(map[string]int)
+			}
+			if _, ok := nonOwner[best.client.ID][req.Model]; !ok {
+				nonOwner[best.client.ID][req.Model] = s.hub.NonOwnerInFlight(best.client.ID, best.client.Owner, req.Model)
+			}
+		}
+
 		s.hub.IncrInFlight(best.client.ID)
 		job := types.JobMsg{Type: "job", Request: *req}
 		if !s.hub.SendToClient(best.client.ID, job) {
@@ -193,6 +243,13 @@ func (s *Scheduler) drainQueue() {
 			return
 		}
 		s.hub.TrackJob(best.client.ID, *req)
+
+		// Update local accounting so subsequent iterations see this dispatch.
+		inFlight[best.client.ID]++
+		if isNonOwner {
+			nonOwner[best.client.ID][req.Model]++
+		}
+
 		s.log.Info("scheduler: dispatched", "request_id", req.ID, "origin_id", req.OriginID, "model", req.Model, "owner", req.Owner, "client_id", best.client.ID, "client_owner", best.client.Owner)
 	}
 }
