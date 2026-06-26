@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"sync"
 
 	"llmesh/pkg/types"
@@ -116,6 +117,16 @@ func (r *Registry) Unregister(hash string) {
 // determine the response: model, messages, and generation parameters.
 // Fields that do not affect the output (ID, owner, priority, timestamps) are excluded.
 func ContentHash(req *types.InferenceRequest) string {
+	return ContentHashOpts(req, false)
+}
+
+// ContentHashOpts is ContentHash with optional content normalisation. When
+// normalize is true, each message's content is canonicalised (JSON object keys
+// sorted, insignificant whitespace removed, string content trimmed) before
+// hashing, so two requests that are semantically identical but differ only in
+// JSON byte layout produce the same hash and therefore coalesce. Normalisation
+// affects the hash only — the request dispatched to the model is unchanged.
+func ContentHashOpts(req *types.InferenceRequest, normalize bool) string {
 	type hashInput struct {
 		Model       string          `json:"model"`
 		Messages    []types.Message `json:"messages"`
@@ -125,17 +136,52 @@ func ContentHash(req *types.InferenceRequest) string {
 		Tools       json.RawMessage `json:"tools,omitempty"`
 		ToolChoice  json.RawMessage `json:"tool_choice,omitempty"`
 	}
+	messages := req.Messages
+	tools := req.Tools
+	toolChoice := req.ToolChoice
+	if normalize {
+		messages = make([]types.Message, len(req.Messages))
+		for i, m := range req.Messages {
+			m.Content = canonicalJSON(m.Content)
+			m.ToolCalls = canonicalJSON(m.ToolCalls)
+			messages[i] = m
+		}
+		tools = canonicalJSON(tools)
+		toolChoice = canonicalJSON(toolChoice)
+	}
 	data, _ := json.Marshal(hashInput{
 		Model:       req.Model,
-		Messages:    req.Messages,
+		Messages:    messages,
 		MaxTokens:   req.MaxTokens,
 		Temperature: req.Temperature,
 		TopP:        req.TopP,
-		Tools:       req.Tools,
-		ToolChoice:  req.ToolChoice,
+		Tools:       tools,
+		ToolChoice:  toolChoice,
 	})
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+// canonicalJSON re-encodes raw so that object keys are sorted and insignificant
+// whitespace is dropped (both guaranteed by encoding/json). String values are
+// additionally trimmed of surrounding whitespace. Returns raw unchanged if it
+// is empty or not valid JSON.
+func canonicalJSON(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return raw
+	}
+	if s, ok := v.(string); ok {
+		v = strings.TrimSpace(s)
+	}
+	out, err := json.Marshal(v)
+	if err != nil {
+		return raw
+	}
+	return out
 }
 
 // MakeSubscriberChan returns a single channel pre-loaded with buffered chunks

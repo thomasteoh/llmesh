@@ -5,6 +5,7 @@
     {{if .IsAdmin}}
     <button class="tab-btn" data-tab-target="tab-users" data-tab-hash>Users</button>
     <button class="tab-btn" data-tab-target="tab-upstreams" data-tab-hash>Upstreams</button>
+    <button class="tab-btn" data-tab-target="tab-optimization" data-tab-hash>Optimization</button>
     <button class="tab-btn" data-tab-target="tab-logs" data-tab-hash data-tab-onactivate="logs">Logs</button>
     {{end}}
   </div>
@@ -121,6 +122,46 @@
       {{else}}
       <p class="table-hint">No upstream routers configured.</p>
       {{end}}
+    </div>
+  </div>
+
+  {{/* ── Optimization tab ── */}}
+  <div id="tab-optimization" class="tab-panel">
+    <div class="settings-narrow">
+      <div class="card">
+        <div class="card-title">Request optimization</div>
+        <p class="table-hint mb-3">Transformations applied to inbound requests. All default off; each is independent. None change what the model sees beyond the stated effect.</p>
+        <form method="POST" action="/portal/settings/optimization">
+          <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+
+          <div class="form-group mb-3">
+            <label><input type="checkbox" name="reqopt.coalesce_normalize" {{if .Opt.CoalesceNormalize}}checked{{end}}> Normalize for coalescing</label>
+            <p class="table-hint">Canonicalize JSON (sort keys, drop insignificant whitespace, trim string content) when hashing for dedup, so semantically identical requests coalesce. Affects the dedup hash only; the dispatched request is unchanged.</p>
+          </div>
+
+          <div class="form-group mb-3">
+            <label><input type="checkbox" name="reqopt.prefix_affinity" {{if .Opt.PrefixAffinity}}checked{{end}}> Prefix affinity routing</label>
+            <p class="table-hint">Route follow-up turns of a conversation to the client that served the prefix, keeping the upstream KV cache warm. Falls back to normal load-spreading when the prior client is busy or cold.</p>
+          </div>
+
+          <div class="form-group mb-3">
+            <label><input type="checkbox" name="reqopt.clean_requests" {{if .Opt.CleanRequests}}checked{{end}}> Clean requests</label>
+            <p class="table-hint">Trim surrounding whitespace from plain-text messages and drop empty messages. Structured (tool/multimodal) content is left untouched; a request is never emptied entirely.</p>
+          </div>
+
+          <div class="form-group mb-3" style="margin-left:1.5rem">
+            <label><input type="checkbox" name="reqopt.clean_aggressive" {{if .Opt.CleanAggressive}}checked{{end}}> Aggressive cleaning</label>
+            <p class="table-hint">Also collapse runs of interior whitespace within each line (newlines preserved). Only takes effect when "Clean requests" is on.</p>
+          </div>
+
+          <div class="form-group mb-4">
+            <label><input type="checkbox" name="reqopt.clamp_params" {{if .Opt.ClampParams}}checked{{end}}> Clamp parameters</label>
+            <p class="table-hint">Clamp temperature to [0, 2] and top_p to [0, 1]. A value of 0 is treated as unset and left alone.</p>
+          </div>
+
+          <button type="submit" class="btn">Save optimization settings</button>
+        </form>
+      </div>
     </div>
   </div>
 

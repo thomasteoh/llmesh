@@ -59,6 +59,33 @@ type InferenceRequest struct {
 	OriginID    string          `json:"origin_id,omitempty"` // request ID assigned by the originating router; set by upstream connector for cross-hop tracing
 }
 
+// RequestOptimization holds the router-wide toggles that shape inbound requests
+// before dispatch. All default to false (no transformation), preserving the
+// request exactly as received. Configured via the admin portal and read on the
+// per-request hot path, so callers should cache the value rather than refetch.
+type RequestOptimization struct {
+	// CoalesceNormalize canonicalises message content (JSON key ordering +
+	// whitespace) when computing the dedup hash, so semantically identical
+	// requests coalesce even if their JSON byte layout differs. Hash-only;
+	// never changes what is sent to the model.
+	CoalesceNormalize bool `json:"coalesce_normalize"`
+	// PrefixAffinity routes requests sharing a leading prefix (system + first
+	// user turn) to the client that last served that prefix, so the backend's
+	// prompt KV cache stays warm across conversation turns.
+	PrefixAffinity bool `json:"prefix_affinity"`
+	// CleanRequests drops empty/null messages and trims leading/trailing
+	// whitespace on plain-string content. Conservative; structured content
+	// (tool/multimodal blocks) is left untouched.
+	CleanRequests bool `json:"clean_requests"`
+	// CleanAggressive additionally collapses interior whitespace runs in
+	// plain-string content. Higher token savings, higher risk of altering
+	// model output. Only takes effect when CleanRequests is also on.
+	CleanAggressive bool `json:"clean_aggressive"`
+	// ClampParams clamps out-of-range sampling parameters (temperature, top_p)
+	// into their valid ranges rather than forwarding invalid values.
+	ClampParams bool `json:"clamp_params"`
+}
+
 // --- WebSocket message types ---
 // All WS messages include a "type" field for dispatch.
 

@@ -4,14 +4,43 @@ package scheduler
 import (
 	"log/slog"
 	"sync"
+	"time"
 
 	"llmesh/pkg/types"
 	"llmesh/router/internal/queue"
+	"llmesh/router/internal/reqopt"
+)
+
+// prefixAffinityTTL bounds how long a prefix→client mapping is honoured. After
+// this, a conversation's prior client is assumed cold and normal load-spreading
+// resumes. prefixAffinityMax caps the map so a flood of unique prefixes cannot
+// grow it without bound.
+const (
+	prefixAffinityTTL = 10 * time.Minute
+	prefixAffinityMax = 4096
 )
 
 // AliasProvider supplies the current alias→[]models map. Satisfied by *admin.State.
 type AliasProvider interface {
 	AliasMap() map[string][]string
+}
+
+// OptProvider supplies request-optimization toggles. Satisfied by *admin.State.
+type OptProvider interface {
+	RequestOpts() types.RequestOptimization
+}
+
+// prefixEntry records which client last served a given request prefix and when.
+type prefixEntry struct {
+	clientID string
+	at       time.Time
+}
+
+// candidate is a (client, request) dispatch pairing under consideration.
+type candidate struct {
+	client   types.ClientSummary
+	req      types.InferenceRequest
+	affinity bool
 }
 
 // Dispatcher is satisfied by *hub.Hub. It exposes only the methods the scheduler
@@ -30,25 +59,36 @@ type Scheduler struct {
 	queue    *queue.Queue
 	hub      Dispatcher
 	aliases  AliasProvider
+	opts     OptProvider
 	log      *slog.Logger
 	signal   chan struct{}
 	stopCh   chan struct{}
 	once     sync.Once
 	stopOnce sync.Once
+
+	// prefixAff maps a request prefix key to the client that last served it.
+	// Accessed only from the single dispatch-loop goroutine (and synchronous
+	// drainQueue calls in tests), so it needs no lock.
+	prefixAff map[string]prefixEntry
 }
 
 // New creates a Scheduler wired to the given queue, hub, and alias provider.
 func New(q *queue.Queue, h Dispatcher, aliases AliasProvider, logger *slog.Logger) *Scheduler {
 	s := &Scheduler{
-		queue:   q,
-		hub:     h,
-		aliases: aliases,
-		log:     logger,
-		signal:  make(chan struct{}, 1),
-		stopCh:  make(chan struct{}),
+		queue:     q,
+		hub:       h,
+		aliases:   aliases,
+		log:       logger,
+		signal:    make(chan struct{}, 1),
+		stopCh:    make(chan struct{}),
+		prefixAff: make(map[string]prefixEntry),
 	}
 	return s
 }
+
+// SetOptProvider registers the source of request-optimization toggles.
+// Must be called before Start. Safe to leave unset (prefix affinity disabled).
+func (s *Scheduler) SetOptProvider(p OptProvider) { s.opts = p }
 
 // Wake signals the scheduler to attempt dispatch. Safe to call from any goroutine.
 func (s *Scheduler) Wake() {
@@ -90,6 +130,31 @@ func (s *Scheduler) loop() {
 func (s *Scheduler) drainQueue() {
 	aliases := s.aliases.AliasMap()
 
+	var opts types.RequestOptimization
+	if s.opts != nil {
+		opts = s.opts.RequestOpts()
+	}
+	// prefixKeyFor memoises the prefix key per request within this drain so we
+	// don't re-hash a request that is the best candidate for several clients.
+	// Computed from the request as queued (original model name) so lookups and
+	// the post-dispatch record use the same key despite the later model rewrite.
+	var pkCache map[string]string
+	prefixKeyFor := func(req *types.InferenceRequest) string {
+		if !opts.PrefixAffinity {
+			return ""
+		}
+		if pk, ok := pkCache[req.ID]; ok {
+			return pk
+		}
+		pk := reqopt.PrefixKey(req)
+		pkCache[req.ID] = pk
+		return pk
+	}
+	if opts.PrefixAffinity {
+		pkCache = make(map[string]string)
+		s.prunePrefixAffinity()
+	}
+
 	// Snapshot the available clients once per drain. Copying each client's
 	// Models/OwnerSlots/context maps is the expensive part, and none of those
 	// change mid-drain — only in-flight counts do, and those we track locally
@@ -123,11 +188,6 @@ func (s *Scheduler) drainQueue() {
 		v := s.hub.NonOwnerInFlight(clientID, owner, model)
 		m[model] = v
 		return v
-	}
-
-	type candidate struct {
-		client types.ClientSummary
-		req    types.InferenceRequest
 	}
 
 	for {
@@ -203,8 +263,18 @@ func (s *Scheduler) drainQueue() {
 			// snapshot's stale value, so load-spreading stays accurate.
 			cc := c
 			cc.InFlight = inFlight[c.ID]
-			cand := &candidate{client: cc, req: *req}
-			if best == nil || betterPair(cand.client, cand.req, best.client, best.req) {
+			// A candidate is affinity-preferred when this client last served the
+			// request's conversation prefix (and that mapping is still warm).
+			affinity := false
+			if opts.PrefixAffinity {
+				if pk := prefixKeyFor(req); pk != "" {
+					if e, ok := s.prefixAff[pk]; ok && e.clientID == c.ID {
+						affinity = true
+					}
+				}
+			}
+			cand := &candidate{client: cc, req: *req, affinity: affinity}
+			if best == nil || betterCandidate(cand, best) {
 				best = cand
 			}
 		}
@@ -244,6 +314,18 @@ func (s *Scheduler) drainQueue() {
 		}
 		s.hub.TrackJob(best.client.ID, *req)
 
+		// Record the prefix→client mapping so the next turn of this conversation
+		// prefers the same client (warm KV cache). Guarded by the cap so a flood
+		// of unique prefixes cannot grow the map without bound; an already-tracked
+		// prefix is always refreshed to the new client/time.
+		if opts.PrefixAffinity {
+			if pk := pkCache[best.req.ID]; pk != "" {
+				if _, exists := s.prefixAff[pk]; exists || len(s.prefixAff) < prefixAffinityMax {
+					s.prefixAff[pk] = prefixEntry{clientID: best.client.ID, at: time.Now()}
+				}
+			}
+		}
+
 		// Update local accounting so subsequent iterations see this dispatch.
 		inFlight[best.client.ID]++
 		if isNonOwner {
@@ -251,6 +333,27 @@ func (s *Scheduler) drainQueue() {
 		}
 
 		s.log.Info("scheduler: dispatched", "request_id", req.ID, "origin_id", req.OriginID, "model", req.Model, "owner", req.Owner, "client_id", best.client.ID, "client_owner", best.client.Owner)
+	}
+}
+
+// betterCandidate reports whether candidate a should beat b. An affinity match
+// (this client last served the request's prefix) wins outright; otherwise the
+// usual affinity > priority > FIFO > load ordering applies.
+func betterCandidate(a, b *candidate) bool {
+	if a.affinity != b.affinity {
+		return a.affinity
+	}
+	return betterPair(a.client, a.req, b.client, b.req)
+}
+
+// prunePrefixAffinity drops prefix→client mappings older than prefixAffinityTTL.
+// Called once at the top of each drain so stale entries don't pin cold clients.
+func (s *Scheduler) prunePrefixAffinity() {
+	cutoff := time.Now().Add(-prefixAffinityTTL)
+	for k, e := range s.prefixAff {
+		if e.at.Before(cutoff) {
+			delete(s.prefixAff, k)
+		}
 	}
 }
 
