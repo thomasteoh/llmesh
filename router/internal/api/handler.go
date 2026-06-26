@@ -227,14 +227,15 @@ func (h *Handler) enqueue(
 		return
 	}
 
+	var aliases map[string][]string
+	if h.Aliases != nil {
+		aliases = h.Aliases.AliasMap()
+	}
+
 	// Fast-fail: reject if no connected worker can serve this model.
 	// This fires before the active-models check to give a more specific error when
 	// a model is registered in state (e.g. alias) but no client is online for it.
 	if h.Workers != nil {
-		var aliases map[string][]string
-		if h.Aliases != nil {
-			aliases = h.Aliases.AliasMap()
-		}
 		if !h.Workers.HasWorkerForModel(req.Model, aliases) {
 			apiLogger().Warn("api: no worker for model", "model", req.Model, "ip", clientIP(r))
 			w.Header().Set("Content-Type", "application/json")
@@ -253,13 +254,9 @@ func (h *Handler) enqueue(
 	// Fast-fail: reject if the estimated token count exceeds what every connected
 	// client for this model can handle. If some clients have enough context but are
 	// busy, we queue normally and the scheduler will wait for one of them.
+	wordCount := messageWordCount(req)
 	if h.ContextSizes != nil {
-		wordCount := messageWordCount(req)
 		if wordCount > 0 {
-			var aliases map[string][]string
-			if h.Aliases != nil {
-				aliases = h.Aliases.AliasMap()
-			}
 			maxCtx := h.ContextSizes.MaxContextForModel(req.Model, aliases)
 			if maxCtx > 0 {
 				needed := types.EstimateTokens(wordCount, req.MaxTokens)
@@ -292,10 +289,6 @@ func (h *Handler) enqueue(
 		activeModels := make(map[string]bool)
 		for _, m := range h.Models.ActiveModels() {
 			activeModels[m] = true
-		}
-		var aliases map[string][]string
-		if h.Aliases != nil {
-			aliases = h.Aliases.AliasMap()
 		}
 		// Valid if the model is directly served, or if any alias target is served.
 		valid := activeModels[req.Model]
@@ -334,7 +327,7 @@ func (h *Handler) enqueue(
 			req.Priority = h.Keys.PriorityFor(key)
 			req.Owner = h.Keys.OwnerFor(key)
 			req.APIKeyLabel = h.Keys.LabelFor(key)
-			req.WordCount = messageWordCount(req)
+			req.WordCount = wordCount
 			h.requestCount.Add(1)
 			req.EnqueuedAt = time.Now()
 			apiLogger().Info("api: request coalesced", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "key_label", req.APIKeyLabel, "ip", clientIP(r))
@@ -353,7 +346,7 @@ func (h *Handler) enqueue(
 		req.Priority = h.Keys.PriorityFor(key)
 		req.Owner = h.Keys.OwnerFor(key)
 		req.APIKeyLabel = h.Keys.LabelFor(key)
-		req.WordCount = messageWordCount(req)
+		req.WordCount = wordCount
 		h.requestCount.Add(1)
 		req.EnqueuedAt = time.Now()
 
@@ -476,48 +469,48 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 			switch req.SourceFmt {
 			case "anthropic":
 				if chunk.Delta != "" {
-					fmt.Fprintf(w, "%s\n\n", translate.AnthropicSSEChunk(chunk))
+					writeSSE(w, translate.AnthropicSSEChunk(chunk))
 					flusher.Flush()
 				}
 				if chunk.Done {
 					logRequestDone(req, chunk.Usage, firstTokenAt, true, chunk.FinishReason)
 					h.recordStats(req, chunk.Usage)
 					for _, l := range translate.AnthropicSSEDone(chunk.FinishReason) {
-						fmt.Fprintf(w, "%s\n\n", l)
+						writeSSE(w, l)
 					}
 					flusher.Flush()
 					return
 				}
 			case "openai-responses":
 				if chunk.Delta != "" {
-					fmt.Fprintf(w, "%s\n\n", translate.OpenAIResponsesSSEChunk(req.ID, chunk))
+					writeSSE(w, translate.OpenAIResponsesSSEChunk(req.ID, chunk))
 					flusher.Flush()
 				}
 				if chunk.Done {
 					logRequestDone(req, chunk.Usage, firstTokenAt, true, chunk.FinishReason)
 					h.recordStats(req, chunk.Usage)
-					fmt.Fprintf(w, "%s\n\n", translate.OpenAIResponsesSSEDone())
+					writeSSE(w, translate.OpenAIResponsesSSEDone())
 					flusher.Flush()
 					return
 				}
 			default: // "openai"
 				if chunk.Delta != "" || len(chunk.ToolCallsDelta) > 0 {
-					fmt.Fprintf(w, "%s\n\n", translate.OpenAISSEChunk(req.ID, chunk))
+					writeSSE(w, translate.OpenAISSEChunk(req.ID, chunk))
 					flusher.Flush()
 				}
 				if chunk.Done {
 					logRequestDone(req, chunk.Usage, firstTokenAt, true, chunk.FinishReason)
 					h.recordStats(req, chunk.Usage)
 					// Emit final chunk with finish_reason and usage before [DONE]
-					fmt.Fprintf(w, "%s\n\n", translate.OpenAISSEChunk(req.ID, chunk))
+					writeSSE(w, translate.OpenAISSEChunk(req.ID, chunk))
 					flusher.Flush()
-					fmt.Fprintf(w, "%s\n\n", translate.OpenAISSEDone())
+					writeSSE(w, translate.OpenAISSEDone())
 					flusher.Flush()
 					return
 				}
 			}
 		case <-keepAlive.C:
-			fmt.Fprintf(w, ": ping\n\n")
+			io.WriteString(w, ": ping\n\n")
 			flusher.Flush()
 		case <-queueTimer.C:
 			apiLogger().Error("api: stream timeout", "request_id", req.ID, "timeout", ttft.String())
@@ -738,6 +731,14 @@ func (h *Handler) ModelList() http.HandlerFunc {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+// writeSSE writes one SSE event (payload plus the terminating blank line) using
+// direct string writes rather than fmt.Fprintf, avoiding format-string parsing
+// and reflection on the per-token streaming hot path.
+func writeSSE(w io.Writer, payload string) {
+	io.WriteString(w, payload)
+	io.WriteString(w, "\n\n")
+}
 
 // logRequestDone emits the "api: request completed" structured log with timing and token stats.
 // For streaming requests, firstTokenAt is used to compute TTFT (queue wait + prompt eval + first token)

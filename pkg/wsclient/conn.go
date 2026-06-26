@@ -257,20 +257,21 @@ func (c *Conn) connect(outerCtx context.Context) error {
 		}
 		conn.SetReadDeadline(time.Now().Add(pongWait))
 
-		var env struct {
-			Type string `json:"type"`
+		// Decode once into the union of all router→client message types rather
+		// than decoding the envelope and then re-decoding the full message (which
+		// re-parses the entire InferenceRequest for every job).
+		var in struct {
+			Type      string                 `json:"type"`
+			Request   types.InferenceRequest `json:"request"`
+			RequestID string                 `json:"request_id"`
 		}
-		if err := json.Unmarshal(data, &env); err != nil {
+		if err := json.Unmarshal(data, &in); err != nil {
 			continue
 		}
 
-		switch env.Type {
+		switch in.Type {
 		case "job":
-			var job types.JobMsg
-			if err := json.Unmarshal(data, &job); err != nil {
-				c.log.Warn("ws: bad job message", "error", err)
-				continue
-			}
+			job := types.JobMsg{Type: in.Type, Request: in.Request}
 			// Pre-check before acquiring a concurrency slot.
 			// Try must be fast and non-blocking; it sends its own error if needed.
 			if !c.jobs.Try(job, c.send) {
@@ -304,15 +305,11 @@ func (c *Conn) connect(outerCtx context.Context) error {
 			}(job, jobCtx, jobCancel)
 
 		case "cancel":
-			var msg types.CancelMsg
-			if err := json.Unmarshal(data, &msg); err != nil {
-				continue
-			}
 			c.cancelsMu.Lock()
-			if cancel, ok := c.cancels[msg.RequestID]; ok {
-				c.log.Info("ws: cancelling job", "request_id", msg.RequestID)
+			if cancel, ok := c.cancels[in.RequestID]; ok {
+				c.log.Info("ws: cancelling job", "request_id", in.RequestID)
 				cancel()
-				delete(c.cancels, msg.RequestID)
+				delete(c.cancels, in.RequestID)
 			}
 			c.cancelsMu.Unlock()
 

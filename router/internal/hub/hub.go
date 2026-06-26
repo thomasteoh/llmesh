@@ -305,20 +305,43 @@ func (h *Hub) writeLoop(client *Client) {
 	}
 }
 
+// inboundMsg is the union of every message type a client may send. Decoding
+// once into this struct avoids a second json.Unmarshal of the full message on
+// the per-token chunk hot path (previously: an envelope decode followed by a
+// type-specific decode).
+type inboundMsg struct {
+	Type string `json:"type"`
+	// register
+	Models        []types.ModelInfo `json:"models"`
+	MaxConcurrent int               `json:"max_concurrent"`
+	Version       string            `json:"version"`
+	// chunk
+	RequestID      string           `json:"request_id"`
+	Delta          string           `json:"delta"`
+	ToolCallsDelta json.RawMessage  `json:"tool_calls_delta"`
+	Done           bool             `json:"done"`
+	FinishReason   string           `json:"finish_reason"`
+	Usage          *types.UsageInfo `json:"usage"`
+	// error
+	Message string `json:"message"`
+	// release
+	Reason string `json:"reason"`
+}
+
 func (h *Hub) dispatch(client *Client, data []byte) {
-	var envelope struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal(data, &envelope); err != nil {
+	var in inboundMsg
+	if err := json.Unmarshal(data, &in); err != nil {
 		h.log.Warn("hub: bad message", "id", client.ID, "error", err)
 		return
 	}
 
-	switch envelope.Type {
+	switch in.Type {
 	case "register":
-		var msg types.RegisterMsg
-		if err := json.Unmarshal(data, &msg); err != nil {
-			return
+		msg := types.RegisterMsg{
+			Type:          in.Type,
+			Models:        in.Models,
+			MaxConcurrent: in.MaxConcurrent,
+			Version:       in.Version,
 		}
 		h.mu.Lock()
 		client.Models = make(map[string]bool)
@@ -342,9 +365,14 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 		}
 
 	case "chunk":
-		var msg types.ChunkMsg
-		if err := json.Unmarshal(data, &msg); err != nil {
-			return
+		msg := types.ChunkMsg{
+			Type:           in.Type,
+			RequestID:      in.RequestID,
+			Delta:          in.Delta,
+			ToolCallsDelta: in.ToolCallsDelta,
+			Done:           in.Done,
+			FinishReason:   in.FinishReason,
+			Usage:          in.Usage,
 		}
 		if msg.Delta != "" {
 			h.mu.RLock()
@@ -376,9 +404,10 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 		}
 
 	case "error":
-		var msg types.ErrorMsg
-		if err := json.Unmarshal(data, &msg); err != nil {
-			return
+		msg := types.ErrorMsg{
+			Type:      in.Type,
+			RequestID: in.RequestID,
+			Message:   in.Message,
 		}
 		h.mu.RLock()
 		rec, hasRec := h.jobs[msg.RequestID]
@@ -406,22 +435,18 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 		}
 
 	case "release":
-		var msg types.ReleaseMsg
-		if err := json.Unmarshal(data, &msg); err != nil {
-			return
-		}
 		h.mu.RLock()
-		rec, ok := h.jobs[msg.RequestID]
+		rec, ok := h.jobs[in.RequestID]
 		h.mu.RUnlock()
 		if !ok {
 			return // already completed, expired, or unknown
 		}
 		client.DecrInFlight()
-		h.untrackJob(msg.RequestID)
+		h.untrackJob(in.RequestID)
 		h.log.Info("hub: client released job",
-			"request_id", msg.RequestID,
+			"request_id", in.RequestID,
 			"client_id", client.ID,
-			"reason", msg.Reason,
+			"reason", in.Reason,
 		)
 		if h.OnRelease != nil {
 			h.OnRelease(rec.Req)

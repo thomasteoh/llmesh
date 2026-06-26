@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"llmesh/pkg/types"
@@ -97,6 +98,11 @@ func (sd *stateData) UnmarshalJSON(data []byte) error {
 // State is the mutable runtime state, persisted to a SQLite database.
 type State struct {
 	db *sql.DB
+
+	// aliasCache holds an immutable snapshot of the alias→models map. It is read
+	// on every inference request and dispatch cycle, so we cache it in memory and
+	// invalidate (store nil) on any alias mutation rather than hitting SQLite each call.
+	aliasCache atomic.Pointer[map[string][]string]
 }
 
 // dbPath converts a .json path to a .db path so that tests using .json paths
@@ -802,7 +808,13 @@ func (s *State) RefreshCSRFToken(username string) (string, error) {
 
 // --- Model Aliases ---
 
+// AliasMap returns the alias→models map. The result is a cached, immutable
+// snapshot shared across callers; callers must not mutate it. The cache is
+// rebuilt lazily after any alias mutation invalidates it.
 func (s *State) AliasMap() map[string][]string {
+	if cached := s.aliasCache.Load(); cached != nil {
+		return *cached
+	}
 	rows, err := s.db.Query(`SELECT alias, model FROM model_aliases ORDER BY alias, model`)
 	if err != nil {
 		return nil
@@ -815,6 +827,7 @@ func (s *State) AliasMap() map[string][]string {
 			out[alias] = append(out[alias], model)
 		}
 	}
+	s.aliasCache.Store(&out)
 	return out
 }
 
@@ -829,6 +842,7 @@ func (s *State) AddAlias(alias, model string) error {
 		}
 		return err
 	}
+	s.aliasCache.Store(nil)
 	return nil
 }
 
@@ -840,6 +854,7 @@ func (s *State) DeleteAlias(alias, model string) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("alias %q → %q not found", alias, model)
 	}
+	s.aliasCache.Store(nil)
 	return nil
 }
 
@@ -851,5 +866,6 @@ func (s *State) DeleteAliasGroup(alias string) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("alias %q not found", alias)
 	}
+	s.aliasCache.Store(nil)
 	return nil
 }
