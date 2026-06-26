@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"llmesh/pkg/types"
 	"llmesh/router/internal/dedup"
+	"llmesh/router/internal/reqopt"
 	"llmesh/router/internal/translate"
 )
 
@@ -46,6 +47,11 @@ type ModelStore interface {
 // AliasStore is satisfied by *admin.State (duck typing — no import needed).
 type AliasStore interface {
 	AliasMap() map[string][]string
+}
+
+// OptStore supplies the request-optimization toggles. Satisfied by *admin.State.
+type OptStore interface {
+	RequestOpts() types.RequestOptimization
 }
 
 // StatsRecorder is satisfied by *stats.Stats (duck typing — no import needed).
@@ -107,6 +113,7 @@ type Handler struct {
 	Keys              APIKeyStore
 	Models            ModelStore
 	Aliases           AliasStore
+	Opts              OptStore // optional; nil = no request optimization
 	Stats             StatsRecorder
 	Queue             Enqueuer
 	Correlation       ResponseStore
@@ -227,6 +234,14 @@ func (h *Handler) enqueue(
 		return
 	}
 
+	// Request optimization: shape the request before any downstream work
+	// (word count, hashing, dispatch) so all of it sees the cleaned form.
+	var opts types.RequestOptimization
+	if h.Opts != nil {
+		opts = h.Opts.RequestOpts()
+		reqopt.Clean(req, opts)
+	}
+
 	var aliases map[string][]string
 	if h.Aliases != nil {
 		aliases = h.Aliases.AliasMap()
@@ -320,7 +335,7 @@ func (h *Handler) enqueue(
 	// Coalescing: if an identical request is already in-flight, subscribe to its
 	// response instead of occupying a new worker slot.
 	if h.Dedup != nil {
-		hash := dedup.ContentHash(req)
+		hash := dedup.ContentHashOpts(req, opts.CoalesceNormalize)
 		isOriginal, buf, live := h.Dedup.RegisterOrSubscribe(hash)
 		if !isOriginal {
 			req.ID = uuid.New().String()

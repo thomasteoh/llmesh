@@ -179,6 +179,7 @@ type SettingsPage struct {
 	basePage
 	Users     []UserRow
 	Upstreams []UpstreamRouterRow
+	Opt       types.RequestOptimization
 }
 
 type UserRow struct {
@@ -783,6 +784,7 @@ func (a *Admin) renderSettings(w http.ResponseWriter, r *http.Request, u User, f
 		basePage:  bp,
 		Users:     rows,
 		Upstreams: upstreamRows,
+		Opt:       a.state.RequestOpts(),
 	})
 }
 
@@ -831,6 +833,34 @@ func (a *Admin) handleUpstreamRemove(w http.ResponseWriter, r *http.Request) {
 		a.upstreamReload()
 	}
 	http.Redirect(w, r, "/portal/settings#tab-upstreams", http.StatusFound)
+}
+
+// optFormKeys lists the request-optimization settings keys in the order they
+// appear on the form. Each maps to a checkbox whose form field name is the key.
+var optFormKeys = []string{
+	"reqopt.coalesce_normalize",
+	"reqopt.prefix_affinity",
+	"reqopt.clean_requests",
+	"reqopt.clean_aggressive",
+	"reqopt.clamp_params",
+}
+
+func (a *Admin) handleOptimizationUpdate(w http.ResponseWriter, r *http.Request) {
+	u := ctxGetUser(r)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	for _, key := range optFormKeys {
+		enabled := r.FormValue(key) != ""
+		if err := a.state.SetRequestOpt(key, enabled); err != nil {
+			a.renderSettings(w, r, u, "", err.Error())
+			return
+		}
+	}
+	a.state.RecordAudit(u.Username, "settings.optimization", "", extractIP(r))
+	a.log.Info("admin: request-optimization settings updated", "actor", u.Username)
+	http.Redirect(w, r, "/portal/settings#tab-optimization", http.StatusFound)
 }
 
 func (a *Admin) handleChangePassword(w http.ResponseWriter, r *http.Request) {

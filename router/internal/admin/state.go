@@ -103,6 +103,11 @@ type State struct {
 	// on every inference request and dispatch cycle, so we cache it in memory and
 	// invalidate (store nil) on any alias mutation rather than hitting SQLite each call.
 	aliasCache atomic.Pointer[map[string][]string]
+
+	// optCache holds the request-optimization toggles. Read on the per-request
+	// hot path and per scheduler drain, so it is cached and invalidated (store
+	// nil) on any settings mutation rather than queried each call.
+	optCache atomic.Pointer[types.RequestOptimization]
 }
 
 // dbPath converts a .json path to a .db path so that tests using .json paths
@@ -176,6 +181,10 @@ func createSchema(db *sql.DB) error {
 			name     TEXT NOT NULL DEFAULT '',
 			token    TEXT NOT NULL DEFAULT '',
 			priority TEXT NOT NULL DEFAULT 'normal'
+		);
+		CREATE TABLE IF NOT EXISTS settings (
+			key   TEXT PRIMARY KEY,
+			value TEXT NOT NULL DEFAULT ''
 		);
 		CREATE TABLE IF NOT EXISTS audit_log (
 			id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -867,5 +876,64 @@ func (s *State) DeleteAliasGroup(alias string) error {
 		return fmt.Errorf("alias %q not found", alias)
 	}
 	s.aliasCache.Store(nil)
+	return nil
+}
+
+// --- Request optimization settings ---
+
+// optKeys maps each settings-table key to a pointer accessor on a
+// RequestOptimization struct. It is the single source of truth for which
+// toggles exist, used by both the reader and the validating writer.
+var optKeys = map[string]func(*types.RequestOptimization) *bool{
+	"reqopt.coalesce_normalize": func(o *types.RequestOptimization) *bool { return &o.CoalesceNormalize },
+	"reqopt.prefix_affinity":    func(o *types.RequestOptimization) *bool { return &o.PrefixAffinity },
+	"reqopt.clean_requests":     func(o *types.RequestOptimization) *bool { return &o.CleanRequests },
+	"reqopt.clean_aggressive":   func(o *types.RequestOptimization) *bool { return &o.CleanAggressive },
+	"reqopt.clamp_params":       func(o *types.RequestOptimization) *bool { return &o.ClampParams },
+}
+
+// RequestOpts returns the request-optimization toggles. The result is a cached
+// snapshot rebuilt lazily after any settings mutation; safe to call on the hot path.
+func (s *State) RequestOpts() types.RequestOptimization {
+	if cached := s.optCache.Load(); cached != nil {
+		return *cached
+	}
+	var o types.RequestOptimization
+	rows, err := s.db.Query(`SELECT key, value FROM settings WHERE key LIKE 'reqopt.%'`)
+	if err != nil {
+		return o
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			continue
+		}
+		if accessor, ok := optKeys[key]; ok {
+			*accessor(&o) = value == "1"
+		}
+	}
+	s.optCache.Store(&o)
+	return o
+}
+
+// SetRequestOpt persists a single request-optimization toggle and invalidates
+// the cache. The key must be one of the known reqopt.* keys.
+func (s *State) SetRequestOpt(key string, enabled bool) error {
+	if _, ok := optKeys[key]; !ok {
+		return fmt.Errorf("unknown setting %q", key)
+	}
+	val := "0"
+	if enabled {
+		val = "1"
+	}
+	if _, err := s.db.Exec(
+		`INSERT INTO settings (key, value) VALUES (?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		key, val,
+	); err != nil {
+		return err
+	}
+	s.optCache.Store(nil)
 	return nil
 }
