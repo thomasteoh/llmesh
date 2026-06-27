@@ -255,6 +255,125 @@ docker compose -f docker-compose.shim.yml build      # shim
 
 ---
 
+## Run as a service
+
+To have llmesh start automatically with the machine, run it under your init system.
+
+### Docker
+
+The compose files already set `restart: unless-stopped`, so a container started with `docker compose up -d` is restarted on failure **and** brought back after a reboot — provided the Docker daemon itself starts on boot:
+
+```bash
+sudo systemctl enable --now docker
+```
+
+No further configuration is needed for the Docker deployment.
+
+### systemd (Linux)
+
+For binaries built from source, run each role as a systemd service. The example below assumes the binary is installed at `/usr/local/bin/`, config under `/etc/llmesh/`, and a dedicated `llmesh` user. Create `/etc/systemd/system/llmesh-router.service`:
+
+```ini
+[Unit]
+Description=llmesh router
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/llmesh-router -config /etc/llmesh/router.yaml -state /var/lib/llmesh/state.db
+Restart=on-failure
+RestartSec=5
+User=llmesh
+Group=llmesh
+# Hardening — the router only needs to write its state directory
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/llmesh
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Then enable and start it (the `enable` is what makes it start on boot):
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now llmesh-router
+sudo systemctl status llmesh-router      # check it came up
+journalctl -u llmesh-router -f           # follow logs
+```
+
+The **client** and **shim** units are identical except for the `ExecStart` line and description. Neither writes state, so drop the `-state` flag and the `ReadWritePaths` line:
+
+| Role | `Description` | `ExecStart` |
+|------|---------------|-------------|
+| Router | `llmesh router` | `/usr/local/bin/llmesh-router -config /etc/llmesh/router.yaml -state /var/lib/llmesh/state.db` |
+| Client | `llmesh client` | `/usr/local/bin/llmesh-client -config /etc/llmesh/client.yaml` |
+| Shim | `llmesh shim` | `/usr/local/bin/llmesh-shim -config /etc/llmesh/shim.yaml` |
+
+The shim reads API keys from the environment. Supply them with an `EnvironmentFile` so they stay out of the unit:
+
+```ini
+# in the [Service] section of llmesh-shim.service
+EnvironmentFile=/etc/llmesh/shim.env     # e.g. OPENAI_API_KEY=sk-...
+```
+
+If `llama-server` also runs as a systemd unit on the same host, add `After=llama-server.service` to the client unit so the client starts after its backend.
+
+### launchd (macOS)
+
+On macOS, run each role as a launchd daemon. Create `/Library/LaunchDaemons/com.llmesh.router.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.llmesh.router</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/llmesh-router</string>
+        <string>-config</string>
+        <string>/etc/llmesh/router.yaml</string>
+        <string>-state</string>
+        <string>/var/lib/llmesh/state.db</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/var/log/llmesh-router.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/llmesh-router.log</string>
+</dict>
+</plist>
+```
+
+Load it (loading a daemon in `/Library/LaunchDaemons` makes it start at boot):
+
+```bash
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.llmesh.router.plist
+sudo launchctl print system/com.llmesh.router      # check status
+```
+
+To stop and unload: `sudo launchctl bootout system/com.llmesh.router`.
+
+For the **client** and **shim**, change `Label` (e.g. `com.llmesh.client`), the binary in `ProgramArguments`, and drop the `-state` argument. The shim's API keys go in an `EnvironmentVariables` dict:
+
+```xml
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>OPENAI_API_KEY</key>
+        <string>sk-...</string>
+    </dict>
+```
+
+---
+
 ## Testing
 
 ### Unit tests
