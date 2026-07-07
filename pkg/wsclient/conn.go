@@ -296,7 +296,7 @@ func (c *Conn) connect(outerCtx context.Context) error {
 			c.cancels[job.Request.ID] = jobCancel
 			c.cancelsMu.Unlock()
 			c.st.IncrActive()
-			go func(j types.JobMsg, jCtx context.Context, jCancel context.CancelFunc) {
+			go func(j types.JobMsg, jobCtx context.Context, jobCancel context.CancelFunc) {
 				defer func() {
 					c.st.DecrActive()
 					c.st.IncrDone()
@@ -304,9 +304,9 @@ func (c *Conn) connect(outerCtx context.Context) error {
 					c.cancelsMu.Lock()
 					delete(c.cancels, j.Request.ID)
 					c.cancelsMu.Unlock()
-					jCancel()
+					jobCancel()
 				}()
-				if err := c.jobs.Dispatch(jCtx, j, c.send); err != nil {
+				if err := c.jobs.Dispatch(jobCtx, j, c.send); err != nil {
 					c.st.IncrError()
 				}
 			}(job, jobCtx, jobCancel)

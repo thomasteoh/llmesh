@@ -52,17 +52,24 @@ func (p *SlotPool) AcquireLocal(ctx context.Context) bool {
 	defer stop()
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.localWaiters++
-	defer func() { p.localWaiters-- }()
 
 	for !p.ready || p.inFlight >= p.capacity {
 		if ctx.Err() != nil {
+			p.localWaiters--
+			p.mu.Unlock()
+			// Broadcast so router goroutines that yielded to us wake up and
+			// can now compete for slots — without this they stay asleep until
+			// the next Release, since the AfterFunc broadcast fired before
+			// localWaiters was decremented.
+			p.cond.Broadcast()
 			return false
 		}
 		p.cond.Wait()
 	}
 	p.inFlight++
+	p.localWaiters--
+	p.mu.Unlock()
 	return true
 }
 
@@ -74,15 +81,16 @@ func (p *SlotPool) acquireRouter(ctx context.Context) bool {
 	defer stop()
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	for !p.ready || p.inFlight >= p.capacity || p.localWaiters > 0 {
 		if ctx.Err() != nil {
+			p.mu.Unlock()
 			return false
 		}
 		p.cond.Wait()
 	}
 	p.inFlight++
+	p.mu.Unlock()
 	return true
 }
 
