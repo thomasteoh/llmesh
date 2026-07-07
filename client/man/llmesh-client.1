@@ -17,6 +17,17 @@ and processes inference jobs dispatched by the router.
 Streaming token deltas are forwarded back to the router in real time,
 which proxies them to the waiting HTTP caller.
 .PP
+The client also optionally exposes a local OpenAI-compatible HTTP endpoint
+(configured via
+.BR local_api_addr ).
+Requests to this endpoint are routed directly to the appropriate
+.B llama.cpp
+backend without passing through the router — useful for other processes on
+the same host that need low-latency direct access.
+Local requests share the same concurrency pool as router-dispatched jobs;
+when a slot is contested, local requests take priority over queued router jobs.
+Active local requests appear in the client status line alongside router jobs.
+.PP
 On disconnect the client reconnects automatically using exponential back\-off:
 1\ s, 2\ s, 4\ s, 8\ s, 16\ s, 32\ s, 60\ s maximum.
 .SH OPTIONS
@@ -60,7 +71,8 @@ This value authenticates this client instance to the router.
 Keep it secret; it grants the ability to receive and process jobs.
 .TP
 .B max_concurrent
-Maximum number of inference requests this client processes simultaneously.
+Maximum number of simultaneous inference requests across both
+router-dispatched jobs and local API requests combined.
 Optional.
 When omitted (or set to zero) the limit is auto-detected from the slot count
 .RB ( total_slots )
@@ -68,6 +80,31 @@ reported by the llama.cpp server, falling back to
 .B 1
 if the server does not advertise one.
 Set an explicit positive integer to override.
+.TP
+.B local_api_addr
+Bind address for a local OpenAI-compatible HTTP endpoint.
+Optional; disabled when omitted.
+When set (e.g.\~\fI:8089\fR), the client listens on that address and serves:
+.RS
+.TP
+.B POST /v1/chat/completions
+Accepts an OpenAI chat completions request.
+The
+.I model
+field is used to select the llama.cpp backend; the request is then forwarded
+directly without going through the router.
+Streaming (SSE) and non-streaming responses are both supported.
+.TP
+.B GET /v1/models
+Returns the list of models this client has registered.
+.RE
+.IP
+Local requests share the same concurrency pool as router-dispatched jobs
+(capacity set by
+.BR max_concurrent ).
+When a slot is available and both a local request and a queued router job
+are waiting, the local request is served first.
+Active local requests are counted in the status line alongside router jobs.
 .TP
 .B models
 List of model definitions.
@@ -114,6 +151,22 @@ Start the client:
 .nf
 llmesh\-client \-config ./config.yaml
 .fi
+.SS Local API endpoint
+Enable the local endpoint in
+.IR config.yaml :
+.nf
+local_api_addr: ":8089"
+.fi
+Other processes on the same machine can then send requests directly
+to the llama.cpp backend without going through the router:
+.nf
+curl http://localhost:8089/v1/chat/completions \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"llama3.2:3b","messages":[{"role":"user","content":"hi"}]}'
+.fi
+These requests appear in the client status line as active jobs and
+compete for inference slots with router-dispatched work, with local
+requests taking priority when a slot is contested.
 .SS Multiple models on one host
 Run a separate llama.cpp instance on a distinct port for each model:
 .nf
