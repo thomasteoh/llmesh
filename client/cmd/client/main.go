@@ -15,6 +15,7 @@ import (
 	"time"
 
 	clientPkg "llmesh/client"
+	"llmesh/client/internal/localapi"
 	"llmesh/client/internal/stats"
 	"llmesh/client/internal/updater"
 	"llmesh/client/internal/ws"
@@ -36,6 +37,10 @@ Config file fields (YAML):
   router_url      wss:// URL of the llmesh router  (required)
   router_token    client token from the admin UI   (required)
   max_concurrent  parallel jobs limit              (default: auto from llama.cpp total_slots, min 1)
+  local_api_addr  bind address for local OpenAI-compatible endpoint (default: disabled)
+                  e.g. ":8089" — accepts /v1/chat/completions and /v1/models directly,
+                  routing to the appropriate llama.cpp backend without going through the router.
+                  Active local requests are counted as jobs in the status line.
   auto_update     enable hourly self-update checks (default: false)
   models:
     - endpoint:   llama.cpp base URL (e.g. http://localhost:8080)  (required)
@@ -83,6 +88,15 @@ Config file fields (YAML):
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
+
+	if cfg.LocalAPIAddr != "" {
+		localSrv := localapi.New(cfg, st)
+		go func() {
+			if err := localSrv.Run(ctx, cfg.LocalAPIAddr); err != nil {
+				log.Error("local API error", "error", err)
+			}
+		}()
+	}
 
 	if isTerminal(os.Stderr) {
 		go runStatusLine(ctx, st, cfg.MaxConcurrent)
