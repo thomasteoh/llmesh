@@ -67,6 +67,7 @@ type Conn struct {
 	jobs        JobDispatcher
 	log         *slog.Logger
 	onUpdate    func() // called when the router sends an "update" message
+	pool        *SlotPool
 
 	mu        sync.Mutex
 	ws        *websocket.Conn
@@ -93,9 +94,16 @@ func New(
 		models:      models,
 		jobs:        jobs,
 		log:         log,
+		pool:        newSlotPool(),
 		cancels:     make(map[string]context.CancelFunc),
 	}
 }
+
+// Pool returns the shared slot pool used to limit concurrency across both
+// router-dispatched jobs and local API requests. Pass this to the local API
+// server so local requests compete for the same slots and take priority over
+// queued router jobs.
+func (c *Conn) Pool() *SlotPool { return c.pool }
 
 // SetOnUpdate registers a callback invoked when the router sends an "update" message.
 // Must be called before Run. Safe to call with nil to clear.
@@ -233,7 +241,7 @@ func (c *Conn) connect(outerCtx context.Context) error {
 	if maxConc < 1 {
 		maxConc = 1
 	}
-	sem := make(chan struct{}, maxConc)
+	c.pool.init(maxConc)
 
 	if err := c.send(types.RegisterMsg{
 		Type:          "register",
@@ -277,11 +285,10 @@ func (c *Conn) connect(outerCtx context.Context) error {
 			if !c.jobs.Try(job, c.send) {
 				continue
 			}
-			// Acquire a concurrency slot. Use select so a shutdown (connCtx.Done)
-			// can interrupt the wait and allow cancel messages to be processed.
-			select {
-			case sem <- struct{}{}:
-			case <-connCtx.Done():
+			// Acquire a concurrency slot. acquireRouter returns false when
+			// connCtx is cancelled (shutdown or disconnect), yielding to local
+			// requests that are also waiting.
+			if !c.pool.acquireRouter(connCtx) {
 				continue
 			}
 			jobCtx, jobCancel := context.WithCancel(connCtx)
@@ -293,7 +300,7 @@ func (c *Conn) connect(outerCtx context.Context) error {
 				defer func() {
 					c.st.DecrActive()
 					c.st.IncrDone()
-					<-sem
+					c.pool.Release()
 					c.cancelsMu.Lock()
 					delete(c.cancels, j.Request.ID)
 					c.cancelsMu.Unlock()

@@ -44,6 +44,10 @@ func (c *Conn) SetOnUpdate(fn func()) {
 	c.inner.SetOnUpdate(fn)
 }
 
+// SlotPool returns the shared concurrency pool. Pass this to the local API
+// server so local requests share the same slot budget as router-dispatched jobs.
+func (c *Conn) SlotPool() *wsclient.SlotPool { return c.inner.Pool() }
+
 // clientModelProvider probes llama.cpp for model capabilities on each (re)connection.
 type clientModelProvider struct {
 	cfg *clientPkg.Config

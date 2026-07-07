@@ -19,6 +19,7 @@ import (
 
 	clientPkg "llmesh/client"
 	"llmesh/client/internal/stats"
+	"llmesh/pkg/wsclient"
 )
 
 const maxBodyBytes = 10 << 20 // 10 MiB
@@ -27,13 +28,16 @@ var log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: sl
 
 // Server serves the local API endpoint.
 type Server struct {
-	cfg *clientPkg.Config
-	st  *stats.Stats
+	cfg  *clientPkg.Config
+	st   *stats.Stats
+	pool *wsclient.SlotPool
 }
 
-// New creates a Server. Call Run to start listening.
-func New(cfg *clientPkg.Config, st *stats.Stats) *Server {
-	return &Server{cfg: cfg, st: st}
+// New creates a Server. pool is the shared slot pool from the wsclient connection;
+// local requests acquire from it with priority over router-dispatched jobs.
+// Call Run to start listening.
+func New(cfg *clientPkg.Config, st *stats.Stats, pool *wsclient.SlotPool) *Server {
+	return &Server{cfg: cfg, st: st, pool: pool}
 }
 
 // Run starts the HTTP server and blocks until ctx is cancelled.
@@ -90,8 +94,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !s.pool.AcquireLocal(r.Context()) {
+		return // client disconnected while waiting for a slot
+	}
 	s.st.IncrActive()
 	defer func() {
+		s.pool.Release()
 		s.st.DecrActive()
 		s.st.IncrDone()
 	}()

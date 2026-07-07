@@ -89,20 +89,20 @@ Config file fields (YAML):
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
 
+	if isTerminal(os.Stderr) {
+		go runStatusLine(ctx, st, cfg.MaxConcurrent)
+	}
+
+	conn := ws.New(cfg, version, st)
+
 	if cfg.LocalAPIAddr != "" {
-		localSrv := localapi.New(cfg, st)
+		localSrv := localapi.New(cfg, st, conn.SlotPool())
 		go func() {
 			if err := localSrv.Run(ctx, cfg.LocalAPIAddr); err != nil {
 				log.Error("local API error", "error", err)
 			}
 		}()
 	}
-
-	if isTerminal(os.Stderr) {
-		go runStatusLine(ctx, st, cfg.MaxConcurrent)
-	}
-
-	conn := ws.New(cfg, version, st)
 
 	if manifestURL := deriveManifestURL(cfg.RouterURL); manifestURL != "" {
 		triggerCh := make(chan struct{}, 1)
