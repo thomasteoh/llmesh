@@ -50,7 +50,7 @@ The client is a small binary that runs alongside your llama.cpp instance.
 llmesh sits between callers (agents, tools, scripts) and the machines that run your models:
 
 - **Router** — the single API endpoint. Pools all connected workers, handles authentication, request queuing, and affinity-based scheduling. Runs no inference itself.
-- **Client (llmesh-client)** — a worker that runs next to a llama.cpp server. Connects out to the router over WebSocket and dispatches inference jobs to local llama.cpp.
+- **Client (llmesh-client)** — a worker that runs next to a llama.cpp server. Connects out to the router over WebSocket and dispatches inference jobs to local llama.cpp. Can also expose a local OpenAI-compatible HTTP endpoint for direct access from other processes on the same machine — these requests bypass the router but share the same concurrency pool as router jobs, with local requests taking priority.
 - **Shim (llmesh-shim)** — a worker that bridges to an external HTTP API (OpenAI, Anthropic, any OpenAI-compatible server) or a local shell command, instead of llama.cpp. No GPU required. Connects to the router the same way a client does.
 
 Callers only need to know the router URL. Workers connect *out* to the router, so no inbound ports are needed on worker machines.
@@ -183,6 +183,7 @@ Edit `client/config.yaml`:
 router_url: "wss://llmesh.example.com/ws/client"  # WebSocket URL of the router
 router_token: "ct-admin-xxxxxxxxxxxxxxxx"           # client token from router admin UI
 # max_concurrent: 4                                 # optional — omit to auto-detect from llama.cpp slots
+# local_api_addr: ":8089"                           # optional — local OpenAI-compatible endpoint (see below)
 models:
   - endpoint: "http://host.docker.internal:8080"    # name auto-detected from this endpoint
   - name: "unsloth/qwen3-30b-a3b"                    # or set the name explicitly
@@ -194,7 +195,8 @@ models:
 |-------|----------|---------|-------------|
 | `router_url` | Yes | — | WebSocket URL of the router (`wss://` for TLS, `ws://` for plain) |
 | `router_token` | Yes | — | Client token created in the router admin UI |
-| `max_concurrent` | No | auto | Max simultaneous inference jobs. When omitted, auto-detected from llama.cpp's reported slot count (falls back to 1). Set explicitly to override. |
+| `max_concurrent` | No | auto | Max simultaneous inference jobs across router and local requests combined. When omitted, auto-detected from llama.cpp's reported slot count (falls back to 1). Set explicitly to override. |
+| `local_api_addr` | No | — | Bind address for a local OpenAI-compatible HTTP endpoint. When set, the client listens on this address and accepts `POST /v1/chat/completions` and `GET /v1/models` directly, routing to the appropriate llama.cpp backend without going through the router. Local requests share the same concurrency pool as router-dispatched jobs and take priority when slots are contested. Useful for other processes on the same host that want low-latency direct access. Example: `":8089"` |
 | `models[].name` | No | auto | Model name as callers will request it. When omitted, auto-detected from the endpoint's `/v1/models` at connect time. |
 | `models[].endpoint` | Yes | — | HTTP base URL of the llama.cpp server for this model |
 | `models[].chat_template` | No | — | Override the model's built-in Jinja chat template (e.g. `"qwen2.5"`) |
@@ -457,6 +459,7 @@ llmesh/
 │   ├── Dockerfile
 │   └── internal/
 │       ├── llamacpp/             # llama.cpp HTTP client
+│       ├── localapi/             # Local OpenAI-compatible HTTP endpoint
 │       ├── worker/               # Per-job handler
 │       └── ws/                   # WebSocket connection + reconnect
 ├── shim/                         # Shim binary (HTTP API / command-adapter worker)

@@ -27,6 +27,7 @@ type Config struct {
 	MaxConcurrent         int           `yaml:"max_concurrent"`
 	Models                []ModelConfig `yaml:"models"`
 	MetricsAddr           string        `yaml:"metrics_addr"`            // e.g. ":9091"; empty = disabled
+	LocalAPIAddr          string        `yaml:"local_api_addr"`          // e.g. ":8089"; empty = disabled
 	RouterActivityTimeout time.Duration `yaml:"router_activity_timeout"` // derive keep-alive interval; 0 = use 60s default
 
 	// AutoUpdate enables periodic hourly checks for a new binary. The manifest URL
@@ -119,6 +120,18 @@ func (c *Config) EndpointFor(model string) string {
 		}
 	}
 	return ""
+}
+
+// AvailableModels returns the resolved names of all configured models.
+// Models whose names have not yet been auto-detected are omitted.
+func (c *Config) AvailableModels() []string {
+	names := make([]string, 0, len(c.Models))
+	for _, m := range c.Models {
+		if en := c.effectiveName(m); en != "" {
+			names = append(names, en)
+		}
+	}
+	return names
 }
 
 // KeepAliveInterval returns the worker keep-alive interval derived from
