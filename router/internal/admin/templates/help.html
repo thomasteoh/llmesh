@@ -177,7 +177,8 @@ client = anthropic.Anthropic(base_url="https://{{.Host}}", api_key="sk-yourkey")
       <div class="docs-label">Full example</div>
       <div class="docs-code">router_url: "wss://{{.Host}}/ws/client"
 router_token: "ct-yourname-yourtoken"
-# max_concurrent: 4          # optional - omit to auto-detect from llama.cpp slots
+# max_concurrent: 4                    # optional - omit to auto-detect from llama.cpp slots
+# local_api_addr: "127.0.0.1:8089"    # optional - local OpenAI-compatible endpoint (see below)
 models:
   - endpoint: "http://localhost:8080"     # name auto-detected from this endpoint
   - name: "unsloth/qwen3-30b-a3b"          # or set it explicitly
@@ -191,6 +192,7 @@ models:
             <tr><td><mono>router_url</mono></td><td>yes</td><td>&mdash;</td><td>WebSocket URL of the router. Use <code>wss://</code> for TLS.</td></tr>
             <tr><td><mono>router_token</mono></td><td>yes</td><td>&mdash;</td><td>Client token from the <a href="/portal/clients">Clients</a> page. Begins with <code>ct-</code>.</td></tr>
             <tr><td><mono>max_concurrent</mono></td><td>no</td><td>auto</td><td>Max parallel jobs. When omitted, auto-detected from llama.cpp&rsquo;s reported slot count (<mono>total_slots</mono>), falling back to 1. Set explicitly to override.</td></tr>
+            <tr><td><mono>local_api_addr</mono></td><td>no</td><td>disabled</td><td>Bind address for a local OpenAI-compatible HTTP endpoint (e.g. <mono>127.0.0.1:8089</mono>). Exposes <mono>POST /v1/chat/completions</mono> and <mono>GET /v1/models</mono>, routing directly to llama.cpp without going through the router. Local requests share the same concurrency pool as router-dispatched jobs and take priority over them.</td></tr>
             <tr><td><mono>models[].name</mono></td><td>no</td><td>auto</td><td>Model name as callers will request it. When omitted, auto-detected from the endpoint&rsquo;s <mono>/v1/models</mono> at connect time. Aliases are managed server-side &mdash; see <a class="docs-xref" onclick="showDoc('model-aliases',null)">Model aliases</a>.</td></tr>
             <tr><td><mono>models[].endpoint</mono></td><td>yes</td><td>&mdash;</td><td>llama.cpp base URL. Client appends <code>/v1/chat/completions</code>.</td></tr>
             <tr><td><mono>models[].chat_template</mono></td><td>no</td><td>&mdash;</td><td>Override the model&rsquo;s built-in Jinja2 chat template. llama.cpp applies it server-side. See <a class="docs-xref" onclick="showDoc('chat-templates',null)">Chat templates</a>.</td></tr>
