@@ -75,23 +75,23 @@ func indexStr(s, substr string) int {
 
 // Client represents a connected llmesh-client node.
 type Client struct {
-	ID                string
-	conn              *websocket.Conn
-	send              chan []byte
+	ID                     string
+	conn                   *websocket.Conn
+	send                   chan []byte
 	Models                 map[string]bool // nil until "register" message received
 	ModelContextSizes      map[string]int  // model name → n_ctx in tokens (0 = unknown)
 	ModelContextTrainSizes map[string]int  // model name → n_ctx_train in tokens (0 = unknown)
-	MaxConcurrent     int             // 0 until "register" message received
-	inFlight          atomic.Int32
-	Name             string
-	Owner            string
-	Token            string
-	Version          string         // client version from register message
-	OwnerSlots       map[string]int // model → slots reserved for owner; 0/unset = fully shared
-	wg               sync.WaitGroup // tracks writeLoop + readLoop goroutines
-	closeOnce        sync.Once      // ensures conn.Close() happens exactly once
-	sendMu           sync.Mutex     // guards send channel close/send to prevent data race
-	sendClosed       bool
+	MaxConcurrent          int             // 0 until "register" message received
+	inFlight               atomic.Int32
+	Name                   string
+	Owner                  string
+	Token                  string
+	Version                string         // client version from register message
+	OwnerSlots             map[string]int // model → slots reserved for owner; 0/unset = fully shared
+	wg                     sync.WaitGroup // tracks writeLoop + readLoop goroutines
+	closeOnce              sync.Once      // ensures conn.Close() happens exactly once
+	sendMu                 sync.Mutex     // guards send channel close/send to prevent data race
+	sendClosed             bool
 }
 
 // ClientSummary is an alias for types.ClientSummary for backward compatibility.
@@ -161,12 +161,12 @@ func (r InFlightRecord) DeltaCount() int64 {
 
 // Hub manages WebSocket client connections and acts as the client registry.
 type Hub struct {
-	mu             sync.RWMutex
-	clients        map[string]*Client
-	lastSeen       map[string]time.Time           // token → last disconnect time
-	jobs           map[string]InFlightRecord      // requestID → in-flight record
-	jobsByClient   map[string]map[string]struct{} // clientID → set of requestIDs
-	log            *slog.Logger
+	mu           sync.RWMutex
+	clients      map[string]*Client
+	lastSeen     map[string]time.Time           // token → last disconnect time
+	jobs         map[string]InFlightRecord      // requestID → in-flight record
+	jobsByClient map[string]map[string]struct{} // clientID → set of requestIDs
+	log          *slog.Logger
 
 	// OnChunk is called when a client sends a ChunkMsg.
 	OnChunk func(msg types.ChunkMsg)
@@ -233,29 +233,35 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token
 	client.closeSend()
 	client.wg.Wait()
 
-	// Collect in-flight jobs before removing the client so we can fail them immediately.
-	// dispatch() only runs from within readLoop (which has already returned), so there
-	// is no race between this cleanup and job tracking.
-	orphaned := h.InFlightJobsByClientID(client.ID)
-
+	// Remove the client from the registry *before* snapshotting its in-flight
+	// jobs. A job dispatched concurrently by the scheduler is tracked via
+	// TrackJob, which now refuses to track for a client that is no longer
+	// registered (returning false so the scheduler requeues it). Removing the
+	// client first therefore guarantees every still-tracked job is captured
+	// here and no new job can be tracked against this dead connection.
 	h.mu.Lock()
 	delete(h.clients, client.ID)
 	if token != "" {
 		h.lastSeen[token] = time.Now()
 	}
 	h.mu.Unlock()
+
+	orphaned := h.InFlightJobsByClientID(client.ID)
 	h.log.Info("hub: client disconnected", "id", client.ID)
 
 	// Immediately fail (or retry) any jobs that were in-flight when the client disconnected.
 	// Without this the caller would wait for the router's activity timer (2 min).
-	for _, rec := range orphaned {
-		if !h.untrackJob(rec.Req.ID) {
-			continue // lease reaper already handled this job
+	for _, orphan := range orphaned {
+		rec, ok := h.untrackJob(orphan.Req.ID, client.ID)
+		if !ok {
+			continue // lease reaper or a stale message already handled this job
 		}
 		client.DecrInFlight()
 		req := rec.Req
 		req.Attempts++
-		if req.Attempts < MaxAttempts && h.OnRelease != nil {
+		// Only retry when no output was delivered; retrying a partially-streamed
+		// request would concatenate the retry onto the partial response.
+		if req.Attempts < MaxAttempts && rec.FirstChunkAt() == nil && h.OnRelease != nil {
 			h.log.Warn("hub: client disconnected during inference, retrying",
 				"request_id", req.ID, "client_id", client.ID,
 				"attempt", req.Attempts, "max_attempts", MaxAttempts)
@@ -263,7 +269,8 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token
 		} else {
 			h.log.Warn("hub: failing orphaned job on disconnect",
 				"request_id", req.ID, "client_id", client.ID,
-				"attempt", req.Attempts, "max_attempts", MaxAttempts)
+				"attempt", req.Attempts, "max_attempts", MaxAttempts,
+				"partial", rec.FirstChunkAt() != nil)
 			if h.OnError != nil {
 				h.OnError(types.ErrorMsg{
 					Type:      "error",
@@ -273,6 +280,12 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token
 			}
 		}
 	}
+
+	// Drop the (now-empty) per-client job index so it does not accumulate one
+	// stale entry per reconnecting worker over the process lifetime.
+	h.mu.Lock()
+	delete(h.jobsByClient, client.ID)
+	h.mu.Unlock()
 
 	// OnAvailable signals that this client's slots are free; the scheduler
 	// will also be woken by any OnRelease calls above (via sched.Wake), but
@@ -392,7 +405,7 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 			}
 		}
 		if msg.Done {
-			if h.untrackJob(msg.RequestID) {
+			if _, ok := h.untrackJob(msg.RequestID, client.ID); ok {
 				client.DecrInFlight()
 				if h.OnAvailable != nil {
 					h.OnAvailable()
@@ -409,47 +422,64 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 			RequestID: in.RequestID,
 			Message:   in.Message,
 		}
-		h.mu.RLock()
-		rec, hasRec := h.jobs[msg.RequestID]
-		h.mu.RUnlock()
-		if h.untrackJob(msg.RequestID) {
-			client.DecrInFlight()
-			if h.OnAvailable != nil {
-				h.OnAvailable()
-			}
+		rec, ok := h.untrackJob(msg.RequestID, client.ID)
+		if !ok {
+			// Stale error for a job this client no longer holds (already
+			// completed, expired, cancelled, or re-dispatched elsewhere).
+			// Dropping it avoids failing a request that is now running on
+			// another client.
+			return
 		}
-		if hasRec {
-			req := rec.Req
-			req.Attempts++
-			if req.Attempts < MaxAttempts && h.OnRelease != nil {
-				h.log.Warn("hub: client inference error, retrying",
-					"request_id", req.ID, "client_id", client.ID,
-					"message", msg.Message,
-					"attempt", req.Attempts, "max_attempts", MaxAttempts)
-				h.OnRelease(req)
-				return
-			}
+		client.DecrInFlight()
+		if h.OnAvailable != nil {
+			h.OnAvailable()
+		}
+		req := rec.Req
+		req.Attempts++
+		// Only retry if no output has been delivered yet. Retrying after the
+		// caller has already received partial tokens would concatenate the new
+		// attempt's full response onto the partial one.
+		if req.Attempts < MaxAttempts && rec.FirstChunkAt() == nil && h.OnRelease != nil {
+			h.log.Warn("hub: client inference error, retrying",
+				"request_id", req.ID, "client_id", client.ID,
+				"message", msg.Message,
+				"attempt", req.Attempts, "max_attempts", MaxAttempts)
+			h.OnRelease(req)
+			return
+		}
+		if rec.FirstChunkAt() != nil {
+			h.log.Warn("hub: inference error after partial output, failing without retry",
+				"request_id", req.ID, "client_id", client.ID, "message", msg.Message)
 		}
 		if h.OnError != nil {
 			h.OnError(msg)
 		}
 
 	case "release":
-		h.mu.RLock()
-		rec, ok := h.jobs[in.RequestID]
-		h.mu.RUnlock()
+		rec, ok := h.untrackJob(in.RequestID, client.ID)
 		if !ok {
-			return // already completed, expired, or unknown
+			return // already completed, expired, reassigned, or unknown
 		}
 		client.DecrInFlight()
-		h.untrackJob(in.RequestID)
 		h.log.Info("hub: client released job",
 			"request_id", in.RequestID,
 			"client_id", client.ID,
 			"reason", in.Reason,
 		)
-		if h.OnRelease != nil {
-			h.OnRelease(rec.Req)
+		req := rec.Req
+		req.Attempts++
+		// Re-dispatch on release (e.g. graceful shutdown), but only while
+		// attempts remain and no output was delivered — otherwise a client that
+		// deterministically releases a job would bounce it between queue and
+		// client forever, and a partial stream must not be retried.
+		if req.Attempts < MaxAttempts && rec.FirstChunkAt() == nil && h.OnRelease != nil {
+			h.OnRelease(req)
+		} else if h.OnError != nil {
+			h.OnError(types.ErrorMsg{
+				Type:      "error",
+				RequestID: req.ID,
+				Message:   "client released job without completing it: " + in.Reason,
+			})
 		}
 		if h.OnAvailable != nil {
 			h.OnAvailable()
@@ -624,16 +654,19 @@ func (h *Hub) DecrInFlight(clientID string) {
 	}
 }
 
-// TrackJob registers an in-flight job for the given client. Called by the scheduler after dispatch.
-func (h *Hub) TrackJob(clientID string, req types.InferenceRequest) {
+// TrackJob registers an in-flight job for the given client. Called by the
+// scheduler after dispatch. Returns false if the client is no longer connected
+// — in that case the job is not tracked and the caller must requeue it, so a
+// job dispatched into a connection that drops concurrently is never lost.
+func (h *Hub) TrackJob(clientID string, req types.InferenceRequest) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	token := ""
-	clientOwner := ""
-	if c, ok := h.clients[clientID]; ok {
-		token = c.Token
-		clientOwner = c.Owner
+	c, ok := h.clients[clientID]
+	if !ok {
+		return false // connection dropped between dispatch and tracking
 	}
+	token := c.Token
+	clientOwner := c.Owner
 	now := time.Now()
 	h.jobs[req.ID] = InFlightRecord{
 		ClientID:     clientID,
@@ -652,23 +685,30 @@ func (h *Hub) TrackJob(clientID string, req types.InferenceRequest) {
 		h.jobsByClient[clientID] = make(map[string]struct{})
 	}
 	h.jobsByClient[clientID][req.ID] = struct{}{}
+	return true
 }
 
-// untrackJob removes the job record for requestID. Returns true if the record
-// existed (and was deleted), false if it was already gone (e.g. lease reaper
-// beat us to it). Callers must only DecrInFlight when this returns true.
-func (h *Hub) untrackJob(requestID string) bool {
+// untrackJob removes the job record for requestID, but only if it is currently
+// held by clientID. Returns the removed record and true when the record existed
+// and belonged to clientID; otherwise a zero record and false. Verifying the
+// holder prevents a stale message from a previous attempt (after the request was
+// re-dispatched to another client with the same ID) from untracking the new
+// attempt's record and corrupting in-flight accounting. Callers must only
+// DecrInFlight when this returns true.
+func (h *Hub) untrackJob(requestID, clientID string) (InFlightRecord, bool) {
 	h.mu.Lock()
 	rec, existed := h.jobs[requestID]
-	if existed {
-		delete(h.jobs, requestID)
-		delete(h.jobsByClient[rec.ClientID], requestID)
+	if !existed || rec.ClientID != clientID {
+		h.mu.Unlock()
+		return InFlightRecord{}, false
 	}
+	delete(h.jobs, requestID)
+	delete(h.jobsByClient[rec.ClientID], requestID)
 	h.mu.Unlock()
-	if existed && h.Latency != nil {
+	if h.Latency != nil {
 		h.Latency.RecordDuration(rec.Req.Model, time.Since(rec.DispatchedAt))
 	}
-	return existed
+	return rec, true
 }
 
 // LookupInFlightJob returns the in-flight record for requestID, if any.
@@ -718,6 +758,7 @@ func (h *Hub) CancelRequest(requestID string) {
 	rec, existed := h.jobs[requestID]
 	if existed {
 		delete(h.jobs, requestID)
+		delete(h.jobsByClient[rec.ClientID], requestID)
 	}
 	h.mu.Unlock()
 

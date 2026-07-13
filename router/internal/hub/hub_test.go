@@ -203,9 +203,15 @@ func TestLeaseReaper_IgnoresActiveLeases(t *testing.T) {
 
 func TestTrackJob_SetsLeaseFields(t *testing.T) {
 	h := New(slog.Default())
+	// TrackJob only tracks jobs for currently-connected clients, so register one.
+	h.mu.Lock()
+	h.clients["client-1"] = &Client{ID: "client-1"}
+	h.mu.Unlock()
 	req := types.InferenceRequest{ID: "req-lease-1", Model: "llama3"}
 	before := time.Now()
-	h.TrackJob("client-1", req)
+	if !h.TrackJob("client-1", req) {
+		t.Fatal("TrackJob returned false for a connected client")
+	}
 	after := time.Now()
 
 	h.mu.RLock()

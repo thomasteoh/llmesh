@@ -41,6 +41,11 @@ type candidate struct {
 	client   types.ClientSummary
 	req      types.InferenceRequest
 	affinity bool
+	// resolved is the concrete model name this client would serve for req.Model,
+	// computed once so the owner-slot check, context check, and the final
+	// dispatch all agree (map iteration for "any"/aliases is otherwise
+	// nondeterministic and could disagree across those three sites).
+	resolved string
 }
 
 // Dispatcher is satisfied by *hub.Hub. It exposes only the methods the scheduler
@@ -50,7 +55,7 @@ type Dispatcher interface {
 	SendToClient(clientID string, msg any) bool
 	IncrInFlight(clientID string)
 	DecrInFlight(clientID string)
-	TrackJob(clientID string, req types.InferenceRequest)
+	TrackJob(clientID string, req types.InferenceRequest) bool
 	NonOwnerInFlight(clientID, owner, model string) int
 }
 
@@ -200,6 +205,9 @@ func (s *Scheduler) drainQueue() {
 			if req == nil {
 				continue
 			}
+			// Resolve the concrete model once and reuse it everywhere below so
+			// the owner-slot cap, context check, and dispatch cannot disagree.
+			resolved := resolveModel(req.Model, c.Models, aliases)
 			// Enforce per-model owner-slot constraints for non-owner requests.
 			if req.Owner != c.Owner {
 				// Resolve model names for OwnerSlots and NonOwnerInFlight separately:
@@ -214,24 +222,15 @@ func (s *Scheduler) drainQueue() {
 				//     Dispatched jobs always store the rewritten (concrete) model name,
 				//     so this must be the resolved name in all cases — including "any",
 				//     which is rewritten before TrackJob is called.
-				ownerSlotsKey := req.Model // default: same as request
-				inFlightModel := req.Model // will be resolved below
+				// OwnerSlots key stays "any" for an "any" request (users set
+				// OwnerSlots["any"]); otherwise it is the concrete resolved model.
+				// inFlightModel is always the resolved name because dispatched
+				// jobs store the rewritten concrete model name.
+				ownerSlotsKey := resolved
 				if req.Model == "any" {
-					// OwnerSlots key stays "any" (user-visible).
-					// Resolve inFlightModel to the concrete model for the live scan.
-					for m := range c.Models {
-						inFlightModel = m
-						break
-					}
-				} else if targets, ok := aliases[req.Model]; ok {
-					for _, t := range targets {
-						if c.Models[t] {
-							ownerSlotsKey = t
-							inFlightModel = t
-							break
-						}
-					}
+					ownerSlotsKey = "any"
 				}
+				inFlightModel := resolved
 				ownerReserved := c.OwnerSlots[ownerSlotsKey] // 0 if unset = fully shared
 				nonOwnerCap := c.MaxConcurrent - ownerReserved
 				if nonOwnerCap <= 0 {
@@ -249,7 +248,6 @@ func (s *Scheduler) drainQueue() {
 			}
 			// Skip this client if its context window is too small for the estimated token count.
 			if req.WordCount > 0 {
-				resolved := resolveModel(req.Model, c.Models, aliases)
 				if ctxSize := c.ModelContextSizes[resolved]; ctxSize > 0 {
 					if needed := types.EstimateTokens(req.WordCount, req.MaxTokens); needed > ctxSize {
 						s.log.Debug("scheduler: skipping client — context too small",
@@ -273,7 +271,7 @@ func (s *Scheduler) drainQueue() {
 					}
 				}
 			}
-			cand := &candidate{client: cc, req: *req, affinity: affinity}
+			cand := &candidate{client: cc, req: *req, affinity: affinity, resolved: resolved}
 			if best == nil || betterCandidate(cand, best) {
 				best = cand
 			}
@@ -290,7 +288,7 @@ func (s *Scheduler) drainQueue() {
 			continue
 		}
 
-		req.Model = resolveModel(req.Model, best.client.Models, aliases)
+		req.Model = best.resolved
 
 		// Seed the local non-owner base from the hub before tracking this job, so
 		// the base excludes the job we are about to dispatch.
@@ -312,7 +310,15 @@ func (s *Scheduler) drainQueue() {
 			s.log.Warn("scheduler: client unavailable, re-queued", "client_id", best.client.ID, "request_id", req.ID)
 			return
 		}
-		s.hub.TrackJob(best.client.ID, *req)
+		// Track after sending. If the connection dropped concurrently, TrackJob
+		// returns false and we requeue so the job is never stranded on a dead
+		// client (the disconnect handler only fails jobs it can see tracked).
+		if !s.hub.TrackJob(best.client.ID, *req) {
+			s.hub.DecrInFlight(best.client.ID)
+			s.queue.Push(*req)
+			s.log.Warn("scheduler: client disconnected during dispatch, re-queued", "client_id", best.client.ID, "request_id", req.ID)
+			return
+		}
 
 		// Record the prefix→client mapping so the next turn of this conversation
 		// prefers the same client (warm KV cache). Guarded by the cap so a flood
