@@ -1036,11 +1036,16 @@ func TestE2E_RequestIDCorrelation(t *testing.T) {
 // TestE2E_AnthropicSSEChunk verifies the translate.AnthropicSSEChunk helper works.
 func TestE2E_AnthropicSSEChunk(t *testing.T) {
 	chunk := types.ChunkMsg{
-		Type:    "chunk",
+		Type:      "chunk",
 		RequestID: "test-req-1",
-		Delta:   "hello world",
+		Delta:     "hello world",
 	}
-	sseLine := translate.AnthropicSSEChunk(chunk)
+	streamer := translate.NewAnthropicStreamer("test-req-1", "claude-x")
+	var sb bytes.Buffer
+	for _, l := range streamer.Delta(chunk) {
+		sb.WriteString(l)
+	}
+	sseLine := sb.String()
 	if sseLine == "" {
 		t.Fatal("empty SSE chunk line")
 	}
@@ -1053,11 +1058,11 @@ func TestE2E_AnthropicSSEChunk(t *testing.T) {
 // TestE2E_OpenAISSEChunk verifies OpenAI SSE chunk formatting.
 func TestE2E_OpenAISSEChunk(t *testing.T) {
 	chunk := types.ChunkMsg{
-		Type:    "chunk",
+		Type:      "chunk",
 		RequestID: "test-req-2",
-		Delta:   "test content",
+		Delta:     "test content",
 	}
-	sseLine := translate.OpenAISSEChunk("test-req-2", chunk)
+	sseLine := translate.OpenAISSEChunk("test-req-2", "llama3", chunk)
 	if sseLine == "" {
 		t.Fatal("empty OpenAI SSE chunk line")
 	}
@@ -1069,7 +1074,7 @@ func TestE2E_OpenAISSEChunk(t *testing.T) {
 
 // TestE2E_OpenAIFullResponse verifies full response translation.
 func TestE2E_OpenAIFullResponse(t *testing.T) {
-	resp := translate.OpenAIFullResponse("test-req-3", "full response", "stop", nil, nil)
+	resp := translate.OpenAIFullResponse("test-req-3", "llama3", "full response", "stop", nil, nil)
 	b, _ := json.Marshal(resp)
 	var parsed map[string]any
 	json.Unmarshal(b, &parsed)
@@ -1462,7 +1467,7 @@ func TestE2E_TranslateAnthropicInbound(t *testing.T) {
 
 // TestE2E_TranslateOpenAIFullResponse verifies full response generation.
 func TestE2E_TranslateOpenAIFullResponse(t *testing.T) {
-	resp := translate.OpenAIFullResponse("resp-1", "test answer", "stop", nil, nil)
+	resp := translate.OpenAIFullResponse("resp-1", "llama3", "test answer", "stop", nil, nil)
 	b, _ := json.Marshal(resp)
 	var parsed map[string]any
 	json.Unmarshal(b, &parsed)
@@ -1489,7 +1494,7 @@ func TestE2E_TranslateOpenAIFullResponse(t *testing.T) {
 
 // TestE2E_TranslateAnthropicFullResponse verifies Anthropic response generation.
 func TestE2E_TranslateAnthropicFullResponse(t *testing.T) {
-	resp := translate.AnthropicFullResponse("resp-2", "claude-3", "anthropic answer", "end_turn")
+	resp := translate.AnthropicFullResponse("resp-2", "claude-3", "anthropic answer", "stop", nil, nil)
 	b, _ := json.Marshal(resp)
 	var parsed map[string]any
 	json.Unmarshal(b, &parsed)

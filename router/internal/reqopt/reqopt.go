@@ -51,19 +51,22 @@ func Clean(req *types.InferenceRequest, opts types.RequestOptimization) {
 }
 
 // clampParams brings out-of-range sampling parameters into valid bounds.
-// Zero is treated as "unset" for both temperature and top_p (the inbound
-// translators leave them at zero when absent, and the backend omits zero
-// values), so zero is never clamped upward.
+// Unset parameters (nil pointers) are left untouched so the backend default
+// applies; only explicitly-provided values are clamped.
 func clampParams(req *types.InferenceRequest) {
-	if req.Temperature < 0 {
-		req.Temperature = 0
-	} else if req.Temperature > 2 {
-		req.Temperature = 2
+	if req.Temperature != nil {
+		if *req.Temperature < 0 {
+			*req.Temperature = 0
+		} else if *req.Temperature > 2 {
+			*req.Temperature = 2
+		}
 	}
-	if req.TopP < 0 {
-		req.TopP = 0
-	} else if req.TopP > 1 {
-		req.TopP = 1
+	if req.TopP != nil {
+		if *req.TopP < 0 {
+			*req.TopP = 0
+		} else if *req.TopP > 1 {
+			*req.TopP = 1
+		}
 	}
 }
 

@@ -152,11 +152,14 @@ func buildOpenAIBody(req *types.InferenceRequest, stream bool) ([]byte, error) {
 	if req.MaxTokens > 0 {
 		body["max_tokens"] = req.MaxTokens
 	}
-	if req.Temperature > 0 {
-		body["temperature"] = req.Temperature
+	if req.Temperature != nil {
+		body["temperature"] = *req.Temperature
 	}
-	if req.TopP > 0 {
-		body["top_p"] = req.TopP
+	if req.TopP != nil {
+		body["top_p"] = *req.TopP
+	}
+	if len(req.Stop) > 0 {
+		body["stop"] = req.Stop
 	}
 	if len(req.Tools) > 0 {
 		body["tools"] = req.Tools
@@ -198,11 +201,14 @@ func buildAnthropicBody(req *types.InferenceRequest, stream bool) ([]byte, error
 	if len(systemContent) > 0 {
 		body["system"] = systemContent
 	}
-	if req.Temperature > 0 {
-		body["temperature"] = req.Temperature
+	if req.Temperature != nil {
+		body["temperature"] = *req.Temperature
 	}
-	if req.TopP > 0 {
-		body["top_p"] = req.TopP
+	if req.TopP != nil {
+		body["top_p"] = *req.TopP
+	}
+	if len(req.Stop) > 0 {
+		body["stop_sequences"] = req.Stop
 	}
 	if len(req.Tools) > 0 {
 		body["tools"] = req.Tools
@@ -218,7 +224,9 @@ func buildAnthropicBody(req *types.InferenceRequest, stream bool) ([]byte, error
 func parseOpenAIBatch(out []byte) (content, finishReason string, err error) {
 	var r struct {
 		Choices []struct {
-			Message      struct{ Content string `json:"content"` } `json:"message"`
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 	}
@@ -237,7 +245,9 @@ func parseOpenAIBatch(out []byte) (content, finishReason string, err error) {
 
 func parseAnthropicBatch(out []byte) (content, finishReason string, err error) {
 	var r struct {
-		Content    []struct{ Text string `json:"text"` } `json:"content"`
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
 		StopReason string `json:"stop_reason"`
 	}
 	if err := json.Unmarshal(out, &r); err != nil {
@@ -272,7 +282,9 @@ func readOpenAIStream(body io.Reader, fn ChunkFunc) error {
 		}
 		var chunk struct {
 			Choices []struct {
-				Delta        struct{ Content string `json:"content"` } `json:"delta"`
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
 				FinishReason *string `json:"finish_reason"`
 			} `json:"choices"`
 			Usage *struct {
@@ -331,14 +343,18 @@ func readAnthropicStream(body io.Reader, fn ChunkFunc) error {
 		var ev struct {
 			Type    string `json:"type"`
 			Message *struct {
-				Usage *struct{ InputTokens int `json:"input_tokens"` } `json:"usage"`
+				Usage *struct {
+					InputTokens int `json:"input_tokens"`
+				} `json:"usage"`
 			} `json:"message"`
 			Delta *struct {
 				Type       string `json:"type"`
 				Text       string `json:"text"`
 				StopReason string `json:"stop_reason"`
 			} `json:"delta"`
-			Usage *struct{ OutputTokens int `json:"output_tokens"` } `json:"usage"`
+			Usage *struct {
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage"`
 		}
 		if err := json.Unmarshal([]byte(data), &ev); err != nil {
 			continue

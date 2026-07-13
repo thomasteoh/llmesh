@@ -40,22 +40,26 @@ type Message struct {
 
 // InferenceRequest is the canonical internal representation of an LLM request.
 type InferenceRequest struct {
-	ID          string          `json:"id"`
-	Model       string          `json:"model"`
-	Messages    []Message       `json:"messages"`
-	MaxTokens   int             `json:"max_tokens"`
-	Temperature float64         `json:"temperature"`
-	TopP        float64         `json:"top_p"`
+	ID        string    `json:"id"`
+	Model     string    `json:"model"`
+	Messages  []Message `json:"messages"`
+	MaxTokens int       `json:"max_tokens"`
+	// Temperature and TopP are pointers so an explicit 0 (e.g. greedy decoding)
+	// is distinguishable from "unset". nil means the caller did not specify the
+	// value and the backend default applies.
+	Temperature *float64        `json:"temperature,omitempty"`
+	TopP        *float64        `json:"top_p,omitempty"`
+	Stop        []string        `json:"stop,omitempty"` // stop sequences; forwarded to the backend
 	Stream      bool            `json:"stream"`
 	Tools       json.RawMessage `json:"tools,omitempty"`
 	ToolChoice  json.RawMessage `json:"tool_choice,omitempty"`
 	SourceFmt   string          `json:"source_fmt"` // "openai" | "anthropic" | "openai-responses"
 	Priority    Priority        `json:"priority"`
-	Owner       string          `json:"owner"`        // username of the API-key holder
+	Owner       string          `json:"owner"`                   // username of the API-key holder
 	APIKeyLabel string          `json:"api_key_label,omitempty"` // "owner/label" of the key used
 	WordCount   int             `json:"word_count,omitempty"`    // approximate word count across all messages
 	EnqueuedAt  time.Time       `json:"enqueued_at"`
-	Attempts    int             `json:"attempts,omitempty"` // number of times this request has errored and been retried
+	Attempts    int             `json:"attempts,omitempty"`  // number of times this request has errored and been retried
 	OriginID    string          `json:"origin_id,omitempty"` // request ID assigned by the originating router; set by upstream connector for cross-hop tracing
 }
 
@@ -119,7 +123,7 @@ type UsageInfo struct {
 
 // ChunkMsg is sent by the client for each token chunk (or full response if non-streaming).
 type ChunkMsg struct {
-	Type           string          `json:"type"`                     // "chunk"
+	Type           string          `json:"type"` // "chunk"
 	RequestID      string          `json:"request_id"`
 	Delta          string          `json:"delta"`
 	ToolCallsDelta json.RawMessage `json:"tool_calls_delta,omitempty"`
@@ -149,9 +153,9 @@ type UpdateMsg struct {
 // ReleaseMsg is sent by a client to return a job to the router queue.
 // The router re-queues the request for another client to handle.
 type ReleaseMsg struct {
-	Type      string `json:"type"`       // "release"
+	Type      string `json:"type"` // "release"
 	RequestID string `json:"request_id"`
-	Reason    string `json:"reason"`     // "model_failed" | "timeout" | "client_shutdown"
+	Reason    string `json:"reason"` // "model_failed" | "timeout" | "client_shutdown"
 }
 
 // MaxAttempts is the total number of times a request may be dispatched before

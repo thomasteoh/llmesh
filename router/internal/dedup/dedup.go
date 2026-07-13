@@ -14,8 +14,8 @@ import (
 // Entry tracks an in-flight request and any coalesced subscribers.
 type Entry struct {
 	mu     sync.Mutex
-	chunks []types.ChunkMsg       // buffer of all chunks received so far
-	subs   []chan types.ChunkMsg   // live subscriber channels
+	chunks []types.ChunkMsg      // buffer of all chunks received so far
+	subs   []chan types.ChunkMsg // live subscriber channels
 	done   bool
 }
 
@@ -131,8 +131,9 @@ func ContentHashOpts(req *types.InferenceRequest, normalize bool) string {
 		Model       string          `json:"model"`
 		Messages    []types.Message `json:"messages"`
 		MaxTokens   int             `json:"max_tokens,omitempty"`
-		Temperature float64         `json:"temperature,omitempty"`
-		TopP        float64         `json:"top_p,omitempty"`
+		Temperature *float64        `json:"temperature,omitempty"`
+		TopP        *float64        `json:"top_p,omitempty"`
+		Stop        []string        `json:"stop,omitempty"`
 		Tools       json.RawMessage `json:"tools,omitempty"`
 		ToolChoice  json.RawMessage `json:"tool_choice,omitempty"`
 	}
@@ -155,6 +156,7 @@ func ContentHashOpts(req *types.InferenceRequest, normalize bool) string {
 		MaxTokens:   req.MaxTokens,
 		Temperature: req.Temperature,
 		TopP:        req.TopP,
+		Stop:        req.Stop,
 		Tools:       tools,
 		ToolChoice:  toolChoice,
 	})

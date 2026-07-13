@@ -52,8 +52,9 @@ type inferRequest struct {
 	Model         string          `json:"model"`
 	Messages      []types.Message `json:"messages"`
 	MaxTokens     int             `json:"max_tokens,omitempty"`
-	Temperature   float64         `json:"temperature,omitempty"`
-	TopP          float64         `json:"top_p,omitempty"`
+	Temperature   *float64        `json:"temperature,omitempty"`
+	TopP          *float64        `json:"top_p,omitempty"`
+	Stop          []string        `json:"stop,omitempty"`
 	Stream        bool            `json:"stream"`
 	Tools         json.RawMessage `json:"tools,omitempty"`
 	ToolChoice    json.RawMessage `json:"tool_choice,omitempty"`
@@ -158,6 +159,7 @@ func (c *Client) Infer(ctx context.Context, req types.InferenceRequest, chatTemp
 		MaxTokens:    req.MaxTokens,
 		Temperature:  req.Temperature,
 		TopP:         req.TopP,
+		Stop:         req.Stop,
 		Stream:       req.Stream,
 		Tools:        req.Tools,
 		ToolChoice:   req.ToolChoice,

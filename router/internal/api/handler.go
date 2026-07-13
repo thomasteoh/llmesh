@@ -429,6 +429,13 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 	ttft := h.ttftTimeout()
 	activity := h.activityTimeout()
 
+	// Anthropic streaming uses a stateful encoder to emit the required named
+	// event lifecycle (message_start → content_block_* → message_delta → stop).
+	var anthropicStreamer *translate.AnthropicStreamer
+	if req.SourceFmt == "anthropic" {
+		anthropicStreamer = translate.NewAnthropicStreamer(req.ID, req.Model)
+	}
+
 	// Phase 1 — queue + TTFT timer: covers queue wait, prompt evaluation, and
 	// time-to-first-token. Generous because large-context prompt eval on slow
 	// local hardware can take many minutes before producing the first output token.
@@ -483,14 +490,16 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 			}
 			switch req.SourceFmt {
 			case "anthropic":
-				if chunk.Delta != "" {
-					writeSSE(w, translate.AnthropicSSEChunk(chunk))
+				if events := anthropicStreamer.Delta(chunk); len(events) > 0 {
+					for _, l := range events {
+						writeSSE(w, l)
+					}
 					flusher.Flush()
 				}
 				if chunk.Done {
 					logRequestDone(req, chunk.Usage, firstTokenAt, true, chunk.FinishReason)
 					h.recordStats(req, chunk.Usage)
-					for _, l := range translate.AnthropicSSEDone(chunk.FinishReason) {
+					for _, l := range anthropicStreamer.Done(chunk.FinishReason, chunk.Usage) {
 						writeSSE(w, l)
 					}
 					flusher.Flush()
@@ -510,14 +519,14 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 				}
 			default: // "openai"
 				if chunk.Delta != "" || len(chunk.ToolCallsDelta) > 0 {
-					writeSSE(w, translate.OpenAISSEChunk(req.ID, chunk))
+					writeSSE(w, translate.OpenAISSEChunk(req.ID, req.Model, chunk))
 					flusher.Flush()
 				}
 				if chunk.Done {
 					logRequestDone(req, chunk.Usage, firstTokenAt, true, chunk.FinishReason)
 					h.recordStats(req, chunk.Usage)
 					// Emit final chunk with finish_reason and usage before [DONE]
-					writeSSE(w, translate.OpenAISSEChunk(req.ID, chunk))
+					writeSSE(w, translate.OpenAISSEChunk(req.ID, req.Model, chunk))
 					flusher.Flush()
 					writeSSE(w, translate.OpenAISSEDone())
 					flusher.Flush()
@@ -626,11 +635,11 @@ func (h *Handler) writeBatch(w http.ResponseWriter, req *types.InferenceRequest,
 	var resp map[string]any
 	switch req.SourceFmt {
 	case "anthropic":
-		resp = translate.AnthropicFullResponse(req.ID, req.Model, content, finishReason)
+		resp = translate.AnthropicFullResponse(req.ID, req.Model, content, finishReason, toolCalls, usage)
 	case "openai-responses":
-		resp = translate.OpenAIResponsesFullResponse(req.ID, req.Model, content)
+		resp = translate.OpenAIResponsesFullResponse(req.ID, req.Model, content, usage)
 	default:
-		resp = translate.OpenAIFullResponse(req.ID, content, finishReason, toolCalls, usage)
+		resp = translate.OpenAIFullResponse(req.ID, req.Model, content, finishReason, toolCalls, usage)
 	}
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		apiLogger().Error("api: encode response", "error", err)
