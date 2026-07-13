@@ -1,9 +1,13 @@
 router_url: "wss://llmesh.example.com/ws/client"
 router_token: "ct-yourname-yourtoken"   # client token from the router admin UI (Clients page)
 # max_concurrent: 4        # optional - omit to auto-detect from llama.cpp slot count (min 1)
-# local_api_addr: ":8089"  # optional - expose a local OpenAI-compatible endpoint that routes
-#                           # directly to llama.cpp (bypasses the router). Requests share the
+# local_api_addr: "127.0.0.1:8089"  # optional - expose a local OpenAI-compatible endpoint that
+#                           # routes directly to llama.cpp (bypasses the router). Requests share the
 #                           # same concurrency pool as router jobs; local requests take priority.
+#                           # Prefer a loopback bind: the endpoint is unauthenticated unless
+#                           # local_api_token is set.
+# local_api_token: ""      # optional - require "Authorization: Bearer <token>" on the local
+#                           # endpoint. Set this if local_api_addr is not loopback-only.
 # metrics_addr: ":9091"    # expose expvar metrics at http://<host>:9091/debug/vars; omit to disable
 models:
   - endpoint: "http://host.docker.internal:8080"   # name auto-detected from this endpoint's /v1/models

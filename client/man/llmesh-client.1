@@ -105,6 +105,20 @@ Local requests share the same concurrency pool as router-dispatched jobs
 When a slot is available and both a local request and a queued router job
 are waiting, the local request is served first.
 Active local requests are counted in the status line alongside router jobs.
+.IP
+The local endpoint is unauthenticated unless
+.B local_api_token
+is set, and local requests take priority over router jobs, so a non-loopback
+bind lets anyone with network reach obtain inference and starve router traffic.
+Prefer a loopback bind (e.g.\~\fI127.0.0.1:8089\fR); if you must bind a routable
+interface, set
+.BR local_api_token .
+.TP
+.B local_api_token
+Optional bearer token required on the local endpoint. When set, callers must
+send
+.IR "Authorization: Bearer <token>" .
+Empty (the default) leaves the endpoint open.
 .TP
 .B models
 List of model definitions.

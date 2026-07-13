@@ -7,7 +7,9 @@ package localapi
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -66,8 +68,25 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 }
 
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes))
+	if !s.authorized(r) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"error":"unauthorized"}`)
+		return
+	}
+
+	// MaxBytesReader (not LimitReader) so an oversized body is rejected with a
+	// clear error rather than silently truncated into invalid JSON.
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			fmt.Fprint(w, `{"error":"request body too large"}`)
+			return
+		}
 		http.Error(w, `{"error":"failed to read request body"}`, http.StatusBadRequest)
 		return
 	}
@@ -129,7 +148,31 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	proxy.ServeHTTP(w, r)
 }
 
+// authorized reports whether the request may use the local endpoint. When no
+// local_api_token is configured the endpoint is open (intended for loopback
+// binds); otherwise a matching bearer token is required, compared in constant
+// time.
+func (s *Server) authorized(r *http.Request) bool {
+	want := s.cfg.LocalAPIToken
+	if want == "" {
+		return true
+	}
+	const prefix = "Bearer "
+	h := r.Header.Get("Authorization")
+	if len(h) <= len(prefix) || h[:len(prefix)] != prefix {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(h[len(prefix):]), []byte(want)) == 1
+}
+
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	if !s.authorized(r) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"error":"unauthorized"}`)
+		return
+	}
+
 	type modelEntry struct {
 		ID      string `json:"id"`
 		Object  string `json:"object"`
