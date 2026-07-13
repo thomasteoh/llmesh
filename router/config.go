@@ -12,6 +12,11 @@ import (
 type Config struct {
 	Server struct {
 		Port int `yaml:"port"`
+		// TrustProxyHeaders controls whether X-Forwarded-For / X-Forwarded-Proto
+		// are honoured. Leave false unless the router sits behind a trusted
+		// reverse proxy that sets them — otherwise a client can spoof its IP and
+		// bypass per-IP rate limiting. Default: false.
+		TrustProxyHeaders bool `yaml:"trust_proxy_headers"`
 	} `yaml:"server"`
 	Name     string `yaml:"name"` // brand name shown on landing page
 	Host     string `yaml:"host"` // hostname clients use to connect

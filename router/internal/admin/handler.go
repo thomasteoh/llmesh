@@ -34,6 +34,9 @@ type Admin struct {
 	log           *slog.Logger
 	sink          *logring.Sink
 	rateLimiter   *rateLimiter
+	// trustProxy enables honouring X-Forwarded-For/Proto. Off by default so a
+	// direct client cannot spoof its IP to bypass rate limiting.
+	trustProxy bool
 
 	// upstreamReload is called after any upstream router add/remove.
 	// Wired by main.go to connector.Reload after the connector is created.
@@ -48,6 +51,10 @@ func (a *Admin) SetUpstreamReloader(fn func()) { a.upstreamReload = fn }
 
 // SetConnectorStatus registers the function used to query per-upstream connection status.
 func (a *Admin) SetConnectorStatus(fn func(url string) bool) { a.upstreamConnected = fn }
+
+// SetTrustProxy configures whether proxy headers (X-Forwarded-For/Proto) are
+// honoured. Enable only when the router is behind a trusted reverse proxy.
+func (a *Admin) SetTrustProxy(v bool) { a.trustProxy = v }
 
 // New creates an Admin handler. statePath is the path to state.json.
 func New(statePath string, h *hub.Hub, q *queue.Queue, reqCount func() int64, s *stats.Stats, routerVersion, name, host string, sink *logring.Sink) (*Admin, error) {
@@ -82,6 +89,15 @@ func New(statePath string, h *hub.Hub, q *queue.Queue, reqCount func() int64, s 
 // State returns the loaded State, for use by the API handler.
 func (a *Admin) State() *State {
 	return a.state
+}
+
+// redactSecret returns a log-safe identifier for a key or token: enough prefix
+// to correlate (type + owner segment) without exposing the secret material.
+func redactSecret(s string) string {
+	if len(s) <= 8 {
+		return "****"
+	}
+	return s[:8] + "…"
 }
 
 func (a *Admin) parseTemplates() error {

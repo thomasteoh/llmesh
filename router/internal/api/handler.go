@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -217,8 +218,19 @@ func (h *Handler) enqueue(
 		}
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	// MaxBytesReader (not LimitReader) so an over-limit body is rejected with a
+	// clear 413 rather than silently truncated into invalid or partial JSON.
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			apiLogger().Warn("api: request body too large", "ip", clientIP(r))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			w.Write([]byte(`{"error":{"message":"request body too large","type":"invalid_request_error"}}` + "\n"))
+			return
+		}
 		apiLogger().Warn("api: read body failed", "error", err, "ip", clientIP(r))
 		internalError(w)
 		return
@@ -836,12 +848,14 @@ func clientIP(r *http.Request) string {
 	return "-"
 }
 
-// maskKey returns the first 8 chars of a key for log-safe identification.
+// maskKey returns a log-safe identifier for an API key: a short non-secret
+// prefix for a plausibly-real key, or "****" for anything too short to mask
+// (never the raw key material — a mistyped real key must not land in logs).
 func maskKey(key string) string {
-	if len(key) <= 8 {
-		return "****" + key
+	if len(key) < 12 {
+		return "****"
 	}
-	return key[:8] + "****"
+	return key[:8] + "…"
 }
 
 // sanitizeModel returns a safe string for logging before parsing succeeds.

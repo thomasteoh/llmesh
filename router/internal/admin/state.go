@@ -22,7 +22,7 @@ import (
 type User struct {
 	Username     string `json:"username"`
 	PasswordHash string `json:"password_hash"`
-	Role         string `json:"role"`     // "admin" | "member"
+	Role         string `json:"role"` // "admin" | "member"
 	Disabled     bool   `json:"disabled"`
 	CSRFToken    string `json:"csrf_token,omitempty"` // SHA-256 hash of current valid CSRF token
 }
@@ -31,7 +31,7 @@ type APIKey struct {
 	Label         string    `json:"label"`
 	Owner         string    `json:"owner"`
 	Key           string    `json:"key"`
-	Priority      string    `json:"priority"`               // "high" | "normal" | "low"
+	Priority      string    `json:"priority"`                 // "high" | "normal" | "low"
 	MaxConcurrent int       `json:"max_concurrent,omitempty"` // 0 = unlimited
 	CreatedAt     time.Time `json:"created_at"`
 }
@@ -376,6 +376,31 @@ func (s *State) AddUser(u User) error {
 		return err
 	}
 	return nil
+}
+
+// AddFirstAdmin atomically creates the initial admin account, but only if no
+// users exist yet. This closes the first-run race where two concurrent setup
+// requests both pass NeedsSetup() and each create an admin.
+func (s *State) AddFirstAdmin(u User) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var count int
+	if err := tx.QueryRow("SELECT COUNT(*) FROM users").Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return fmt.Errorf("setup has already been completed")
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO users (username, password_hash, role, disabled, csrf_token) VALUES (?, ?, ?, ?, ?)`,
+		u.Username, u.PasswordHash, u.Role, boolInt(u.Disabled), u.CSRFToken,
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *State) UpdateUser(username string, fn func(*User)) error {

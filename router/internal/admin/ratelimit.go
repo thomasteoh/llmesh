@@ -25,10 +25,30 @@ type clientEntry struct {
 }
 
 func newRateLimiter(window time.Duration, cleanupEvery time.Duration) *rateLimiter {
-	return &rateLimiter{
+	rl := &rateLimiter{
 		clients: make(map[string]*clientEntry),
 		window:  window,
 		cleanup: cleanupEvery,
+	}
+	go rl.reap()
+	return rl
+}
+
+// reap periodically evicts buckets not seen within the cleanup window so the
+// map cannot grow without bound (especially important since a spoofed or
+// high-cardinality client key set would otherwise accumulate forever).
+func (rl *rateLimiter) reap() {
+	ticker := time.NewTicker(rl.cleanup)
+	defer ticker.Stop()
+	for range ticker.C {
+		cutoff := time.Now().Add(-rl.cleanup)
+		rl.mu.Lock()
+		for k, e := range rl.clients {
+			if e.lastSeen.Before(cutoff) {
+				delete(rl.clients, k)
+			}
+		}
+		rl.mu.Unlock()
 	}
 }
 
@@ -58,13 +78,15 @@ func (rl *rateLimiter) Allow(ip string, limit float64) bool {
 	return entry.limiter.Allow()
 }
 
-// extractIP extracts the client IP from the request, checking X-Forwarded-For
-// first (behind reverse proxy) then falling back to RemoteAddr.
-func extractIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// Take the first IP in the chain
-		parts := strings.Split(xff, ",")
-		return strings.TrimSpace(parts[0])
+// clientIP returns the request's client IP. X-Forwarded-For is honoured only
+// when trustProxy is set (the router is behind a trusted reverse proxy);
+// otherwise the direct peer (RemoteAddr) is used, so a client cannot spoof its
+// IP to get a fresh rate-limit bucket per request.
+func (a *Admin) clientIP(r *http.Request) string {
+	if a.trustProxy {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			return strings.TrimSpace(strings.Split(xff, ",")[0])
+		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -73,13 +95,23 @@ func extractIP(r *http.Request) string {
 	return host
 }
 
+// isSecure reports whether the request reached the router over TLS, either
+// directly or (when trustProxy is set) via a proxy that terminated TLS and set
+// X-Forwarded-Proto. Used to decide the session cookie's Secure flag.
+func (a *Admin) isSecure(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return a.trustProxy && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
 // requireRateLimit returns a middleware that enforces per-IP rate limiting.
 func (a *Admin) requireRateLimit(next http.HandlerFunc, limit float64) http.HandlerFunc {
 	if a.rateLimiter == nil {
 		return next
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		ip := extractIP(r)
+		ip := a.clientIP(r)
 		if !a.rateLimiter.Allow(ip, limit) {
 			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 			return
