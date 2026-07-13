@@ -18,15 +18,16 @@ var httpClient = &http.Client{Timeout: 0} // timeouts are handled by context
 
 // ─── HTTP executor ────────────────────────────────────────────────────────────
 
-func runHTTPBatch(ctx context.Context, spec *Spec, req *types.InferenceRequest) (content, finishReason string, err error) {
+func runHTTPBatch(ctx context.Context, spec *Spec, req *types.InferenceRequest) (BatchResult, error) {
 	if err := validateURL(spec.URL); err != nil {
-		return "", "", err
+		return BatchResult{}, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, batchTimeout)
 	defer cancel()
 
 	var body []byte
 	var endpoint string
+	var err error
 
 	switch spec.Format {
 	case "anthropic":
@@ -37,28 +38,28 @@ func runHTTPBatch(ctx context.Context, spec *Spec, req *types.InferenceRequest) 
 		endpoint = joinURL(spec.URL, "/v1/chat/completions")
 	}
 	if err != nil {
-		return "", "", fmt.Errorf("build request: %w", err)
+		return BatchResult{}, fmt.Errorf("build request: %w", err)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return "", "", fmt.Errorf("create request: %w", err)
+		return BatchResult{}, fmt.Errorf("create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	applyAuth(httpReq, spec)
 
 	resp, err := httpClient.Do(httpReq)
 	if err != nil {
-		return "", "", fmt.Errorf("upstream request: %w", err)
+		return BatchResult{}, fmt.Errorf("upstream request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	out, err := io.ReadAll(io.LimitReader(resp.Body, maxBatchOutput))
 	if err != nil {
-		return "", "", fmt.Errorf("read upstream response: %w", err)
+		return BatchResult{}, fmt.Errorf("read upstream response: %w", err)
 	}
 	if resp.StatusCode >= 400 {
-		return "", "", fmt.Errorf("upstream %d: %s", resp.StatusCode, truncate(string(out), 200))
+		return BatchResult{}, fmt.Errorf("upstream %d: %s", resp.StatusCode, truncate(string(out), 200))
 	}
 
 	switch spec.Format {
@@ -221,51 +222,97 @@ func buildAnthropicBody(req *types.InferenceRequest, stream bool) ([]byte, error
 
 // ─── Response parsers ─────────────────────────────────────────────────────────
 
-func parseOpenAIBatch(out []byte) (content, finishReason string, err error) {
+func parseOpenAIBatch(out []byte) (BatchResult, error) {
 	var r struct {
 		Choices []struct {
 			Message struct {
-				Content string `json:"content"`
+				Content   string          `json:"content"`
+				ToolCalls json.RawMessage `json:"tool_calls"`
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(out, &r); err != nil {
-		return "", "", fmt.Errorf("parse openai response: %w", err)
+		return BatchResult{}, fmt.Errorf("parse openai response: %w", err)
 	}
 	if len(r.Choices) == 0 {
-		return "", "", fmt.Errorf("openai response has no choices")
+		return BatchResult{}, fmt.Errorf("openai response has no choices")
 	}
 	fr := r.Choices[0].FinishReason
 	if fr == "" {
 		fr = "stop"
 	}
-	return r.Choices[0].Message.Content, fr, nil
+	return BatchResult{
+		Content:      r.Choices[0].Message.Content,
+		ToolCalls:    r.Choices[0].Message.ToolCalls,
+		FinishReason: fr,
+	}, nil
 }
 
-func parseAnthropicBatch(out []byte) (content, finishReason string, err error) {
+func parseAnthropicBatch(out []byte) (BatchResult, error) {
 	var r struct {
 		Content []struct {
-			Text string `json:"text"`
+			Type  string          `json:"type"`
+			Text  string          `json:"text"`
+			ID    string          `json:"id"`
+			Name  string          `json:"name"`
+			Input json.RawMessage `json:"input"`
 		} `json:"content"`
 		StopReason string `json:"stop_reason"`
 	}
 	if err := json.Unmarshal(out, &r); err != nil {
-		return "", "", fmt.Errorf("parse anthropic response: %w", err)
+		return BatchResult{}, fmt.Errorf("parse anthropic response: %w", err)
 	}
 	var parts []string
+	var tools []openAIToolCall
 	for _, c := range r.Content {
-		parts = append(parts, c.Text)
+		switch c.Type {
+		case "tool_use":
+			args := "{}"
+			if len(c.Input) > 0 {
+				args = string(c.Input)
+			}
+			tools = append(tools, newOpenAIToolCall(len(tools), c.ID, c.Name, args))
+		default: // "text"
+			parts = append(parts, c.Text)
+		}
 	}
 	fr := r.StopReason
 	if fr == "" {
 		fr = "stop"
 	}
-	return strings.Join(parts, ""), fr, nil
+	var toolJSON json.RawMessage
+	if len(tools) > 0 {
+		toolJSON, _ = json.Marshal(tools)
+	}
+	return BatchResult{Content: strings.Join(parts, ""), ToolCalls: toolJSON, FinishReason: fr}, nil
+}
+
+// openAIToolCall is the OpenAI tool_calls array element used to normalise tool
+// calls from any upstream format into the router's internal representation.
+type openAIToolCall struct {
+	Index    int    `json:"index"`
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+func newOpenAIToolCall(index int, id, name, arguments string) openAIToolCall {
+	var tc openAIToolCall
+	tc.Index = index
+	tc.ID = id
+	tc.Type = "function"
+	tc.Function.Name = name
+	tc.Function.Arguments = arguments
+	return tc
 }
 
 func readOpenAIStream(body io.Reader, fn ChunkFunc) error {
 	finishReason := "stop"
+	sawFinish := false
 	doneEmitted := false
 	var usage *types.UsageInfo
 
@@ -278,12 +325,18 @@ func readOpenAIStream(body io.Reader, fn ChunkFunc) error {
 		}
 		data := strings.TrimPrefix(line, "data: ")
 		if data == "[DONE]" {
+			// Emit the terminal chunk here, after the usage-only chunk that
+			// OpenAI sends *after* the finish_reason chunk — breaking on
+			// finish_reason (as before) dropped usage entirely.
+			fn("", nil, finishReason, true, usage)
+			doneEmitted = true
 			break
 		}
 		var chunk struct {
 			Choices []struct {
 				Delta struct {
-					Content string `json:"content"`
+					Content   string          `json:"content"`
+					ToolCalls json.RawMessage `json:"tool_calls"`
 				} `json:"delta"`
 				FinishReason *string `json:"finish_reason"`
 			} `json:"choices"`
@@ -308,22 +361,27 @@ func readOpenAIStream(body io.Reader, fn ChunkFunc) error {
 		}
 		if fr := chunk.Choices[0].FinishReason; fr != nil && *fr != "" {
 			finishReason = *fr
+			sawFinish = true
 		}
 		delta := chunk.Choices[0].Delta.Content
-		done := chunk.Choices[0].FinishReason != nil
-		if done {
-			fn(delta, finishReason, true, usage)
-			doneEmitted = true
-			break
+		toolCalls := chunk.Choices[0].Delta.ToolCalls
+		if delta != "" || len(toolCalls) > 0 {
+			fn(delta, toolCalls, finishReason, false, nil)
 		}
-		if delta != "" {
-			fn(delta, finishReason, false, nil)
-		}
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("read upstream stream: %w", err)
 	}
 	if !doneEmitted {
-		fn("", finishReason, true, usage)
+		// The stream ended without [DONE]. If we at least saw a finish_reason
+		// the response is complete enough to close out; otherwise it was
+		// truncated and must surface as an error rather than a silent success.
+		if !sawFinish {
+			return fmt.Errorf("openai stream ended before completion")
+		}
+		fn("", nil, finishReason, true, usage)
 	}
-	return scanner.Err()
+	return nil
 }
 
 func readAnthropicStream(body io.Reader, fn ChunkFunc) error {
@@ -331,6 +389,12 @@ func readAnthropicStream(body io.Reader, fn ChunkFunc) error {
 	doneEmitted := false
 	var promptTokens int
 	var usage *types.UsageInfo
+	// Track the currently-open tool_use content block (Anthropic streams tool
+	// calls as content_block_start → input_json_delta* → content_block_stop);
+	// we accumulate and emit an OpenAI-format tool_call when the block closes.
+	toolOpen := false
+	var toolID, toolName, toolArgs string
+	toolCount := 0
 
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 64*1024), maxStreamLine)
@@ -347,10 +411,16 @@ func readAnthropicStream(body io.Reader, fn ChunkFunc) error {
 					InputTokens int `json:"input_tokens"`
 				} `json:"usage"`
 			} `json:"message"`
+			ContentBlock *struct {
+				Type string `json:"type"`
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"content_block"`
 			Delta *struct {
-				Type       string `json:"type"`
-				Text       string `json:"text"`
-				StopReason string `json:"stop_reason"`
+				Type        string `json:"type"`
+				Text        string `json:"text"`
+				PartialJSON string `json:"partial_json"`
+				StopReason  string `json:"stop_reason"`
 			} `json:"delta"`
 			Usage *struct {
 				OutputTokens int `json:"output_tokens"`
@@ -364,9 +434,33 @@ func readAnthropicStream(body io.Reader, fn ChunkFunc) error {
 			if ev.Message != nil && ev.Message.Usage != nil {
 				promptTokens = ev.Message.Usage.InputTokens
 			}
+		case "content_block_start":
+			if ev.ContentBlock != nil && ev.ContentBlock.Type == "tool_use" {
+				toolOpen = true
+				toolID = ev.ContentBlock.ID
+				toolName = ev.ContentBlock.Name
+				toolArgs = ""
+			}
 		case "content_block_delta":
-			if ev.Delta != nil {
-				fn(ev.Delta.Text, finishReason, false, nil)
+			if ev.Delta == nil {
+				continue
+			}
+			switch ev.Delta.Type {
+			case "input_json_delta":
+				toolArgs += ev.Delta.PartialJSON
+			default: // "text_delta"
+				fn(ev.Delta.Text, nil, finishReason, false, nil)
+			}
+		case "content_block_stop":
+			if toolOpen {
+				args := toolArgs
+				if args == "" {
+					args = "{}"
+				}
+				tc, _ := json.Marshal([]openAIToolCall{newOpenAIToolCall(toolCount, toolID, toolName, args)})
+				fn("", tc, finishReason, false, nil)
+				toolCount++
+				toolOpen = false
 			}
 		case "message_delta":
 			if ev.Delta != nil && ev.Delta.StopReason != "" {
@@ -381,14 +475,17 @@ func readAnthropicStream(body io.Reader, fn ChunkFunc) error {
 				}
 			}
 		case "message_stop":
-			fn("", finishReason, true, usage)
+			fn("", nil, finishReason, true, usage)
 			doneEmitted = true
 		}
 	}
-	if !doneEmitted {
-		fn("", finishReason, true, usage)
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("read upstream stream: %w", err)
 	}
-	return scanner.Err()
+	if !doneEmitted {
+		return fmt.Errorf("anthropic stream ended before message_stop")
+	}
+	return nil
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -417,6 +514,11 @@ func joinURL(base, path string) string {
 	base = strings.TrimRight(base, "/")
 	if strings.HasSuffix(base, path) {
 		return base
+	}
+	// Avoid doubling a shared /v1 segment when the configured url already ends
+	// in /v1 (the common convention, e.g. https://api.openai.com/v1).
+	if strings.HasSuffix(base, "/v1") && strings.HasPrefix(path, "/v1/") {
+		return base + strings.TrimPrefix(path, "/v1")
 	}
 	return base + path
 }

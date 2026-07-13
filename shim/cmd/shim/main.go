@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"expvar"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -59,6 +61,19 @@ Config file fields (YAML):
 	log.Info("llmesh-shim starting", "router", cfg.RouterURL, "models", len(cfg.Models), "max_concurrent", cfg.MaxConcurrent)
 
 	st := stats.New()
+
+	if cfg.MetricsAddr != "" {
+		stats.Register(st)
+		mux := http.NewServeMux()
+		mux.Handle("/debug/vars", expvar.Handler())
+		srv := &http.Server{Addr: cfg.MetricsAddr, Handler: mux}
+		go func() {
+			log.Info("metrics listening", "addr", cfg.MetricsAddr)
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Error("metrics server error", "error", err)
+			}
+		}()
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
