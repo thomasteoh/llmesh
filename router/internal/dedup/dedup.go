@@ -2,6 +2,7 @@
 package dedup
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -11,11 +12,20 @@ import (
 	"llmesh/pkg/types"
 )
 
+// subscriber is one coalesced follower of an in-flight request. overflow is set
+// when a chunk had to be dropped because the follower's buffer was full; such a
+// follower is closed without ever receiving a Done chunk so its handler reports
+// an error rather than a silently truncated success.
+type subscriber struct {
+	ch       chan types.ChunkMsg
+	overflow bool
+}
+
 // Entry tracks an in-flight request and any coalesced subscribers.
 type Entry struct {
 	mu     sync.Mutex
-	chunks []types.ChunkMsg      // buffer of all chunks received so far
-	subs   []chan types.ChunkMsg // live subscriber channels
+	chunks []types.ChunkMsg // buffer of all chunks received so far
+	subs   []*subscriber    // live subscribers
 	done   bool
 }
 
@@ -57,7 +67,7 @@ func (r *Registry) RegisterOrSubscribe(hash string) (isOriginal bool, buffer []t
 	var ch chan types.ChunkMsg
 	if !e.done {
 		ch = make(chan types.ChunkMsg, 256)
-		e.subs = append(e.subs, ch)
+		e.subs = append(e.subs, &subscriber{ch: ch})
 	}
 	e.mu.Unlock()
 	r.mu.Unlock()
@@ -79,15 +89,21 @@ func (r *Registry) Forward(hash string, chunk types.ChunkMsg) {
 	defer e.mu.Unlock()
 	e.chunks = append(e.chunks, chunk)
 	for _, sub := range e.subs {
+		if sub.overflow {
+			continue // already lost data; will be closed without Done
+		}
 		select {
-		case sub <- chunk:
+		case sub.ch <- chunk:
 		default:
+			// Follower is too slow; mark it so it is closed without a Done
+			// chunk, turning a silent gap into a signalled error downstream.
+			sub.overflow = true
 		}
 	}
 	if chunk.Done {
 		e.done = true
 		for _, sub := range e.subs {
-			close(sub)
+			close(sub.ch)
 		}
 		e.subs = nil
 	}
@@ -106,8 +122,11 @@ func (r *Registry) Unregister(hash string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if !e.done {
+		// Original ended without a Done chunk (cancel/timeout/error). Closing
+		// the subscriber channels without a Done makes each follower's handler
+		// report an error instead of a truncated success.
 		for _, sub := range e.subs {
-			close(sub)
+			close(sub.ch)
 		}
 		e.subs = nil
 	}
@@ -189,7 +208,11 @@ func canonicalJSON(raw json.RawMessage) json.RawMessage {
 // MakeSubscriberChan returns a single channel pre-loaded with buffered chunks
 // followed by live chunks. When live is nil, the channel is closed after the buffer.
 // The caller reads this channel exactly like a correlation channel.
-func MakeSubscriberChan(buffer []types.ChunkMsg, live <-chan types.ChunkMsg) <-chan types.ChunkMsg {
+//
+// ctx must be the subscriber request's context: when it is cancelled (the
+// follower disconnected or returned early) the forwarding goroutine exits
+// instead of blocking forever on a send to a channel nobody is reading.
+func MakeSubscriberChan(ctx context.Context, buffer []types.ChunkMsg, live <-chan types.ChunkMsg) <-chan types.ChunkMsg {
 	size := len(buffer) + 256
 	if live == nil {
 		size = len(buffer)
@@ -200,10 +223,22 @@ func MakeSubscriberChan(buffer []types.ChunkMsg, live <-chan types.ChunkMsg) <-c
 	}
 	if live != nil {
 		go func() {
-			for c := range live {
-				ch <- c
+			defer close(ch)
+			for {
+				select {
+				case c, ok := <-live:
+					if !ok {
+						return
+					}
+					select {
+					case ch <- c:
+					case <-ctx.Done():
+						return
+					}
+				case <-ctx.Done():
+					return
+				}
 			}
-			close(ch)
 		}()
 	} else {
 		close(ch)

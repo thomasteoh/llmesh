@@ -221,6 +221,15 @@ func OpenAISSEDone() string {
 	return "data: [DONE]"
 }
 
+// OpenAISSEError returns an OpenAI-shaped error event for a mid-stream failure.
+// Emit it followed by OpenAISSEDone so the client sees a typed error and a
+// clean stream terminator instead of a silently truncated stream.
+func OpenAISSEError(message string) string {
+	return "data: " + string(mustMarshal(map[string]any{
+		"error": map[string]any{"message": message, "type": "server_error"},
+	}))
+}
+
 // OpenAIFullResponse assembles a complete (non-streaming) OpenAI chat response.
 func OpenAIFullResponse(requestID, model, content, finishReason string, toolCalls json.RawMessage, usage *types.UsageInfo) map[string]any {
 	message := map[string]any{"role": "assistant", "content": content}
@@ -470,6 +479,14 @@ func OpenAIResponsesSSEChunk(requestID string, chunk types.ChunkMsg) string {
 // OpenAIResponsesSSEDone returns the terminal SSE event for OpenAI Responses API streaming.
 func OpenAIResponsesSSEDone() string {
 	return "data: " + string(mustMarshal(map[string]any{"type": "response.completed"}))
+}
+
+// OpenAIResponsesSSEError returns a Responses API failure event for a mid-stream error.
+func OpenAIResponsesSSEError(message string) string {
+	return "data: " + string(mustMarshal(map[string]any{
+		"type":  "response.failed",
+		"error": map[string]any{"message": message, "type": "server_error"},
+	}))
 }
 
 // OpenAIResponsesFullResponse assembles a complete non-streaming Responses API response.

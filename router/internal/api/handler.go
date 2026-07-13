@@ -346,7 +346,7 @@ func (h *Handler) enqueue(
 			h.requestCount.Add(1)
 			req.EnqueuedAt = time.Now()
 			apiLogger().Info("api: request coalesced", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "key_label", req.APIKeyLabel, "ip", clientIP(r))
-			subCh := dedup.MakeSubscriberChan(buf, live)
+			subCh := dedup.MakeSubscriberChan(r.Context(), buf, live)
 			if req.Stream {
 				h.streamResponse(w, r, req, subCh, "")
 			} else {
@@ -470,6 +470,12 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 		select {
 		case chunk, open := <-ch:
 			if !open {
+				// The channel closed without a Done chunk: abnormal termination
+				// (cancellation, correlation dropped, or a coalesced original
+				// that ended without completing). Emit a terminal error rather
+				// than letting the stream stop silently mid-response.
+				apiLogger().Warn("api: stream ended without completion", "request_id", req.ID)
+				h.writeStreamError(w, flusher, req, "response ended unexpectedly")
 				return
 			}
 			if !started {
@@ -539,13 +545,12 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 		case <-queueTimer.C:
 			apiLogger().Error("api: stream timeout", "request_id", req.ID, "timeout", ttft.String())
 			h.cancelRequest(req.ID)
-			serviceUnavailable(w, "request timed out waiting for a worker")
+			h.writeStreamError(w, flusher, req, "request timed out waiting for a worker")
 			return
 		case <-activityTimer.C:
 			apiLogger().Warn("api: stream worker silent", "request_id", req.ID, "timeout", activity.String())
 			h.cancelRequest(req.ID)
-			fmt.Fprintf(w, "data: {\"error\":\"worker stopped responding\"}\n\n")
-			flusher.Flush()
+			h.writeStreamError(w, flusher, req, "worker stopped responding")
 			return
 		case <-r.Context().Done():
 			apiLogger().Info("api: stream client disconnected", "request_id", req.ID)
@@ -569,7 +574,11 @@ func (h *Handler) batchResponse(w http.ResponseWriter, r *http.Request, req *typ
 		select {
 		case chunk, open := <-ch:
 			if !open {
-				h.writeBatch(w, req, sb.String(), finishReason, toolCalls, usage)
+				// Channel closed without a Done chunk: the response was
+				// truncated. Returning the partial accumulation as HTTP 200
+				// would present an incomplete answer as complete, so fail.
+				apiLogger().Warn("api: batch response ended without completion", "request_id", req.ID)
+				serviceUnavailable(w, "response ended unexpectedly")
 				return
 			}
 			if dedupHash != "" && h.Dedup != nil {
@@ -762,6 +771,24 @@ func (h *Handler) ModelList() http.HandlerFunc {
 func writeSSE(w io.Writer, payload string) {
 	io.WriteString(w, payload)
 	io.WriteString(w, "\n\n")
+}
+
+// writeStreamError emits a protocol-appropriate terminal error into an
+// already-committed SSE stream. Once keep-alive pings have flushed the 200
+// response, an HTTP error status can no longer be sent, so a timeout or
+// abnormal close must be surfaced as an in-band error event followed by the
+// stream terminator — otherwise the client sees a stream that just stops.
+func (h *Handler) writeStreamError(w io.Writer, flusher http.Flusher, req *types.InferenceRequest, message string) {
+	switch req.SourceFmt {
+	case "anthropic":
+		writeSSE(w, translate.AnthropicErrorEvent(message))
+	case "openai-responses":
+		writeSSE(w, translate.OpenAIResponsesSSEError(message))
+	default:
+		writeSSE(w, translate.OpenAISSEError(message))
+		writeSSE(w, translate.OpenAISSEDone())
+	}
+	flusher.Flush()
 }
 
 // logRequestDone emits the "api: request completed" structured log with timing and token stats.
