@@ -1,11 +1,43 @@
 {{define "content"}}
-<div class="stat-grid">
-  <div class="stat-card"><div class="stat-value" id="req-count">{{.TotalRequests}}</div><div class="stat-label">Total Requests</div></div>
-  <div class="stat-card"><div class="stat-value" id="active-clients">{{.ActiveClients}}</div><div class="stat-label">Active Clients</div></div>
-  <div class="stat-card"><div class="stat-value" id="api-key-count">{{.APIKeyCount}}</div><div class="stat-label">API Keys</div></div>
-  <div class="stat-card"><div class="stat-value" id="token-count">{{.TokenCount}}</div><div class="stat-label">Clients</div></div>
+<div class="page-head">
+  <div class="page-title">Dashboard</div>
+  <div class="last-updated" id="last-updated" style="margin:0"></div>
 </div>
-<div class="last-updated" id="last-updated"></div>
+
+<div class="stat-grid">
+  <div class="stat-card"><div class="stat-value" id="req-count">{{.TotalRequests}}</div><div class="stat-label">Requests since start</div></div>
+  <div class="stat-card"><div class="stat-value" id="active-clients">{{.ActiveClients}}</div><div class="stat-label">Active clients</div></div>
+  <div class="stat-card"><div class="stat-value" id="api-key-count">{{.APIKeyCount}}</div><div class="stat-label">API keys</div></div>
+  <div class="stat-card"><div class="stat-value" id="token-count">{{.TokenCount}}</div><div class="stat-label">Client tokens</div></div>
+</div>
+
+<div class="card mt-4" id="usage-card">
+  <div class="card-title">Usage</div>
+  <div class="usage-controls">
+    <div class="seg" id="usage-range" role="group" aria-label="Usage range">
+      <button class="seg-btn" data-usage-range="24h">24h</button>
+      <button class="seg-btn active" data-usage-range="7d">7d</button>
+      <button class="seg-btn" data-usage-range="30d">30d</button>
+      <button class="seg-btn" data-usage-range="90d">90d</button>
+    </div>
+    <div class="seg" id="usage-group" role="group" aria-label="Usage grouping">
+      <button class="seg-btn active" data-usage-group="model">By model</button>
+      <button class="seg-btn" data-usage-group="user">By user</button>
+      <button class="seg-btn" data-usage-group="key">By key</button>
+    </div>
+    <div class="seg usage-metric-toggle" id="usage-metric" role="group" aria-label="Usage metric">
+      <button class="seg-btn active" data-usage-metric="tokens">Tokens</button>
+      <button class="seg-btn" data-usage-metric="requests">Requests</button>
+    </div>
+  </div>
+  <div class="usage-chart-wrap">
+    <svg class="usage-chart" id="usage-chart" preserveAspectRatio="none"></svg>
+    <div class="usage-empty hidden" id="usage-empty">No usage recorded in this period.</div>
+  </div>
+  <div class="usage-legend" id="usage-legend"></div>
+  <div class="usage-totals" id="usage-totals"></div>
+</div>
+<div class="usage-tip" id="usage-tip"></div>
 
 {{if .ActiveModels}}
 <div class="card">
@@ -20,7 +52,7 @@
         <span class="alias-badge">
           {{.}}
           {{if $.IsAdmin}}
-          {{template "action-button" dict "Action" "/portal/model-aliases/delete" "CSRF" $.CSRFToken "Fields" (dict "alias" . "model" $model) "Confirm" (printf "Remove alias %s?" .) "Class" "alias-badge-del" "Label" "\u2715" "Title" "Remove alias"}}
+          {{template "action-button" dict "Action" "/portal/model-aliases/delete" "CSRF" $.CSRFToken "Fields" (dict "alias" . "model" $model) "Confirm" (printf "Remove alias %s?" .) "Class" "alias-badge-del" "Label" "✕" "Title" "Remove alias"}}
           {{end}}
         </span>
         {{end}}
@@ -39,45 +71,7 @@
 </div>
 {{end}}
 
-<div class="stats-panels">
-  <div class="stats-panel-half">
-    <div class="stats-panel-label">Tokens by model</div>
-    <table class="stats-table">
-      <thead><tr><th>Model</th><th>Reqs</th><th>In</th><th>Out</th></tr></thead>
-      <tbody id="stats-by-model">
-        {{range .StatsByModel}}
-        <tr>
-          <td class="stats-mono">{{.Name}}</td>
-          <td class="muted">{{.Requests}}</td>
-          <td class="muted">{{.PromptTokens}}</td>
-          <td class="muted">{{.CompletionTokens}}</td>
-        </tr>
-        {{else}}
-        <tr class="empty-row"><td colspan="4">No data yet.</td></tr>
-        {{end}}
-      </tbody>
-    </table>
-  </div>
-  <div class="stats-panel-half">
-    <div class="stats-panel-label">Tokens by user</div>
-    <table class="stats-table">
-      <thead><tr><th>User</th><th>Reqs</th><th>In</th><th>Out</th></tr></thead>
-      <tbody id="stats-by-user">
-        {{range .StatsByUser}}
-        <tr>
-          <td>{{.Name}}</td>
-          <td class="muted">{{.Requests}}</td>
-          <td class="muted">{{.PromptTokens}}</td>
-          <td class="muted">{{.CompletionTokens}}</td>
-        </tr>
-        {{else}}
-        <tr class="empty-row"><td colspan="4">No data yet.</td></tr>
-        {{end}}
-      </tbody>
-    </table>
-  </div>
-</div>
-
+<div class="section-header"><div class="section-title">Clients</div></div>
 <div class="table-scroll">
   <table class="data-table">
     <thead><tr><th>Client</th><th>Status</th><th>Last seen</th><th>Models</th><th>Version</th></tr></thead>

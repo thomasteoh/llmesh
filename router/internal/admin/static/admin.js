@@ -323,49 +323,6 @@ function initDashboard() {
     return tr;
   }
 
-  function buildStatsRow(row, mono) {
-    var tr = document.createElement('tr');
-    var td0 = document.createElement('td');
-    if (mono) td0.className = 'stats-mono';
-    td0.textContent = row.name;
-    var td1 = document.createElement('td'); td1.className = 'muted'; td1.textContent = row.requests;
-    var td2 = document.createElement('td'); td2.className = 'muted'; td2.textContent = row.prompt_tokens;
-    var td3 = document.createElement('td'); td3.className = 'muted'; td3.textContent = row.completion_tokens;
-    tr.appendChild(td0); tr.appendChild(td1); tr.appendChild(td2); tr.appendChild(td3);
-    return tr;
-  }
-
-  function emptyStatsRow() {
-    var tr = document.createElement('tr');
-    tr.className = 'empty-row';
-    var td = document.createElement('td');
-    td.colSpan = 4;
-    td.textContent = 'No data yet.';
-    tr.appendChild(td);
-    return tr;
-  }
-
-  function refreshStats(d) {
-    var modelTbody = document.getElementById('stats-by-model');
-    if (modelTbody) {
-      modelTbody.innerHTML = '';
-      if (d.stats_by_model && d.stats_by_model.length) {
-        d.stats_by_model.forEach(function(r) { modelTbody.appendChild(buildStatsRow(r, true)); });
-      } else {
-        modelTbody.appendChild(emptyStatsRow());
-      }
-    }
-    var userTbody = document.getElementById('stats-by-user');
-    if (userTbody) {
-      userTbody.innerHTML = '';
-      if (d.stats_by_user && d.stats_by_user.length) {
-        d.stats_by_user.forEach(function(r) { userTbody.appendChild(buildStatsRow(r, false)); });
-      } else {
-        userTbody.appendChild(emptyStatsRow());
-      }
-    }
-  }
-
   function onData(d) {
     var el;
     el = document.getElementById('req-count');      if (el) el.textContent = d.total_requests;
@@ -379,8 +336,6 @@ function initDashboard() {
     } else {
       tbody.appendChild(emptyRow());
     }
-
-    refreshStats(d);
 
     var lu = document.getElementById('last-updated');
     if (lu) lu.textContent = 'Updated ' + new Date().toLocaleTimeString();
@@ -424,6 +379,263 @@ function initJobStats() {
       if (liveEl) liveEl.textContent = buildStats(j, liveEl);
     });
   });
+}
+
+/* ─── Usage panel (dashboard) ────────────────────────────────────
+   Fetches /portal/api/usage and renders a stacked bar chart as inline
+   SVG (no external chart library). Controls: range (24h/7d/30d/90d),
+   grouping (model/user/key), metric (tokens/requests). */
+
+var CHART_COLORS = ['--chart-1','--chart-2','--chart-3','--chart-4','--chart-5',
+                    '--chart-6','--chart-7','--chart-8','--chart-9','--chart-10'];
+
+function usageColor(i, name) {
+  var v = name === 'other' ? '--chart-other' : CHART_COLORS[i % CHART_COLORS.length];
+  return getComputedStyle(document.documentElement).getPropertyValue(v).trim() || '#888';
+}
+
+function fmtNum(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(n >= 1e10 ? 0 : 1) + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + 'k';
+  return String(n);
+}
+
+function fmtBucket(b, hourly) {
+  var d = new Date(hourly ? b : b + 'T00:00:00Z');
+  if (hourly) {
+    return d.toLocaleString(undefined, { hour: 'numeric' }) +
+      (d.getHours() === 0 ? ' · ' + d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '');
+  }
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
+}
+
+function initUsage() {
+  var svg = document.getElementById('usage-chart');
+  if (!svg) return;
+
+  var state = { range: '7d', group: 'model', metric: 'tokens', data: null };
+  try {
+    state.range  = localStorage.getItem('llmesh-usage-range')  || state.range;
+    state.group  = localStorage.getItem('llmesh-usage-group')  || state.group;
+    state.metric = localStorage.getItem('llmesh-usage-metric') || state.metric;
+  } catch (e) {}
+
+  function syncButtons() {
+    [['usage-range','data-usage-range',state.range],
+     ['usage-group','data-usage-group',state.group],
+     ['usage-metric','data-usage-metric',state.metric]].forEach(function(cfg) {
+      var wrap = document.getElementById(cfg[0]);
+      if (!wrap) return;
+      wrap.querySelectorAll('.seg-btn').forEach(function(b) {
+        b.classList.toggle('active', b.getAttribute(cfg[1]) === cfg[2]);
+      });
+    });
+  }
+
+  function seriesValues(s) {
+    if (state.metric === 'requests') return s.requests;
+    return s.prompt_tokens.map(function(p, i) { return p + s.completion_tokens[i]; });
+  }
+
+  function render() {
+    var d = state.data;
+    if (!d) return;
+    var wrap = svg.parentElement;
+    var W = Math.max(280, wrap.clientWidth);
+    var H = 240;
+    var padL = 44, padR = 6, padT = 8, padB = 22;
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    svg.removeAttribute('preserveAspectRatio');
+    svg.innerHTML = '';
+
+    var n = d.buckets.length;
+    var hourly = d.range === '24h' || d.range === '7d';
+    var series = d.series || [];
+    var stackTotals = [];
+    for (var i = 0; i < n; i++) {
+      var t = 0;
+      series.forEach(function(s) { t += seriesValues(s)[i]; });
+      stackTotals.push(t);
+    }
+    var maxV = Math.max.apply(null, [1].concat(stackTotals));
+
+    var empty = document.getElementById('usage-empty');
+    if (empty) empty.classList.toggle('hidden', maxV > 1 || stackTotals.some(function(v){ return v > 0; }));
+
+    var plotW = W - padL - padR, plotH = H - padT - padB;
+    var ns = 'http://www.w3.org/2000/svg';
+
+    // Horizontal grid lines + y labels at 0 / half / max.
+    [0, 0.5, 1].forEach(function(f) {
+      var y = padT + plotH * (1 - f);
+      var line = document.createElementNS(ns, 'line');
+      line.setAttribute('class', 'grid-line');
+      line.setAttribute('x1', padL); line.setAttribute('x2', W - padR);
+      line.setAttribute('y1', y); line.setAttribute('y2', y);
+      svg.appendChild(line);
+      var lbl = document.createElementNS(ns, 'text');
+      lbl.setAttribute('class', 'axis-label');
+      lbl.setAttribute('x', padL - 6); lbl.setAttribute('y', y + 3.5);
+      lbl.setAttribute('text-anchor', 'end');
+      lbl.textContent = fmtNum(Math.round(maxV * f));
+      svg.appendChild(lbl);
+    });
+
+    var slot = plotW / n;
+    var barW = Math.max(1, Math.min(slot * 0.72, 40));
+
+    // X labels: ~6 evenly spaced.
+    var step = Math.max(1, Math.ceil(n / 6));
+    for (var bi = 0; bi < n; bi += step) {
+      var tx = document.createElementNS(ns, 'text');
+      tx.setAttribute('class', 'axis-label');
+      tx.setAttribute('x', padL + slot * bi + slot / 2);
+      tx.setAttribute('y', H - 7);
+      tx.setAttribute('text-anchor', 'middle');
+      tx.textContent = fmtBucket(d.buckets[bi], hourly);
+      svg.appendChild(tx);
+    }
+
+    // Stacked bars.
+    for (var b = 0; b < n; b++) {
+      var yAcc = padT + plotH;
+      var x = padL + slot * b + (slot - barW) / 2;
+      series.forEach(function(s, si) {
+        var v = seriesValues(s)[b];
+        if (v <= 0) return;
+        var h = (v / maxV) * plotH;
+        yAcc -= h;
+        var rect = document.createElementNS(ns, 'rect');
+        rect.setAttribute('class', 'bar');
+        rect.setAttribute('x', x); rect.setAttribute('y', yAcc);
+        rect.setAttribute('width', barW); rect.setAttribute('height', Math.max(h, 0.5));
+        rect.setAttribute('fill', usageColor(si, s.name));
+        svg.appendChild(rect);
+      });
+      // Transparent hover strip for the tooltip.
+      var hover = document.createElementNS(ns, 'rect');
+      hover.setAttribute('x', padL + slot * b); hover.setAttribute('y', padT);
+      hover.setAttribute('width', slot); hover.setAttribute('height', plotH);
+      hover.setAttribute('fill', 'transparent');
+      hover.setAttribute('data-bucket-idx', b);
+      svg.appendChild(hover);
+    }
+
+    // Legend + totals.
+    var legend = document.getElementById('usage-legend');
+    if (legend) {
+      legend.innerHTML = '';
+      series.forEach(function(s, si) {
+        var item = document.createElement('span');
+        item.className = 'legend-item';
+        var sw = document.createElement('span');
+        sw.className = 'legend-swatch';
+        sw.style.background = usageColor(si, s.name);
+        item.appendChild(sw);
+        item.appendChild(document.createTextNode(s.name || '(none)'));
+        var val = document.createElement('span');
+        val.className = 'legend-val';
+        val.textContent = state.metric === 'requests'
+          ? fmtNum(s.total_requests)
+          : fmtNum(s.total_tokens);
+        item.appendChild(val);
+        legend.appendChild(item);
+      });
+    }
+    var totals = document.getElementById('usage-totals');
+    if (totals) {
+      totals.innerHTML = '';
+      [['Requests', d.totals.requests], ['Prompt tokens', d.totals.prompt_tokens],
+       ['Completion tokens', d.totals.completion_tokens]].forEach(function(pair) {
+        var sp = document.createElement('span');
+        var b = document.createElement('b');
+        b.textContent = fmtNum(pair[1]);
+        sp.appendChild(b);
+        sp.appendChild(document.createTextNode(' ' + pair[0]));
+        totals.appendChild(sp);
+      });
+    }
+  }
+
+  /* Tooltip */
+  var tip = document.getElementById('usage-tip');
+  svg.addEventListener('mousemove', function(e) {
+    if (!tip || !state.data) return;
+    var t = e.target.closest('[data-bucket-idx]');
+    if (!t) { tip.style.display = 'none'; return; }
+    var b = parseInt(t.getAttribute('data-bucket-idx'), 10);
+    var d = state.data;
+    var hourly = d.range === '24h' || d.range === '7d';
+    tip.innerHTML = '';
+    var title = document.createElement('div');
+    title.className = 'tip-title';
+    title.textContent = fmtBucket(d.buckets[b], hourly);
+    tip.appendChild(title);
+    var any = false;
+    (d.series || []).forEach(function(s, si) {
+      var v = seriesValues(s)[b];
+      if (v <= 0) return;
+      any = true;
+      var row = document.createElement('div');
+      row.className = 'tip-row';
+      var name = document.createElement('span');
+      name.className = 'tip-name';
+      var sw = document.createElement('span');
+      sw.className = 'tip-swatch';
+      sw.style.background = usageColor(si, s.name);
+      name.appendChild(sw);
+      name.appendChild(document.createTextNode(s.name || '(none)'));
+      var val = document.createElement('span');
+      val.className = 'tip-val';
+      val.textContent = fmtNum(v);
+      row.appendChild(name); row.appendChild(val);
+      tip.appendChild(row);
+    });
+    if (!any) {
+      var none = document.createElement('div');
+      none.className = 'tip-row';
+      none.textContent = 'no usage';
+      tip.appendChild(none);
+    }
+    tip.style.display = 'block';
+    var tw = tip.offsetWidth, th = tip.offsetHeight;
+    var xPos = Math.min(e.clientX + 14, window.innerWidth - tw - 8);
+    var yPos = Math.min(e.clientY + 14, window.innerHeight - th - 8);
+    tip.style.left = xPos + 'px';
+    tip.style.top = yPos + 'px';
+  });
+  svg.addEventListener('mouseleave', function() { if (tip) tip.style.display = 'none'; });
+
+  var usagePoller = poll(function() {
+    return '/portal/api/usage?range=' + encodeURIComponent(state.range) +
+           '&group=' + encodeURIComponent(state.group);
+  }, 60000, function(d) { state.data = d; render(); });
+
+  document.addEventListener('click', function(e) {
+    var rb = e.target.closest('[data-usage-range]');
+    var gb = e.target.closest('[data-usage-group]');
+    var mb = e.target.closest('[data-usage-metric]');
+    if (!rb && !gb && !mb) return;
+    if (rb) state.range = rb.getAttribute('data-usage-range');
+    if (gb) state.group = gb.getAttribute('data-usage-group');
+    if (mb) state.metric = mb.getAttribute('data-usage-metric');
+    try {
+      localStorage.setItem('llmesh-usage-range', state.range);
+      localStorage.setItem('llmesh-usage-group', state.group);
+      localStorage.setItem('llmesh-usage-metric', state.metric);
+    } catch (err) {}
+    syncButtons();
+    if (mb) render(); else usagePoller.tick();
+  });
+
+  var resizeTimer = null;
+  window.addEventListener('resize', function() {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(render, 150);
+  });
+
+  syncButtons();
 }
 
 /* ─── Click delegation ──────────────────────────────────────── */
@@ -509,6 +721,7 @@ function fallbackCopy(text) {
 
 document.addEventListener('DOMContentLoaded', function() {
   initDashboard();
+  initUsage();
   initClientGroups();
   initJobStats();
 
