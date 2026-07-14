@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -18,9 +19,18 @@ import (
 )
 
 const (
-	pingInterval = 30 * time.Second
-	pongWait     = 60 * time.Second
+	pingInterval   = 30 * time.Second
+	pongWait       = 60 * time.Second
+	initialBackoff = time.Second
+	maxBackoff     = 60 * time.Second
 )
+
+// jitter returns d perturbed by ±20% to avoid a thundering herd of workers all
+// reconnecting in lockstep after a router restart.
+func jitter(d time.Duration) time.Duration {
+	delta := (rand.Float64()*2 - 1) * 0.2 * float64(d)
+	return d + time.Duration(delta)
+}
 
 // ConnStats abstracts the live counters updated during connection lifecycle.
 // Satisfied by *client/internal/stats.Stats and *shim/internal/stats.Stats.
@@ -113,7 +123,7 @@ func (c *Conn) SetOnUpdate(fn func()) {
 
 // Run connects to the router and reconnects on disconnect. Blocks until ctx is cancelled.
 func (c *Conn) Run(ctx context.Context) {
-	backoff := time.Second
+	backoff := initialBackoff
 	first := true
 	for {
 		if ctx.Err() != nil {
@@ -123,35 +133,45 @@ func (c *Conn) Run(ctx context.Context) {
 			c.st.IncrReconnects()
 		}
 		first = false
-		err := c.connect(ctx)
+		registered, err := c.connect(ctx)
 		c.st.SetConnected(false)
 		if ctx.Err() != nil {
 			return // graceful shutdown completed
 		}
+		// A session that got as far as registering was healthy; reset the
+		// backoff so a long-lived connection that later drops reconnects
+		// promptly instead of inheriting a backoff grown during an earlier
+		// outage. Only a never-registered attempt (router down, bad token)
+		// keeps escalating.
+		if registered {
+			backoff = initialBackoff
+		}
 		if err != nil {
-			c.log.Error("ws: connect error", "error", err, "backoff", backoff.String())
+			wait := jitter(backoff)
+			c.log.Error("ws: connect error", "error", err, "backoff", wait.String())
 			select {
-			case <-time.After(backoff):
+			case <-time.After(wait):
 			case <-ctx.Done():
 				return
 			}
-			if backoff < 60*time.Second {
+			if backoff < maxBackoff {
 				backoff *= 2
 			}
 			continue
 		}
-		backoff = time.Second
 		c.log.Info("ws: disconnected — reconnecting")
 	}
 }
 
-func (c *Conn) connect(outerCtx context.Context) error {
+func (c *Conn) connect(outerCtx context.Context) (registered bool, err error) {
 	header := map[string][]string{
 		"Authorization": {"Bearer " + c.routerToken},
 	}
-	conn, _, err := websocket.DefaultDialer.Dial(c.routerURL, header)
+	// DialContext (not Dial) so a hanging TLS handshake is aborted promptly on
+	// shutdown instead of blocking for the dialer's handshake timeout.
+	conn, _, err := websocket.DefaultDialer.DialContext(outerCtx, c.routerURL, header)
 	if err != nil {
-		return err
+		return false, err
 	}
 	conn.SetReadLimit(16 << 20) // 16 MiB — prevents OOM from oversized router frames
 
@@ -170,6 +190,22 @@ func (c *Conn) connect(outerCtx context.Context) error {
 		c.ws = nil
 		c.mu.Unlock()
 	}()
+
+	// send targets this specific connection. After a reconnect a lingering job
+	// goroutine from the old connection would otherwise write stale frames onto
+	// the new socket; the c.ws == conn check drops those writes.
+	send := func(msg any) error {
+		data, err := json.Marshal(msg)
+		if err != nil {
+			return err
+		}
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.ws != conn {
+			return nil // connection replaced; drop stale write
+		}
+		return conn.WriteMessage(websocket.TextMessage, data)
+	}
 
 	// Keepalive: refresh read deadline on every pong.
 	conn.SetReadDeadline(time.Now().Add(pongWait))
@@ -213,7 +249,7 @@ func (c *Conn) connect(outerCtx context.Context) error {
 			}
 			c.cancelsMu.Unlock()
 			for _, id := range ids {
-				_ = c.send(types.ReleaseMsg{
+				_ = send(types.ReleaseMsg{
 					Type:      "release",
 					RequestID: id,
 					Reason:    "client_shutdown",
@@ -222,8 +258,8 @@ func (c *Conn) connect(outerCtx context.Context) error {
 			// Cancel job goroutines, then send WS close so the read loop exits.
 			connCancel()
 			c.mu.Lock()
-			if ws := c.ws; ws != nil {
-				ws.WriteMessage(websocket.CloseMessage,
+			if c.ws == conn {
+				conn.WriteMessage(websocket.CloseMessage,
 					websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 			}
 			c.mu.Unlock()
@@ -241,16 +277,17 @@ func (c *Conn) connect(outerCtx context.Context) error {
 	if maxConc < 1 {
 		maxConc = 1
 	}
-	c.pool.init(maxConc)
+	c.pool.Init(maxConc)
 
-	if err := c.send(types.RegisterMsg{
+	if err := send(types.RegisterMsg{
 		Type:          "register",
 		Models:        models,
 		MaxConcurrent: maxConc,
 		Version:       c.version,
 	}); err != nil {
-		return err
+		return registered, err
 	}
+	registered = true
 	c.st.SetConnected(true)
 	c.log.Info("ws: registered with router", "models", models, "max_concurrent", maxConc)
 
@@ -259,9 +296,9 @@ func (c *Conn) connect(outerCtx context.Context) error {
 		_, data, err := conn.ReadMessage()
 		if err != nil {
 			if outerCtx.Err() != nil {
-				return nil // graceful shutdown — not a connection error
+				return registered, nil // graceful shutdown — not a connection error
 			}
-			return err
+			return registered, err
 		}
 		conn.SetReadDeadline(time.Now().Add(pongWait))
 
@@ -280,33 +317,50 @@ func (c *Conn) connect(outerCtx context.Context) error {
 		switch in.Type {
 		case "job":
 			job := types.JobMsg{Type: in.Type, Request: in.Request}
-			// Pre-check before acquiring a concurrency slot.
+			// Pre-check before accepting the job.
 			// Try must be fast and non-blocking; it sends its own error if needed.
-			if !c.jobs.Try(job, c.send) {
+			if !c.jobs.Try(job, send) {
 				continue
 			}
-			// Acquire a concurrency slot. acquireRouter returns false when
-			// connCtx is cancelled (shutdown or disconnect), yielding to local
-			// requests that are also waiting.
-			if !c.pool.acquireRouter(connCtx) {
-				continue
-			}
+			// Register the cancel func before spawning so a "cancel" message can
+			// abort the job even while it is still waiting for a slot.
 			jobCtx, jobCancel := context.WithCancel(connCtx)
 			c.cancelsMu.Lock()
 			c.cancels[job.Request.ID] = jobCancel
 			c.cancelsMu.Unlock()
-			c.st.IncrActive()
+			// Acquire the slot inside the goroutine — never on the read loop.
+			// Blocking here would stall pong processing (dropping the connection
+			// after pongWait) and cancel handling. This matters because local API
+			// requests consume slots the router does not know about, so a router
+			// job can wait arbitrarily long for a slot.
 			go func(j types.JobMsg, jobCtx context.Context, jobCancel context.CancelFunc) {
 				defer func() {
-					c.st.DecrActive()
-					c.st.IncrDone()
-					c.pool.Release()
 					c.cancelsMu.Lock()
 					delete(c.cancels, j.Request.ID)
 					c.cancelsMu.Unlock()
 					jobCancel()
 				}()
-				if err := c.jobs.Dispatch(jobCtx, j, c.send); err != nil {
+				defer func() {
+					if r := recover(); r != nil {
+						c.log.Error("ws: job dispatch panicked", "request_id", j.Request.ID, "panic", r)
+						_ = send(types.ErrorMsg{Type: "error", RequestID: j.Request.ID, Message: "internal worker error"})
+						c.st.IncrError()
+					}
+				}()
+				// acquireRouter returns false when jobCtx is cancelled (shutdown,
+				// disconnect, or an explicit cancel), yielding to waiting local
+				// requests. The router requeues the job on disconnect, so no
+				// notification is needed on that path.
+				if !c.pool.acquireRouter(jobCtx) {
+					return
+				}
+				defer c.pool.Release()
+				c.st.IncrActive()
+				defer func() {
+					c.st.DecrActive()
+					c.st.IncrDone()
+				}()
+				if err := c.jobs.Dispatch(jobCtx, j, send); err != nil {
 					c.st.IncrError()
 				}
 			}(job, jobCtx, jobCancel)
@@ -326,20 +380,4 @@ func (c *Conn) connect(outerCtx context.Context) error {
 			}
 		}
 	}
-}
-
-func (c *Conn) send(msg any) error {
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return err
-	}
-	c.mu.Lock()
-	ws := c.ws
-	if ws == nil {
-		c.mu.Unlock()
-		return nil
-	}
-	err = ws.WriteMessage(websocket.TextMessage, data)
-	c.mu.Unlock()
-	return err
 }

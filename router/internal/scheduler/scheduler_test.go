@@ -295,12 +295,12 @@ func TestBetterClient(t *testing.T) {
 		a, b  types.ClientSummary
 		wantA bool
 	}{
-		{"unloaded beats loaded",         cs(0, 2), cs(1, 2), true},
-		{"loaded loses to unloaded",      cs(1, 2), cs(0, 2), false},
-		{"unloaded: higher cap wins",     cs(0, 4), cs(0, 2), true},
-		{"unloaded: lower cap loses",     cs(0, 2), cs(0, 4), false},
-		{"unloaded: equal cap is a tie",  cs(0, 2), cs(0, 2), false},
-		{"loaded: more free slots wins",  cs(2, 4), cs(1, 2), true},
+		{"unloaded beats loaded", cs(0, 2), cs(1, 2), true},
+		{"loaded loses to unloaded", cs(1, 2), cs(0, 2), false},
+		{"unloaded: higher cap wins", cs(0, 4), cs(0, 2), true},
+		{"unloaded: lower cap loses", cs(0, 2), cs(0, 4), false},
+		{"unloaded: equal cap is a tie", cs(0, 2), cs(0, 2), false},
+		{"loaded: more free slots wins", cs(2, 4), cs(1, 2), true},
 		{"loaded: fewer free slots loses", cs(1, 2), cs(2, 4), false},
 		{"loaded: equal free slots is a tie", cs(1, 2), cs(1, 2), false},
 	}

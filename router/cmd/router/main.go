@@ -279,6 +279,7 @@ func main() {
 		log.Error("admin", "error", err)
 		os.Exit(1)
 	}
+	adminHandler.SetTrustProxy(cfg.Server.TrustProxyHeaders)
 
 	sched := scheduler.New(q, h, adminHandler.State(), logring.NewLogger(sink, "scheduler", slog.LevelInfo))
 	sched.SetOptProvider(adminHandler.State())
@@ -438,9 +439,13 @@ func main() {
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	log.Info("llmesh-router listening on", "version", version, "addr", addr)
 	srv := &http.Server{
-		Addr:        addr,
-		Handler:     secureHeaders(mux),
-		IdleTimeout: 0, // disabled: SSE streams must not be closed for inactivity
+		Addr:    addr,
+		Handler: secureHeaders(mux),
+		// Bound the time to read request headers so a slowloris client cannot
+		// hold a connection (and goroutine + fd) open indefinitely. WriteTimeout
+		// and IdleTimeout stay 0 because SSE streams are long-lived by design.
+		ReadHeaderTimeout: 15 * time.Second,
+		IdleTimeout:       0,
 	}
 
 	sigCh := make(chan os.Signal, 1)

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -217,8 +218,19 @@ func (h *Handler) enqueue(
 		}
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	// MaxBytesReader (not LimitReader) so an over-limit body is rejected with a
+	// clear 413 rather than silently truncated into invalid or partial JSON.
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			apiLogger().Warn("api: request body too large", "ip", clientIP(r))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			w.Write([]byte(`{"error":{"message":"request body too large","type":"invalid_request_error"}}` + "\n"))
+			return
+		}
 		apiLogger().Warn("api: read body failed", "error", err, "ip", clientIP(r))
 		internalError(w)
 		return
@@ -346,7 +358,7 @@ func (h *Handler) enqueue(
 			h.requestCount.Add(1)
 			req.EnqueuedAt = time.Now()
 			apiLogger().Info("api: request coalesced", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "key_label", req.APIKeyLabel, "ip", clientIP(r))
-			subCh := dedup.MakeSubscriberChan(buf, live)
+			subCh := dedup.MakeSubscriberChan(r.Context(), buf, live)
 			if req.Stream {
 				h.streamResponse(w, r, req, subCh, "")
 			} else {
@@ -429,6 +441,13 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 	ttft := h.ttftTimeout()
 	activity := h.activityTimeout()
 
+	// Anthropic streaming uses a stateful encoder to emit the required named
+	// event lifecycle (message_start → content_block_* → message_delta → stop).
+	var anthropicStreamer *translate.AnthropicStreamer
+	if req.SourceFmt == "anthropic" {
+		anthropicStreamer = translate.NewAnthropicStreamer(req.ID, req.Model)
+	}
+
 	// Phase 1 — queue + TTFT timer: covers queue wait, prompt evaluation, and
 	// time-to-first-token. Generous because large-context prompt eval on slow
 	// local hardware can take many minutes before producing the first output token.
@@ -463,6 +482,12 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 		select {
 		case chunk, open := <-ch:
 			if !open {
+				// The channel closed without a Done chunk: abnormal termination
+				// (cancellation, correlation dropped, or a coalesced original
+				// that ended without completing). Emit a terminal error rather
+				// than letting the stream stop silently mid-response.
+				apiLogger().Warn("api: stream ended without completion", "request_id", req.ID)
+				h.writeStreamError(w, flusher, req, "response ended unexpectedly")
 				return
 			}
 			if !started {
@@ -483,14 +508,16 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 			}
 			switch req.SourceFmt {
 			case "anthropic":
-				if chunk.Delta != "" {
-					writeSSE(w, translate.AnthropicSSEChunk(chunk))
+				if events := anthropicStreamer.Delta(chunk); len(events) > 0 {
+					for _, l := range events {
+						writeSSE(w, l)
+					}
 					flusher.Flush()
 				}
 				if chunk.Done {
 					logRequestDone(req, chunk.Usage, firstTokenAt, true, chunk.FinishReason)
 					h.recordStats(req, chunk.Usage)
-					for _, l := range translate.AnthropicSSEDone(chunk.FinishReason) {
+					for _, l := range anthropicStreamer.Done(chunk.FinishReason, chunk.Usage) {
 						writeSSE(w, l)
 					}
 					flusher.Flush()
@@ -510,14 +537,14 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 				}
 			default: // "openai"
 				if chunk.Delta != "" || len(chunk.ToolCallsDelta) > 0 {
-					writeSSE(w, translate.OpenAISSEChunk(req.ID, chunk))
+					writeSSE(w, translate.OpenAISSEChunk(req.ID, req.Model, chunk))
 					flusher.Flush()
 				}
 				if chunk.Done {
 					logRequestDone(req, chunk.Usage, firstTokenAt, true, chunk.FinishReason)
 					h.recordStats(req, chunk.Usage)
 					// Emit final chunk with finish_reason and usage before [DONE]
-					writeSSE(w, translate.OpenAISSEChunk(req.ID, chunk))
+					writeSSE(w, translate.OpenAISSEChunk(req.ID, req.Model, chunk))
 					flusher.Flush()
 					writeSSE(w, translate.OpenAISSEDone())
 					flusher.Flush()
@@ -530,13 +557,12 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 		case <-queueTimer.C:
 			apiLogger().Error("api: stream timeout", "request_id", req.ID, "timeout", ttft.String())
 			h.cancelRequest(req.ID)
-			serviceUnavailable(w, "request timed out waiting for a worker")
+			h.writeStreamError(w, flusher, req, "request timed out waiting for a worker")
 			return
 		case <-activityTimer.C:
 			apiLogger().Warn("api: stream worker silent", "request_id", req.ID, "timeout", activity.String())
 			h.cancelRequest(req.ID)
-			fmt.Fprintf(w, "data: {\"error\":\"worker stopped responding\"}\n\n")
-			flusher.Flush()
+			h.writeStreamError(w, flusher, req, "worker stopped responding")
 			return
 		case <-r.Context().Done():
 			apiLogger().Info("api: stream client disconnected", "request_id", req.ID)
@@ -560,7 +586,11 @@ func (h *Handler) batchResponse(w http.ResponseWriter, r *http.Request, req *typ
 		select {
 		case chunk, open := <-ch:
 			if !open {
-				h.writeBatch(w, req, sb.String(), finishReason, toolCalls, usage)
+				// Channel closed without a Done chunk: the response was
+				// truncated. Returning the partial accumulation as HTTP 200
+				// would present an incomplete answer as complete, so fail.
+				apiLogger().Warn("api: batch response ended without completion", "request_id", req.ID)
+				serviceUnavailable(w, "response ended unexpectedly")
 				return
 			}
 			if dedupHash != "" && h.Dedup != nil {
@@ -626,11 +656,11 @@ func (h *Handler) writeBatch(w http.ResponseWriter, req *types.InferenceRequest,
 	var resp map[string]any
 	switch req.SourceFmt {
 	case "anthropic":
-		resp = translate.AnthropicFullResponse(req.ID, req.Model, content, finishReason)
+		resp = translate.AnthropicFullResponse(req.ID, req.Model, content, finishReason, toolCalls, usage)
 	case "openai-responses":
-		resp = translate.OpenAIResponsesFullResponse(req.ID, req.Model, content)
+		resp = translate.OpenAIResponsesFullResponse(req.ID, req.Model, content, usage)
 	default:
-		resp = translate.OpenAIFullResponse(req.ID, content, finishReason, toolCalls, usage)
+		resp = translate.OpenAIFullResponse(req.ID, req.Model, content, finishReason, toolCalls, usage)
 	}
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		apiLogger().Error("api: encode response", "error", err)
@@ -755,6 +785,24 @@ func writeSSE(w io.Writer, payload string) {
 	io.WriteString(w, "\n\n")
 }
 
+// writeStreamError emits a protocol-appropriate terminal error into an
+// already-committed SSE stream. Once keep-alive pings have flushed the 200
+// response, an HTTP error status can no longer be sent, so a timeout or
+// abnormal close must be surfaced as an in-band error event followed by the
+// stream terminator — otherwise the client sees a stream that just stops.
+func (h *Handler) writeStreamError(w io.Writer, flusher http.Flusher, req *types.InferenceRequest, message string) {
+	switch req.SourceFmt {
+	case "anthropic":
+		writeSSE(w, translate.AnthropicErrorEvent(message))
+	case "openai-responses":
+		writeSSE(w, translate.OpenAIResponsesSSEError(message))
+	default:
+		writeSSE(w, translate.OpenAISSEError(message))
+		writeSSE(w, translate.OpenAISSEDone())
+	}
+	flusher.Flush()
+}
+
 // logRequestDone emits the "api: request completed" structured log with timing and token stats.
 // For streaming requests, firstTokenAt is used to compute TTFT (queue wait + prompt eval + first token)
 // and tok_per_sec (completion tokens / generation time). Pass zero time for batch requests.
@@ -800,12 +848,14 @@ func clientIP(r *http.Request) string {
 	return "-"
 }
 
-// maskKey returns the first 8 chars of a key for log-safe identification.
+// maskKey returns a log-safe identifier for an API key: a short non-secret
+// prefix for a plausibly-real key, or "****" for anything too short to mask
+// (never the raw key material — a mistyped real key must not land in logs).
 func maskKey(key string) string {
-	if len(key) <= 8 {
-		return "****" + key
+	if len(key) < 12 {
+		return "****"
 	}
-	return key[:8] + "****"
+	return key[:8] + "…"
 }
 
 // sanitizeModel returns a safe string for logging before parsing succeeds.

@@ -52,8 +52,9 @@ type inferRequest struct {
 	Model         string          `json:"model"`
 	Messages      []types.Message `json:"messages"`
 	MaxTokens     int             `json:"max_tokens,omitempty"`
-	Temperature   float64         `json:"temperature,omitempty"`
-	TopP          float64         `json:"top_p,omitempty"`
+	Temperature   *float64        `json:"temperature,omitempty"`
+	TopP          *float64        `json:"top_p,omitempty"`
+	Stop          []string        `json:"stop,omitempty"`
 	Stream        bool            `json:"stream"`
 	Tools         json.RawMessage `json:"tools,omitempty"`
 	ToolChoice    json.RawMessage `json:"tool_choice,omitempty"`
@@ -158,6 +159,7 @@ func (c *Client) Infer(ctx context.Context, req types.InferenceRequest, chatTemp
 		MaxTokens:    req.MaxTokens,
 		Temperature:  req.Temperature,
 		TopP:         req.TopP,
+		Stop:         req.Stop,
 		Stream:       req.Stream,
 		Tools:        req.Tools,
 		ToolChoice:   req.ToolChoice,
@@ -278,7 +280,6 @@ func (c *Client) readStream(ctx context.Context, cancel context.CancelFunc, resp
 	// so we can collect the usage first.
 	var pendingUsage *types.UsageInfo
 	var finishReason string
-	done := false
 	firstContent := false
 
 	// Idle timer: only active after first content token. Before that, watchHealth
@@ -295,9 +296,13 @@ func (c *Client) readStream(ctx context.Context, cancel context.CancelFunc, resp
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
-				if !done {
-					cb("", nil, true, finishReason, pendingUsage)
+				// EOF without [DONE]. If we at least saw a finish_reason the
+				// response is complete enough to close out; otherwise it was
+				// truncated and must surface as an error, not a success.
+				if finishReason == "" {
+					return fmt.Errorf("llama.cpp stream ended before completion")
 				}
+				cb("", nil, true, finishReason, pendingUsage)
 				return nil
 			}
 			if result.err != nil {
@@ -323,7 +328,6 @@ func (c *Client) readStream(ctx context.Context, cancel context.CancelFunc, resp
 			payload := strings.TrimPrefix(line, "data: ")
 			if payload == "[DONE]" {
 				cb("", nil, true, finishReason, pendingUsage)
-				done = true
 				// Drain remaining lines so the scanner goroutine can exit.
 				for range lines {
 				}
@@ -383,17 +387,21 @@ func (c *Client) readBatch(resp *http.Response, cb ChunkCallback) error {
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return fmt.Errorf("decode batch: %w", err)
 	}
-	if len(result.Choices) > 0 {
-		choice := result.Choices[0]
-		var u *types.UsageInfo
-		if result.Usage != nil {
-			u = &types.UsageInfo{
-				PromptTokens:     result.Usage.PromptTokens,
-				CompletionTokens: result.Usage.CompletionTokens,
-				TotalTokens:      result.Usage.TotalTokens,
-			}
-		}
-		cb(choice.Message.Content, choice.Message.ToolCalls, true, choice.FinishReason, u)
+	// No choices means llama.cpp returned an error-shaped or empty body. Returning
+	// nil here would leave the worker sending neither a done chunk nor an error,
+	// stranding the router until its activity timeout.
+	if len(result.Choices) == 0 {
+		return fmt.Errorf("llama.cpp batch response had no choices")
 	}
+	choice := result.Choices[0]
+	var u *types.UsageInfo
+	if result.Usage != nil {
+		u = &types.UsageInfo{
+			PromptTokens:     result.Usage.PromptTokens,
+			CompletionTokens: result.Usage.CompletionTokens,
+			TotalTokens:      result.Usage.TotalTokens,
+		}
+	}
+	cb(choice.Message.Content, choice.Message.ToolCalls, true, choice.FinishReason, u)
 	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -96,6 +97,20 @@ Config file fields (YAML):
 	conn := ws.New(cfg, version, st)
 
 	if cfg.LocalAPIAddr != "" {
+		if !addrIsLoopback(cfg.LocalAPIAddr) && cfg.LocalAPIToken == "" {
+			log.Warn("local API is bound to a non-loopback address without local_api_token — "+
+				"anyone who can reach this address gets unauthenticated inference with priority over router jobs",
+				"addr", cfg.LocalAPIAddr)
+		}
+		// Initialise the shared pool eagerly so local requests work before (and
+		// during) a router outage. The WS connection refines the capacity from
+		// llama.cpp's slot count once it registers.
+		provisional := cfg.MaxConcurrent
+		if provisional < 1 {
+			provisional = 1
+		}
+		conn.SlotPool().Init(provisional)
+
 		localSrv := localapi.New(cfg, st, conn.SlotPool())
 		go func() {
 			if err := localSrv.Run(ctx, cfg.LocalAPIAddr); err != nil {
@@ -119,6 +134,24 @@ Config file fields (YAML):
 
 	conn.Run(ctx) // blocks until ctx cancelled, reconnects on disconnect
 	log.Info("llmesh-client: shut down")
+}
+
+// addrIsLoopback reports whether a listen address binds only the loopback
+// interface. An empty host (":8089") or a wildcard host binds all interfaces
+// and is therefore not loopback-only.
+func addrIsLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // isTerminal reports whether f is an interactive terminal.

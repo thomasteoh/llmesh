@@ -2,9 +2,9 @@ package translate
 
 import (
 	"encoding/json"
+	"llmesh/pkg/types"
 	"strings"
 	"testing"
-	"llmesh/pkg/types"
 )
 
 func TestOpenAIInbound(t *testing.T) {
@@ -147,7 +147,7 @@ func TestResponsesInbound_StringInput(t *testing.T) {
 
 func TestOpenAISSEChunk(t *testing.T) {
 	chunk := types.ChunkMsg{Delta: "Hello", Done: false}
-	line := OpenAISSEChunk("req-1", chunk)
+	line := OpenAISSEChunk("req-1", "llama3", chunk)
 	if !strings.HasPrefix(line, "data: ") {
 		t.Errorf("expected SSE prefix, got: %s", line)
 	}
@@ -156,12 +156,18 @@ func TestOpenAISSEChunk(t *testing.T) {
 	if err := json.Unmarshal([]byte(jsonPart), &parsed); err != nil {
 		t.Errorf("invalid JSON in SSE: %v", err)
 	}
+	if parsed["model"] != "llama3" {
+		t.Errorf("expected model field, got: %v", parsed["model"])
+	}
+	if _, ok := parsed["created"]; !ok {
+		t.Error("created field missing from chunk")
+	}
 }
 
 func TestOpenAISSEChunk_ToolCalls(t *testing.T) {
 	toolDelta := json.RawMessage(`[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":""}}]`)
 	chunk := types.ChunkMsg{ToolCallsDelta: toolDelta, Done: false}
-	line := OpenAISSEChunk("req-1", chunk)
+	line := OpenAISSEChunk("req-1", "llama3", chunk)
 	jsonPart := strings.TrimPrefix(line, "data: ")
 	var parsed map[string]any
 	if err := json.Unmarshal([]byte(jsonPart), &parsed); err != nil {
@@ -174,10 +180,118 @@ func TestOpenAISSEChunk_ToolCalls(t *testing.T) {
 	}
 }
 
-func TestAnthropicSSEChunk(t *testing.T) {
-	chunk := types.ChunkMsg{Delta: "Hello", Done: false}
-	line := AnthropicSSEChunk(chunk)
-	if !strings.HasPrefix(line, "data: ") {
-		t.Errorf("expected SSE prefix, got: %s", line)
+// parseSSE splits an "event: X\ndata: Y" string into its event name and parsed
+// JSON payload.
+func parseSSE(t *testing.T, s string) (string, map[string]any) {
+	t.Helper()
+	var event, data string
+	for _, line := range strings.Split(s, "\n") {
+		if rest, ok := strings.CutPrefix(line, "event: "); ok {
+			event = rest
+		} else if rest, ok := strings.CutPrefix(line, "data: "); ok {
+			data = rest
+		}
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(data), &payload); err != nil {
+		t.Fatalf("invalid JSON in SSE %q: %v", s, err)
+	}
+	return event, payload
+}
+
+func TestAnthropicStreamer_TextLifecycle(t *testing.T) {
+	s := NewAnthropicStreamer("req-1", "claude-x")
+	var events []string
+	events = append(events, s.Delta(types.ChunkMsg{Delta: "Hello"})...)
+	events = append(events, s.Delta(types.ChunkMsg{Delta: " world"})...)
+	events = append(events, s.Done("stop", &types.UsageInfo{CompletionTokens: 2})...)
+
+	var names []string
+	for _, e := range events {
+		name, _ := parseSSE(t, e)
+		names = append(names, name)
+	}
+	got := strings.Join(names, ",")
+	want := "message_start,content_block_start,content_block_delta,content_block_delta,content_block_stop,message_delta,message_stop"
+	if got != want {
+		t.Errorf("event sequence:\n got %s\nwant %s", got, want)
+	}
+	// stop_reason must be mapped to Anthropic's vocabulary.
+	_, last := parseSSE(t, events[len(events)-2]) // message_delta
+	delta := last["delta"].(map[string]any)
+	if delta["stop_reason"] != "end_turn" {
+		t.Errorf("stop_reason = %v, want end_turn", delta["stop_reason"])
+	}
+}
+
+func TestAnthropicStreamer_ToolUse(t *testing.T) {
+	s := NewAnthropicStreamer("req-1", "claude-x")
+	tc := json.RawMessage(`[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"SF\"}"}}]`)
+	var events []string
+	events = append(events, s.Delta(types.ChunkMsg{ToolCallsDelta: tc})...)
+	events = append(events, s.Done("tool_calls", nil)...)
+
+	sawToolUse := false
+	stopReason := ""
+	for _, e := range events {
+		name, payload := parseSSE(t, e)
+		if name == "content_block_start" {
+			if cb, ok := payload["content_block"].(map[string]any); ok && cb["type"] == "tool_use" {
+				sawToolUse = true
+				if cb["name"] != "get_weather" {
+					t.Errorf("tool name = %v", cb["name"])
+				}
+			}
+		}
+		if name == "message_delta" {
+			stopReason = payload["delta"].(map[string]any)["stop_reason"].(string)
+		}
+	}
+	if !sawToolUse {
+		t.Error("no tool_use content block emitted")
+	}
+	if stopReason != "tool_use" {
+		t.Errorf("stop_reason = %q, want tool_use", stopReason)
+	}
+}
+
+func TestAnthropicFullResponse_StopReasonAndUsage(t *testing.T) {
+	resp := AnthropicFullResponse("req-1", "claude-x", "hi", "length", nil, &types.UsageInfo{PromptTokens: 3, CompletionTokens: 4})
+	if resp["stop_reason"] != "max_tokens" {
+		t.Errorf("stop_reason = %v, want max_tokens", resp["stop_reason"])
+	}
+	usage, ok := resp["usage"].(map[string]any)
+	if !ok || usage["output_tokens"] != 4 {
+		t.Errorf("usage not populated correctly: %v", resp["usage"])
+	}
+}
+
+func TestParseStop(t *testing.T) {
+	if got := parseStop(json.RawMessage(`"STOP"`)); len(got) != 1 || got[0] != "STOP" {
+		t.Errorf("single stop: got %v", got)
+	}
+	if got := parseStop(json.RawMessage(`["a","b"]`)); len(got) != 2 {
+		t.Errorf("array stop: got %v", got)
+	}
+	if got := parseStop(json.RawMessage(`null`)); got != nil {
+		t.Errorf("null stop: got %v", got)
+	}
+}
+
+func TestOpenAIInbound_TemperaturePresence(t *testing.T) {
+	// Explicit 0 must survive as a non-nil pointer; omission must stay nil.
+	withZero, err := OpenAIInbound([]byte(`{"model":"m","messages":[],"temperature":0}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withZero.Temperature == nil || *withZero.Temperature != 0 {
+		t.Errorf("explicit temperature:0 should be a non-nil 0 pointer, got %v", withZero.Temperature)
+	}
+	omitted, err := OpenAIInbound([]byte(`{"model":"m","messages":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if omitted.Temperature != nil {
+		t.Errorf("omitted temperature should be nil, got %v", *omitted.Temperature)
 	}
 }

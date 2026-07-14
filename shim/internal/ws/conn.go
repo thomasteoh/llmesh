@@ -10,12 +10,12 @@ import (
 	"log/slog"
 	"os"
 
+	"llmesh/pkg/types"
+	"llmesh/pkg/wsclient"
 	shimPkg "llmesh/shim"
 	"llmesh/shim/internal/backend"
 	"llmesh/shim/internal/stats"
 	"llmesh/shim/internal/worker"
-	"llmesh/pkg/types"
-	"llmesh/pkg/wsclient"
 )
 
 var log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))

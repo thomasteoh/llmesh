@@ -47,9 +47,12 @@ type Spec struct {
 	Command    string // type=command only
 }
 
-// ChunkFunc is called for each streaming chunk. Called exactly once with done=true.
-// usage is non-nil only on the final chunk, and only when the upstream provides token counts.
-type ChunkFunc func(delta, finishReason string, done bool, usage *types.UsageInfo)
+// ChunkFunc is called for each streaming chunk. On normal completion it is
+// called exactly once with done=true; on a mid-stream failure the caller
+// returns an error instead of synthesising a done chunk. toolCalls carries any
+// tool-call payload for that chunk (OpenAI tool_calls JSON); usage is non-nil
+// only on the final chunk, and only when the upstream provides token counts.
+type ChunkFunc func(delta string, toolCalls json.RawMessage, finishReason string, done bool, usage *types.UsageInfo)
 
 // adapterResponse is what shell command adapters write to stdout (one JSON line per chunk).
 //
@@ -59,22 +62,30 @@ type ChunkFunc func(delta, finishReason string, done bool, usage *types.UsageInf
 //	{"delta":"tok","done":false}
 //	{"delta":"","done":true,"finish_reason":"stop","usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}
 type adapterResponse struct {
-	Content      string         `json:"content"`
-	Delta        string         `json:"delta"`
-	Done         bool           `json:"done"`
-	FinishReason string         `json:"finish_reason"`
+	Content      string           `json:"content"`
+	Delta        string           `json:"delta"`
+	ToolCalls    json.RawMessage  `json:"tool_calls,omitempty"`
+	Done         bool             `json:"done"`
+	FinishReason string           `json:"finish_reason"`
 	Usage        *types.UsageInfo `json:"usage,omitempty"`
 }
 
-// RunBatch executes spec for req and returns the full response content and finish reason.
-func RunBatch(ctx context.Context, spec *Spec, req *types.InferenceRequest) (content, finishReason string, err error) {
+// BatchResult is the full non-streaming response from a backend.
+type BatchResult struct {
+	Content      string
+	ToolCalls    json.RawMessage
+	FinishReason string
+}
+
+// RunBatch executes spec for req and returns the full response.
+func RunBatch(ctx context.Context, spec *Spec, req *types.InferenceRequest) (BatchResult, error) {
 	switch spec.Type {
 	case "http":
 		return runHTTPBatch(ctx, spec, req)
 	case "command":
 		return runCommandBatch(ctx, spec, req)
 	default:
-		return "", "", fmt.Errorf("unknown backend type: %q", spec.Type)
+		return BatchResult{}, fmt.Errorf("unknown backend type: %q", spec.Type)
 	}
 }
 
@@ -93,13 +104,13 @@ func RunStream(ctx context.Context, spec *Spec, req *types.InferenceRequest, fn 
 
 // ─── Command executor ─────────────────────────────────────────────────────────
 
-func runCommandBatch(ctx context.Context, spec *Spec, req *types.InferenceRequest) (content, finishReason string, err error) {
+func runCommandBatch(ctx context.Context, spec *Spec, req *types.InferenceRequest) (BatchResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, batchTimeout)
 	defer cancel()
 
 	stdin, err := json.Marshal(req)
 	if err != nil {
-		return "", "", fmt.Errorf("marshal request: %w", err)
+		return BatchResult{}, fmt.Errorf("marshal request: %w", err)
 	}
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", spec.Command)
@@ -110,10 +121,10 @@ func runCommandBatch(ctx context.Context, spec *Spec, req *types.InferenceReques
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return "", "", fmt.Errorf("stdout pipe: %w", err)
+		return BatchResult{}, fmt.Errorf("stdout pipe: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
-		return "", "", fmt.Errorf("adapter start: %w", err)
+		return BatchResult{}, fmt.Errorf("adapter start: %w", err)
 	}
 
 	out, readErr := io.ReadAll(io.LimitReader(stdout, maxBatchOutput))
@@ -124,15 +135,15 @@ func runCommandBatch(ctx context.Context, spec *Spec, req *types.InferenceReques
 		logger().Warn("backend: adapter stderr", "stderr", se)
 	}
 	if waitErr != nil && ctx.Err() == nil {
-		return "", "", fmt.Errorf("adapter: %w", waitErr)
+		return BatchResult{}, fmt.Errorf("adapter: %w", waitErr)
 	}
 	if readErr != nil {
-		return "", "", fmt.Errorf("read adapter output: %w", readErr)
+		return BatchResult{}, fmt.Errorf("read adapter output: %w", readErr)
 	}
 
 	var resp adapterResponse
 	if err := json.Unmarshal(bytes.TrimSpace(out), &resp); err != nil {
-		return "", "", fmt.Errorf("adapter returned invalid JSON: %w", err)
+		return BatchResult{}, fmt.Errorf("adapter returned invalid JSON: %w", err)
 	}
 	fr := resp.FinishReason
 	if fr == "" {
@@ -142,7 +153,7 @@ func runCommandBatch(ctx context.Context, spec *Spec, req *types.InferenceReques
 	if c == "" {
 		c = resp.Delta
 	}
-	return c, fr, nil
+	return BatchResult{Content: c, ToolCalls: resp.ToolCalls, FinishReason: fr}, nil
 }
 
 func runCommandStream(ctx context.Context, spec *Spec, req *types.InferenceRequest, fn ChunkFunc) error {
@@ -186,7 +197,7 @@ func runCommandStream(ctx context.Context, spec *Spec, req *types.InferenceReque
 		if chunk.FinishReason != "" {
 			finishReason = chunk.FinishReason
 		}
-		fn(chunk.Delta, finishReason, chunk.Done, chunk.Usage)
+		fn(chunk.Delta, chunk.ToolCalls, finishReason, chunk.Done, chunk.Usage)
 		if chunk.Done {
 			doneEmitted = true
 			break
@@ -200,10 +211,18 @@ func runCommandStream(ctx context.Context, spec *Spec, req *types.InferenceReque
 		logger().Warn("backend: adapter stderr", "stderr", se)
 	}
 	if waitErr != nil && ctx.Err() == nil {
-		logger().Warn("backend: adapter exited with error", "error", waitErr)
+		// A crashed adapter that never emitted a done chunk must surface as an
+		// error, not a silently-truncated success.
+		if !doneEmitted {
+			return fmt.Errorf("adapter exited before completing: %w", waitErr)
+		}
+		logger().Warn("backend: adapter exited with error after completion", "error", waitErr)
 	}
 	if !doneEmitted {
-		fn("", finishReason, true, nil)
+		if err := scanner.Err(); err != nil {
+			return fmt.Errorf("adapter stream read error: %w", err)
+		}
+		return fmt.Errorf("adapter stream ended without a done chunk")
 	}
 	return nil
 }

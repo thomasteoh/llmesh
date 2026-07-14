@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"llmesh/pkg/types"
 	"golang.org/x/crypto/bcrypt"
+	"llmesh/pkg/types"
 )
 
 func TestNeedsSetup_Empty(t *testing.T) {
@@ -323,4 +323,3 @@ func TestCSRFConsume(t *testing.T) {
 		t.Fatal("expected invalid token to fail")
 	}
 }
-

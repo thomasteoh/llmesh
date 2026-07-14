@@ -21,13 +21,15 @@ func contentOf(t *testing.T, m types.Message) string {
 	return s
 }
 
+func fptr(f float64) *float64 { return &f }
+
 func TestClean_Disabled_NoOp(t *testing.T) {
 	req := &types.InferenceRequest{
-		Temperature: 9,
+		Temperature: fptr(9),
 		Messages:    []types.Message{msg("user", "  hi  ")},
 	}
 	Clean(req, types.RequestOptimization{})
-	if req.Temperature != 9 {
+	if req.Temperature == nil || *req.Temperature != 9 {
 		t.Errorf("temperature changed with clamp off: %v", req.Temperature)
 	}
 	if got := contentOf(t, req.Messages[0]); got != "  hi  " {
@@ -36,19 +38,26 @@ func TestClean_Disabled_NoOp(t *testing.T) {
 }
 
 func TestClean_ClampParams(t *testing.T) {
-	req := &types.InferenceRequest{Temperature: 5, TopP: 3}
+	req := &types.InferenceRequest{Temperature: fptr(5), TopP: fptr(3)}
 	Clean(req, types.RequestOptimization{ClampParams: true})
-	if req.Temperature != 2 {
+	if req.Temperature == nil || *req.Temperature != 2 {
 		t.Errorf("temperature = %v, want 2", req.Temperature)
 	}
-	if req.TopP != 1 {
+	if req.TopP == nil || *req.TopP != 1 {
 		t.Errorf("top_p = %v, want 1", req.TopP)
 	}
 
-	req = &types.InferenceRequest{Temperature: -1, TopP: -1}
+	req = &types.InferenceRequest{Temperature: fptr(-1), TopP: fptr(-1)}
 	Clean(req, types.RequestOptimization{ClampParams: true})
-	if req.Temperature != 0 || req.TopP != 0 {
-		t.Errorf("negatives not clamped to 0: temp=%v top_p=%v", req.Temperature, req.TopP)
+	if *req.Temperature != 0 || *req.TopP != 0 {
+		t.Errorf("negatives not clamped to 0: temp=%v top_p=%v", *req.Temperature, *req.TopP)
+	}
+
+	// Unset (nil) params must be left untouched so the backend default applies.
+	req = &types.InferenceRequest{}
+	Clean(req, types.RequestOptimization{ClampParams: true})
+	if req.Temperature != nil || req.TopP != nil {
+		t.Errorf("nil params should stay nil: temp=%v top_p=%v", req.Temperature, req.TopP)
 	}
 }
 

@@ -363,7 +363,7 @@ func (a *Admin) handleAPIKeyCreate(w http.ResponseWriter, r *http.Request) {
 		a.renderAPIKeys(w, r, u, "", err.Error())
 		return
 	}
-	a.state.RecordAudit(u.Username, "api_key.create", owner+"/"+label, extractIP(r))
+	a.state.RecordAudit(u.Username, "api_key.create", owner+"/"+label, a.clientIP(r))
 	a.renderAPIKeys(w, r, u, keyVal, "")
 }
 
@@ -374,8 +374,13 @@ func (a *Admin) handleAPIKeyRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := r.FormValue("key")
-	a.state.RevokeAPIKey(u.Username, key, u.Role == "admin")
-	a.state.RecordAudit(u.Username, "api_key.revoke", key, extractIP(r))
+	if err := a.state.RevokeAPIKey(u.Username, key, u.Role == "admin"); err != nil {
+		a.log.Warn("admin: api key revoke failed", "actor", u.Username, "error", err)
+	} else {
+		// Record a non-reversible identifier, never the full secret — the audit
+		// log is readable in the portal and persists after revocation.
+		a.state.RecordAudit(u.Username, "api_key.revoke", redactSecret(key), a.clientIP(r))
+	}
 	http.Redirect(w, r, "/portal/api-keys", http.StatusFound)
 }
 
@@ -552,7 +557,7 @@ func (a *Admin) handleClientTokenCreate(w http.ResponseWriter, r *http.Request) 
 		a.renderClientTokens(w, r, u, "", err.Error())
 		return
 	}
-	a.state.RecordAudit(u.Username, "client_token.create", owner+"/"+name, extractIP(r))
+	a.state.RecordAudit(u.Username, "client_token.create", owner+"/"+name, a.clientIP(r))
 	a.renderClientTokens(w, r, u, tokVal, "")
 }
 
@@ -563,9 +568,12 @@ func (a *Admin) handleClientTokenRevoke(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	token := r.FormValue("token")
-	a.state.RevokeClientToken(u.Username, token, u.Role == "admin")
-	a.hub.CloseByToken(token)
-	a.state.RecordAudit(u.Username, "client_token.revoke", token, extractIP(r))
+	if err := a.state.RevokeClientToken(u.Username, token, u.Role == "admin"); err != nil {
+		a.log.Warn("admin: client token revoke failed", "actor", u.Username, "error", err)
+	} else {
+		a.hub.CloseByToken(token)
+		a.state.RecordAudit(u.Username, "client_token.revoke", redactSecret(token), a.clientIP(r))
+	}
 	http.Redirect(w, r, "/portal/clients", http.StatusFound)
 }
 
@@ -716,7 +724,7 @@ func (a *Admin) handleModelAliasCreate(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "could not add alias: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		a.state.RecordAudit(u.Username, "alias.create", alias+"="+model, extractIP(r))
+		a.state.RecordAudit(u.Username, "alias.create", alias+"="+model, a.clientIP(r))
 	}
 	http.Redirect(w, r, "/portal/", http.StatusFound)
 }
@@ -734,13 +742,13 @@ func (a *Admin) handleModelAliasDelete(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "could not delete alias: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		a.state.RecordAudit(u.Username, "alias.delete", alias+"="+model, extractIP(r))
+		a.state.RecordAudit(u.Username, "alias.delete", alias+"="+model, a.clientIP(r))
 	} else {
 		if err := a.state.DeleteAliasGroup(alias); err != nil {
 			http.Error(w, "could not delete alias group: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		a.state.RecordAudit(u.Username, "alias.delete_group", alias, extractIP(r))
+		a.state.RecordAudit(u.Username, "alias.delete_group", alias, a.clientIP(r))
 	}
 	// Redirect back to the originating page (dashboard or clients)
 	ref := r.FormValue("ref")
@@ -809,7 +817,7 @@ func (a *Admin) handleUpstreamAdd(w http.ResponseWriter, r *http.Request) {
 		a.renderSettings(w, r, u, "", err.Error())
 		return
 	}
-	a.state.RecordAudit(u.Username, "upstream.add", url, extractIP(r))
+	a.state.RecordAudit(u.Username, "upstream.add", url, a.clientIP(r))
 	if a.upstreamReload != nil {
 		a.upstreamReload()
 	}
@@ -827,7 +835,7 @@ func (a *Admin) handleUpstreamRemove(w http.ResponseWriter, r *http.Request) {
 		a.renderSettings(w, r, u, "", err.Error())
 		return
 	}
-	a.state.RecordAudit(u.Username, "upstream.remove", upstreamURL, extractIP(r))
+	a.state.RecordAudit(u.Username, "upstream.remove", upstreamURL, a.clientIP(r))
 	a.log.Info("admin: upstream router removed", "actor", u.Username, "url", upstreamURL)
 	if a.upstreamReload != nil {
 		a.upstreamReload()
@@ -858,7 +866,7 @@ func (a *Admin) handleOptimizationUpdate(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
-	a.state.RecordAudit(u.Username, "settings.optimization", "", extractIP(r))
+	a.state.RecordAudit(u.Username, "settings.optimization", "", a.clientIP(r))
 	a.log.Info("admin: request-optimization settings updated", "actor", u.Username)
 	http.Redirect(w, r, "/portal/settings#tab-optimization", http.StatusFound)
 }
@@ -892,7 +900,7 @@ func (a *Admin) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.state.UpdateUser(u.Username, func(user *User) { user.PasswordHash = hash })
-	a.state.RecordAudit(u.Username, "user.password_change", u.Username, extractIP(r))
+	a.state.RecordAudit(u.Username, "user.password_change", u.Username, a.clientIP(r))
 	a.renderSettings(w, r, u, "Password updated.", "")
 }
 
@@ -921,7 +929,7 @@ func (a *Admin) handleAddUser(w http.ResponseWriter, r *http.Request) {
 		a.renderSettings(w, r, u, "", err.Error())
 		return
 	}
-	a.state.RecordAudit(u.Username, "user.add", username, extractIP(r))
+	a.state.RecordAudit(u.Username, "user.add", username, a.clientIP(r))
 	a.renderSettings(w, r, u, fmt.Sprintf("User %q created.", username), "")
 }
 
@@ -940,7 +948,7 @@ func (a *Admin) handleUserDisable(w http.ResponseWriter, r *http.Request) {
 		a.renderSettings(w, r, u, "", err.Error())
 		return
 	}
-	a.state.RecordAudit(u.Username, "user.disable", target, extractIP(r))
+	a.state.RecordAudit(u.Username, "user.disable", target, a.clientIP(r))
 	http.Redirect(w, r, "/portal/settings", http.StatusFound)
 }
 
@@ -955,7 +963,7 @@ func (a *Admin) handleUserEnable(w http.ResponseWriter, r *http.Request) {
 		a.renderSettings(w, r, u, "", err.Error())
 		return
 	}
-	a.state.RecordAudit(u.Username, "user.enable", target, extractIP(r))
+	a.state.RecordAudit(u.Username, "user.enable", target, a.clientIP(r))
 	http.Redirect(w, r, "/portal/settings", http.StatusFound)
 }
 
@@ -970,7 +978,7 @@ func (a *Admin) handleUserPromote(w http.ResponseWriter, r *http.Request) {
 		a.renderSettings(w, r, u, "", err.Error())
 		return
 	}
-	a.state.RecordAudit(u.Username, "user.promote", target, extractIP(r))
+	a.state.RecordAudit(u.Username, "user.promote", target, a.clientIP(r))
 	http.Redirect(w, r, "/portal/settings", http.StatusFound)
 }
 
@@ -985,7 +993,7 @@ func (a *Admin) handleUserDemote(w http.ResponseWriter, r *http.Request) {
 		a.renderSettings(w, r, u, "", err.Error())
 		return
 	}
-	a.state.RecordAudit(u.Username, "user.demote", target, extractIP(r))
+	a.state.RecordAudit(u.Username, "user.demote", target, a.clientIP(r))
 	http.Redirect(w, r, "/portal/settings", http.StatusFound)
 }
 

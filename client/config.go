@@ -20,14 +20,18 @@ type ModelConfig struct {
 }
 
 type Config struct {
-	RouterURL             string        `yaml:"router_url"`
-	RouterToken           string        `yaml:"router_token"`
+	RouterURL   string `yaml:"router_url"`
+	RouterToken string `yaml:"router_token"`
 	// MaxConcurrent caps the number of simultaneous jobs accepted from the router.
 	// When 0 (omitted), auto-detected from the llama.cpp total_slots field (min 1).
-	MaxConcurrent         int           `yaml:"max_concurrent"`
-	Models                []ModelConfig `yaml:"models"`
-	MetricsAddr           string        `yaml:"metrics_addr"`            // e.g. ":9091"; empty = disabled
-	LocalAPIAddr          string        `yaml:"local_api_addr"`          // e.g. ":8089"; empty = disabled
+	MaxConcurrent int           `yaml:"max_concurrent"`
+	Models        []ModelConfig `yaml:"models"`
+	MetricsAddr   string        `yaml:"metrics_addr"`   // e.g. ":9091"; empty = disabled
+	LocalAPIAddr  string        `yaml:"local_api_addr"` // e.g. "127.0.0.1:8089"; empty = disabled
+	// LocalAPIToken, when set, requires callers of the local endpoint to present
+	// it as "Authorization: Bearer <token>". Empty means the local endpoint is
+	// unauthenticated — only safe on a loopback bind.
+	LocalAPIToken         string        `yaml:"local_api_token"`
 	RouterActivityTimeout time.Duration `yaml:"router_activity_timeout"` // derive keep-alive interval; 0 = use 60s default
 
 	// AutoUpdate enables periodic hourly checks for a new binary. The manifest URL

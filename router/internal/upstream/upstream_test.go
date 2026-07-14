@@ -46,7 +46,9 @@ func newTestUpstream(t *testing.T, onConn func(ws *websocket.Conn)) *httptest.Se
 		if err != nil {
 			return
 		}
-		var env struct{ Type string `json:"type"` }
+		var env struct {
+			Type string `json:"type"`
+		}
 		if err := json.Unmarshal(data, &env); err != nil || env.Type != "register" {
 			return
 		}

@@ -3,6 +3,7 @@ package shim
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -49,7 +50,15 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.MaxConcurrent = 4
 	}
 	for i := range cfg.Models {
-		cfg.Models[i].Backend.AuthValue = os.Expand(cfg.Models[i].Backend.AuthValue, os.Getenv)
+		rawAuth := cfg.Models[i].Backend.AuthValue
+		cfg.Models[i].Backend.AuthValue = os.Expand(rawAuth, os.Getenv)
+		// Warn when a ${VAR} reference expanded to empty — otherwise the shim
+		// silently sends no credential and the failure only surfaces as an
+		// upstream 401.
+		if strings.Contains(rawAuth, "${") && cfg.Models[i].Backend.AuthValue == "" {
+			fmt.Fprintf(os.Stderr, "warning: model %q: auth_value %q expanded to empty (unset environment variable?)\n",
+				cfg.Models[i].Name, rawAuth)
+		}
 		cfg.Models[i].Backend.Command = os.Expand(cfg.Models[i].Backend.Command, os.Getenv)
 	}
 	if err := cfg.validate(); err != nil {
@@ -79,6 +88,15 @@ func (c *Config) validate() error {
 			}
 			if m.Backend.Format != "openai" && m.Backend.Format != "anthropic" {
 				return fmt.Errorf("config: model %q: backend.format must be \"openai\" or \"anthropic\"", m.Name)
+			}
+			switch m.Backend.AuthType {
+			case "", "none", "bearer":
+			case "header":
+				if m.Backend.AuthHeader == "" {
+					return fmt.Errorf("config: model %q: backend.auth_header is required when auth_type=header", m.Name)
+				}
+			default:
+				return fmt.Errorf("config: model %q: backend.auth_type must be \"bearer\", \"header\", or \"none\"", m.Name)
 			}
 		case "command":
 			if m.Backend.Command == "" {

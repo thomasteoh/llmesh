@@ -19,6 +19,13 @@ const sessionCookie = "admin_session"
 const sessionTTL = 24 * time.Hour
 const bcryptCost = 12
 
+// dummyHash is a valid bcrypt hash compared against on the user-not-found path
+// so login timing does not reveal whether a username exists.
+var dummyHash = func() string {
+	h, _ := bcrypt.GenerateFromPassword([]byte("llmesh-dummy-password"), bcryptCost)
+	return string(h)
+}()
+
 // sessionStore is an in-memory store of active sessions.
 type sessionStore struct {
 	mu      sync.Mutex
@@ -174,15 +181,20 @@ func (a *Admin) handleLogin(w http.ResponseWriter, r *http.Request) {
 	password := r.FormValue("password")
 	u, ok := a.state.LookupUser(username)
 	if !ok {
+		// Run a dummy comparison so a missing user takes the same time as a
+		// wrong password, and return the same message — no user enumeration.
+		bcrypt.CompareHashAndPassword([]byte(dummyHash), []byte(password))
 		a.renderStandalone(w, "login", map[string]string{"Error": "Invalid credentials."})
-		return
-	}
-	if u.Disabled {
-		a.renderStandalone(w, "login", map[string]string{"Error": "Account disabled."})
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)); err != nil {
 		a.renderStandalone(w, "login", map[string]string{"Error": "Invalid credentials."})
+		return
+	}
+	// "Account disabled" is only revealed to someone who supplied the correct
+	// password, so it does not leak account existence to an attacker.
+	if u.Disabled {
+		a.renderStandalone(w, "login", map[string]string{"Error": "Account disabled."})
 		return
 	}
 	sid := a.sessions.create(username)
@@ -196,7 +208,7 @@ func (a *Admin) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Value:    sid,
 		Path:     "/portal",
 		HttpOnly: true,
-		Secure:   r.TLS != nil, // only Secure over HTTPS; allow over HTTP for local dev
+		Secure:   a.isSecure(r), // Secure over direct TLS or a trusted TLS-terminating proxy
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(sessionTTL.Seconds()),
 	})
@@ -251,7 +263,7 @@ func (a *Admin) handleSetupPost(w http.ResponseWriter, r *http.Request) {
 		a.renderStandalone(w, "setup", map[string]string{"Error": "Internal error."})
 		return
 	}
-	if err := a.state.AddUser(User{
+	if err := a.state.AddFirstAdmin(User{
 		Username:     username,
 		PasswordHash: string(hash),
 		Role:         "admin",

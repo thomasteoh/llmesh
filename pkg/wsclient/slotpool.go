@@ -10,10 +10,10 @@ import (
 // requests, giving local requests priority: router jobs yield when local
 // requests are waiting for a slot.
 //
-// Capacity is set by the first call to init (called by wsclient on connect).
-// Subsequent calls are no-ops, so reconnects do not reset in-flight counts and
-// local requests that arrive before the first WS connection block until the
-// pool is ready.
+// Capacity is (re)set by Init, called by wsclient on every connect and,
+// optionally, eagerly at startup so local requests work before the first WS
+// connection. Init preserves in-flight counts, so a reconnect that re-advertises
+// a different max_concurrent adjusts capacity without losing accounting.
 type SlotPool struct {
 	mu           sync.Mutex
 	cond         *sync.Cond
@@ -29,16 +29,18 @@ func newSlotPool() *SlotPool {
 	return p
 }
 
-// init sets the pool capacity on the first call; subsequent calls are no-ops.
-func (p *SlotPool) init(capacity int) {
-	p.mu.Lock()
-	if !p.ready {
-		if capacity < 1 {
-			capacity = 1
-		}
-		p.capacity = capacity
-		p.ready = true
+// Init sets (or updates) the pool capacity and marks it ready. It is safe to
+// call repeatedly: in-flight counts are preserved, so a reconnect that detects
+// a different slot count adjusts the ceiling without resetting accounting. If
+// capacity is lowered below the current in-flight count, new acquisitions wait
+// until releases bring in-flight back under the new ceiling.
+func (p *SlotPool) Init(capacity int) {
+	if capacity < 1 {
+		capacity = 1
 	}
+	p.mu.Lock()
+	p.capacity = capacity
+	p.ready = true
 	p.mu.Unlock()
 	p.cond.Broadcast()
 }
@@ -48,7 +50,15 @@ func (p *SlotPool) init(capacity int) {
 // Router jobs waiting for a slot will continue to yield as long as this call
 // (or any other local acquire) is outstanding. Returns false if ctx expires.
 func (p *SlotPool) AcquireLocal(ctx context.Context) bool {
-	stop := context.AfterFunc(ctx, func() { p.cond.Broadcast() })
+	// Take and release the lock before broadcasting so the wakeup is ordered
+	// after the waiter has entered cond.Wait() (which atomically releases the
+	// lock). Broadcasting without the lock can race ahead of the waiter and be
+	// lost, parking it until the next Release.
+	stop := context.AfterFunc(ctx, func() {
+		p.mu.Lock()
+		p.mu.Unlock() //nolint:staticcheck // ordering barrier, not a guarded section
+		p.cond.Broadcast()
+	})
 	defer stop()
 
 	p.mu.Lock()
@@ -77,7 +87,12 @@ func (p *SlotPool) AcquireLocal(ctx context.Context) bool {
 // waiting local requests: if localWaiters > 0 this call blocks until all local
 // waiters have been served first. Returns false if ctx expires.
 func (p *SlotPool) acquireRouter(ctx context.Context) bool {
-	stop := context.AfterFunc(ctx, func() { p.cond.Broadcast() })
+	// See AcquireLocal for why the broadcast is fenced by the lock.
+	stop := context.AfterFunc(ctx, func() {
+		p.mu.Lock()
+		p.mu.Unlock() //nolint:staticcheck // ordering barrier, not a guarded section
+		p.cond.Broadcast()
+	})
 	defer stop()
 
 	p.mu.Lock()

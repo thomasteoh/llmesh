@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"os"
 	"time"
@@ -47,7 +48,7 @@ func Handle(ctx context.Context, job types.JobMsg, spec *backend.Spec, send func
 }
 
 func handleBatch(ctx context.Context, req *types.InferenceRequest, spec *backend.Spec, send func(any) error, st *stats.Stats) error {
-	content, finishReason, err := backend.RunBatch(ctx, spec, req)
+	res, err := backend.RunBatch(ctx, spec, req)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil
@@ -57,18 +58,19 @@ func handleBatch(ctx context.Context, req *types.InferenceRequest, spec *backend
 		return err
 	}
 	_ = send(types.ChunkMsg{
-		Type:         "chunk",
-		RequestID:    req.ID,
-		Delta:        content,
-		Done:         true,
-		FinishReason: finishReason,
+		Type:           "chunk",
+		RequestID:      req.ID,
+		Delta:          res.Content,
+		ToolCallsDelta: res.ToolCalls,
+		Done:           true,
+		FinishReason:   res.FinishReason,
 	})
 	return nil
 }
 
 func handleStream(ctx context.Context, req *types.InferenceRequest, spec *backend.Spec, send func(any) error, st *stats.Stats) error {
 	firstToken := true
-	err := backend.RunStream(ctx, spec, req, func(delta, finishReason string, done bool, usage *types.UsageInfo) {
+	err := backend.RunStream(ctx, spec, req, func(delta string, toolCalls json.RawMessage, finishReason string, done bool, usage *types.UsageInfo) {
 		if firstToken && delta != "" {
 			firstToken = false
 		}
@@ -76,12 +78,13 @@ func handleStream(ctx context.Context, req *types.InferenceRequest, spec *backen
 			st.TotalTokens.Add(int64(usage.CompletionTokens))
 		}
 		chunk := types.ChunkMsg{
-			Type:         "chunk",
-			RequestID:    req.ID,
-			Delta:        delta,
-			Done:         done,
-			FinishReason: finishReason,
-			Usage:        usage,
+			Type:           "chunk",
+			RequestID:      req.ID,
+			Delta:          delta,
+			ToolCallsDelta: toolCalls,
+			Done:           done,
+			FinishReason:   finishReason,
+			Usage:          usage,
 		}
 		if sendErr := send(chunk); sendErr != nil {
 			if ctx.Err() == nil {
