@@ -10,5 +10,8 @@ services:
     volumes:
       - ./router/config.yaml:/config.yaml:ro,z
       # State is an embedded SQLite database; a legacy state.json in this dir is migrated automatically.
+      # The container runs as uid 10001 (non-root): with rootful docker, run
+      # `chown -R 10001:10001 ./router/data` once; with rootless podman, add
+      # `userns_mode: keep-id:uid=10001,gid=10001` instead and keep your own ownership.
       - ./router/data:/data:z
     restart: unless-stopped
