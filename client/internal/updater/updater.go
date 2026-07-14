@@ -15,24 +15,80 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 )
 
 const (
-	checkInterval  = time.Hour
-	initialDelay   = 30 * time.Second // wait for connection to establish before first check
-	manifestSizeLimit = 64 * 1024     // 64 KB — manifest should be tiny
+	checkInterval     = time.Hour
+	initialDelay      = 30 * time.Second // wait for connection to establish before first check
+	manifestSizeLimit = 64 * 1024        // 64 KB — manifest should be tiny
+	maxBinarySize     = 512 << 20        // 512 MB — generous ceiling; prevents disk-fill
 )
+
+// requireHTTPS rejects non-HTTPS update URLs. Fetching a manifest or binary over
+// plain HTTP would let an on-path attacker serve arbitrary code to the worker,
+// so auto-update is only allowed over TLS.
+func requireHTTPS(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid update URL: %w", err)
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("refusing update over insecure scheme %q (https required)", u.Scheme)
+	}
+	return nil
+}
+
+// parseSemver parses a vMAJOR.MINOR.PATCH string (pre-release/build suffix
+// ignored). Returns ok=false when the string is not parseable.
+func parseSemver(v string) ([3]int, bool) {
+	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	if i := strings.IndexAny(v, "-+"); i >= 0 {
+		v = v[:i]
+	}
+	parts := strings.Split(v, ".")
+	if len(parts) != 3 {
+		return [3]int{}, false
+	}
+	var out [3]int
+	for i := 0; i < 3; i++ {
+		n, err := strconv.Atoi(parts[i])
+		if err != nil {
+			return [3]int{}, false
+		}
+		out[i] = n
+	}
+	return out, true
+}
+
+// isNewer reports whether latest is a strictly higher version than current.
+// Unparseable versions return false so the updater never downgrades or installs
+// a sideways/garbage version pushed by a compromised manifest.
+func isNewer(latest, current string) bool {
+	lv, ok1 := parseSemver(latest)
+	cv, ok2 := parseSemver(current)
+	if !ok1 || !ok2 {
+		return false
+	}
+	for i := 0; i < 3; i++ {
+		if lv[i] != cv[i] {
+			return lv[i] > cv[i]
+		}
+	}
+	return false
+}
 
 // manifest is the JSON structure returned by the update URL.
 type manifest struct {
 	Version   string `json:"version"` // e.g. "v1.2.3"
 	BinaryURL string `json:"url"`     // direct download link for the new binary
-	SHA256    string `json:"sha256"`  // hex-encoded SHA-256 of the binary; verified when present
+	SHA256    string `json:"sha256"`  // hex-encoded SHA-256 of the binary; required
 }
 
 // Run starts the update check loop. Blocks until ctx is cancelled.
@@ -47,6 +103,12 @@ func Run(ctx context.Context, manifestURL, currentVersion string, autoUpdate boo
 	}
 	if currentVersion == "dev" {
 		log.Info("updater: skipping updates for dev build")
+		return
+	}
+	if err := requireHTTPS(manifestURL); err != nil {
+		// Auto-update requires HTTPS; a ws:// router yields an http:// manifest
+		// URL. Bail out once instead of failing every check.
+		log.Info("updater: disabled — update endpoint is not HTTPS", "url", manifestURL)
 		return
 	}
 
@@ -90,8 +152,8 @@ func tryUpdate(ctx context.Context, manifestURL, currentVersion string, isIdle f
 		log.Warn("updater: manifest fetch failed", "error", err)
 		return
 	}
-	if m.Version == currentVersion {
-		return // already running the latest version
+	if !isNewer(m.Version, currentVersion) {
+		return // not a strictly newer version — ignore (also blocks downgrades)
 	}
 	log.Info("updater: new version available", "current", currentVersion, "latest", m.Version)
 
@@ -107,6 +169,9 @@ func tryUpdate(ctx context.Context, manifestURL, currentVersion string, isIdle f
 }
 
 func fetchManifest(ctx context.Context, url string) (*manifest, error) {
+	if err := requireHTTPS(url); err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -123,10 +188,23 @@ func fetchManifest(ctx context.Context, url string) (*manifest, error) {
 	if err := json.NewDecoder(io.LimitReader(resp.Body, manifestSizeLimit)).Decode(&m); err != nil {
 		return nil, fmt.Errorf("parse manifest: %w", err)
 	}
-	if m.Version == "" || m.BinaryURL == "" {
-		return nil, fmt.Errorf("manifest missing version or url field")
+	if err := validateManifest(&m); err != nil {
+		return nil, err
 	}
 	return &m, nil
+}
+
+// validateManifest enforces that a manifest carries everything needed to apply
+// a verifiable update. Fails closed: a missing sha256 makes the update
+// unverifiable and is rejected rather than installed on trust.
+func validateManifest(m *manifest) error {
+	if m.Version == "" || m.BinaryURL == "" {
+		return fmt.Errorf("manifest missing version or url field")
+	}
+	if strings.TrimSpace(m.SHA256) == "" {
+		return fmt.Errorf("manifest missing sha256 — refusing unverifiable update")
+	}
+	return nil
 }
 
 func applyUpdate(ctx context.Context, m *manifest, isIdle func() bool, log *slog.Logger) error {
@@ -144,6 +222,12 @@ func applyUpdate(ctx context.Context, m *manifest, isIdle func() bool, log *slog
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath) // no-op after a successful rename; cleans up on any failure path
 
+	// Only download over HTTPS — otherwise an on-path attacker controls the
+	// binary that replaces this process.
+	if err := requireHTTPS(m.BinaryURL); err != nil {
+		return err
+	}
+
 	log.Info("updater: downloading new binary", "version", m.Version)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.BinaryURL, nil)
 	if err != nil {
@@ -159,7 +243,8 @@ func applyUpdate(ctx context.Context, m *manifest, isIdle func() bool, log *slog
 	}
 
 	h := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(tmp, h), resp.Body); err != nil {
+	// Cap the copy so a malicious or runaway server cannot fill the disk.
+	if _, err := io.Copy(io.MultiWriter(tmp, h), io.LimitReader(resp.Body, maxBinarySize)); err != nil {
 		tmp.Close()
 		return fmt.Errorf("write binary: %w", err)
 	}
@@ -167,16 +252,13 @@ func applyUpdate(ctx context.Context, m *manifest, isIdle func() bool, log *slog
 		return fmt.Errorf("close temp file: %w", err)
 	}
 
-	if m.SHA256 != "" {
-		got := hex.EncodeToString(h.Sum(nil))
-		want := strings.ToLower(strings.TrimSpace(m.SHA256))
-		if got != want {
-			return fmt.Errorf("SHA-256 mismatch: got %s, want %s", got, want)
-		}
-		log.Info("updater: binary integrity verified", "sha256", got)
-	} else {
-		log.Warn("updater: manifest has no sha256 field — skipping integrity check")
+	// sha256 presence is guaranteed by fetchManifest; verify it (fail closed).
+	got := hex.EncodeToString(h.Sum(nil))
+	want := strings.ToLower(strings.TrimSpace(m.SHA256))
+	if got != want {
+		return fmt.Errorf("SHA-256 mismatch: got %s, want %s", got, want)
 	}
+	log.Info("updater: binary integrity verified", "sha256", got)
 
 	if err := os.Chmod(tmpPath, 0755); err != nil {
 		return fmt.Errorf("chmod binary: %w", err)
