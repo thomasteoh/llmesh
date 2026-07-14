@@ -1,9 +1,9 @@
 package queue
 
 import (
+	"llmesh/pkg/types"
 	"testing"
 	"time"
-	"llmesh/pkg/types"
 )
 
 func req(model string, priority types.Priority, age time.Duration) types.InferenceRequest {

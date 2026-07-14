@@ -39,9 +39,13 @@ RUN if [ "${INCLUDE_CLIENTS}" = "true" ]; then \
     fi
 
 FROM alpine:3.19
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates wget
 RUN mkdir -p /downloads
 COPY --from=builder /router /router
 COPY --from=builder /dist /downloads
 COPY --from=builder /downloads /downloads
+# Assumes the default listen port (53002). If server.port is changed, override
+# with a compose-level healthcheck.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD wget -q -O /dev/null http://127.0.0.1:53002/health || exit 1
 ENTRYPOINT ["/router"]

@@ -1,8 +1,8 @@
 package queue
 
 import (
-	"sync"
 	"llmesh/pkg/types"
+	"sync"
 )
 
 // Queue is a thread-safe priority queue.
@@ -200,4 +200,3 @@ func (q *Queue) Drain() []types.InferenceRequest {
 func (q *Queue) Signal() {
 	q.cond.Signal()
 }
-
