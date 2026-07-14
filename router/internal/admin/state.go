@@ -27,21 +27,46 @@ type User struct {
 	CSRFToken    string `json:"csrf_token,omitempty"` // SHA-256 hash of current valid CSRF token
 }
 
+// APIKey is a stored API key. The key material itself is never persisted:
+// KeyHash is the SHA-256 of the key (the lookup identifier) and KeyPrefix is
+// a short display prefix shown in the portal. The full key is only available
+// at creation time.
 type APIKey struct {
-	Label         string    `json:"label"`
-	Owner         string    `json:"owner"`
-	Key           string    `json:"key"`
-	Priority      string    `json:"priority"`                 // "high" | "normal" | "low"
-	MaxConcurrent int       `json:"max_concurrent,omitempty"` // 0 = unlimited
-	CreatedAt     time.Time `json:"created_at"`
+	Label         string
+	Owner         string
+	KeyHash       string // SHA-256 hex of the key
+	KeyPrefix     string // display prefix, e.g. "sk-alice-1a2b…"
+	Priority      string // "high" | "normal" | "low"
+	MaxConcurrent int    // 0 = unlimited
+	CreatedAt     time.Time
 }
 
+// ClientToken is a stored worker token, hashed at rest like APIKey.
 type ClientToken struct {
-	Name       string         `json:"name"`
-	Owner      string         `json:"owner"`
-	Token      string         `json:"token"`
-	CreatedAt  time.Time      `json:"created_at"`
-	OwnerSlots map[string]int `json:"owner_slots,omitempty"` // model → slots reserved for owner; 0/unset = fully shared
+	Name        string
+	Owner       string
+	TokenHash   string // SHA-256 hex of the token
+	TokenPrefix string // display prefix, e.g. "ct-alice-1a2b…"
+	CreatedAt   time.Time
+	OwnerSlots  map[string]int // model → slots reserved for owner; 0/unset = fully shared
+}
+
+// HashSecret returns the hex SHA-256 of an API key or client token, the form
+// in which secrets are stored and looked up. The inputs are 128-bit random
+// values, so a fast unsalted hash is appropriate (unlike passwords).
+func HashSecret(s string) string { return hashToken(s) }
+
+// SecretPrefix returns a short display prefix for a generated secret. Keys and
+// tokens end in 32 random hex chars; keep the type/owner part plus 4 chars so
+// entries remain recognisable without exposing usable key material.
+func SecretPrefix(s string) string {
+	if len(s) > 32 {
+		return s[:len(s)-28] + "…"
+	}
+	if len(s) > 8 {
+		return s[:8] + "…"
+	}
+	return "****"
 }
 
 // UpstreamRouter configures an upstream (orchestrator) router that this router
@@ -53,11 +78,30 @@ type UpstreamRouter struct {
 	Priority string `json:"priority"` // "high" | "normal" | "low"; default "normal"
 }
 
+// legacyAPIKey / legacyClientToken mirror the plaintext shapes found in old
+// state.json files; used only for first-startup import.
+type legacyAPIKey struct {
+	Label         string    `json:"label"`
+	Owner         string    `json:"owner"`
+	Key           string    `json:"key"`
+	Priority      string    `json:"priority"`
+	MaxConcurrent int       `json:"max_concurrent,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+type legacyClientToken struct {
+	Name       string         `json:"name"`
+	Owner      string         `json:"owner"`
+	Token      string         `json:"token"`
+	CreatedAt  time.Time      `json:"created_at"`
+	OwnerSlots map[string]int `json:"owner_slots,omitempty"`
+}
+
 // stateData is kept only for migrating legacy state.json files on first startup.
 type stateData struct {
 	Users           []User              `json:"users"`
-	APIKeys         []APIKey            `json:"api_keys"`
-	ClientTokens    []ClientToken       `json:"client_tokens"`
+	APIKeys         []legacyAPIKey      `json:"api_keys"`
+	ClientTokens    []legacyClientToken `json:"client_tokens"`
 	ModelAliases    map[string][]string `json:"model_aliases,omitempty"`
 	UpstreamRouters []UpstreamRouter    `json:"upstream_routers,omitempty"`
 }
@@ -65,11 +109,11 @@ type stateData struct {
 // UnmarshalJSON handles migration from the old map[string]string format.
 func (sd *stateData) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		Users           []User           `json:"users"`
-		APIKeys         []APIKey         `json:"api_keys"`
-		ClientTokens    []ClientToken    `json:"client_tokens"`
-		ModelAliases    json.RawMessage  `json:"model_aliases,omitempty"`
-		UpstreamRouters []UpstreamRouter `json:"upstream_routers,omitempty"`
+		Users           []User              `json:"users"`
+		APIKeys         []legacyAPIKey      `json:"api_keys"`
+		ClientTokens    []legacyClientToken `json:"client_tokens"`
+		ModelAliases    json.RawMessage     `json:"model_aliases,omitempty"`
+		UpstreamRouters []UpstreamRouter    `json:"upstream_routers,omitempty"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -137,6 +181,10 @@ func LoadState(path string) (*State, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := migrateSecretColumns(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate secrets to hashed storage: %w", err)
+	}
 	s := &State{db: db}
 	if err := s.maybeMigrateJSON(path, dbfile); err != nil {
 		db.Close()
@@ -155,7 +203,8 @@ func createSchema(db *sql.DB) error {
 			csrf_token    TEXT NOT NULL DEFAULT ''
 		);
 		CREATE TABLE IF NOT EXISTS api_keys (
-			key            TEXT PRIMARY KEY,
+			key_hash       TEXT PRIMARY KEY,
+			key_prefix     TEXT NOT NULL DEFAULT '',
 			label          TEXT NOT NULL DEFAULT '',
 			owner          TEXT NOT NULL DEFAULT '',
 			priority       TEXT NOT NULL DEFAULT 'normal',
@@ -164,11 +213,12 @@ func createSchema(db *sql.DB) error {
 			UNIQUE(owner, label)
 		);
 		CREATE TABLE IF NOT EXISTS client_tokens (
-			token       TEXT PRIMARY KEY,
-			name        TEXT NOT NULL DEFAULT '',
-			owner       TEXT NOT NULL DEFAULT '',
-			created_at  TEXT NOT NULL DEFAULT '',
-			owner_slots TEXT NOT NULL DEFAULT '{}',
+			token_hash   TEXT PRIMARY KEY,
+			token_prefix TEXT NOT NULL DEFAULT '',
+			name         TEXT NOT NULL DEFAULT '',
+			owner        TEXT NOT NULL DEFAULT '',
+			created_at   TEXT NOT NULL DEFAULT '',
+			owner_slots  TEXT NOT NULL DEFAULT '{}',
 			UNIQUE(owner, name)
 		);
 		CREATE TABLE IF NOT EXISTS model_aliases (
@@ -201,6 +251,130 @@ func createSchema(db *sql.DB) error {
 	// Non-destructive migration: add priority column for existing databases.
 	// SQLite returns an error if the column already exists; ignore it.
 	_, _ = db.Exec(`ALTER TABLE upstream_routers ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'`)
+	return nil
+}
+
+// tableHasColumn reports whether the named table has the named column.
+func tableHasColumn(db *sql.DB, table, column string) bool {
+	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if rows.Scan(&name) == nil && name == column {
+			return true
+		}
+	}
+	return false
+}
+
+// migrateSecretColumns rewrites databases that still store plaintext API keys
+// or client tokens (schema versions before hashing-at-rest) into the hashed
+// shape. Each secret is replaced by its SHA-256 plus a display prefix; the
+// plaintext is not retained anywhere.
+func migrateSecretColumns(db *sql.DB) error {
+	if tableHasColumn(db, "api_keys", "key") {
+		tx, err := db.Begin()
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		rows, err := tx.Query(`SELECT key, label, owner, priority, max_concurrent, created_at FROM api_keys`)
+		if err != nil {
+			return err
+		}
+		type oldKey struct {
+			key, label, owner, priority, createdAt string
+			maxConcurrent                          int
+		}
+		var olds []oldKey
+		for rows.Next() {
+			var o oldKey
+			if err := rows.Scan(&o.key, &o.label, &o.owner, &o.priority, &o.maxConcurrent, &o.createdAt); err != nil {
+				rows.Close()
+				return err
+			}
+			olds = append(olds, o)
+		}
+		rows.Close()
+		if _, err := tx.Exec(`
+			DROP TABLE api_keys;
+			CREATE TABLE api_keys (
+				key_hash       TEXT PRIMARY KEY,
+				key_prefix     TEXT NOT NULL DEFAULT '',
+				label          TEXT NOT NULL DEFAULT '',
+				owner          TEXT NOT NULL DEFAULT '',
+				priority       TEXT NOT NULL DEFAULT 'normal',
+				max_concurrent INTEGER NOT NULL DEFAULT 0,
+				created_at     TEXT NOT NULL DEFAULT '',
+				UNIQUE(owner, label)
+			);
+		`); err != nil {
+			return err
+		}
+		for _, o := range olds {
+			if _, err := tx.Exec(
+				`INSERT INTO api_keys (key_hash, key_prefix, label, owner, priority, max_concurrent, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				HashSecret(o.key), SecretPrefix(o.key), o.label, o.owner, o.priority, o.maxConcurrent, o.createdAt,
+			); err != nil {
+				return err
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	if tableHasColumn(db, "client_tokens", "token") {
+		tx, err := db.Begin()
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		rows, err := tx.Query(`SELECT token, name, owner, created_at, owner_slots FROM client_tokens`)
+		if err != nil {
+			return err
+		}
+		type oldTok struct {
+			token, name, owner, createdAt, ownerSlots string
+		}
+		var olds []oldTok
+		for rows.Next() {
+			var o oldTok
+			if err := rows.Scan(&o.token, &o.name, &o.owner, &o.createdAt, &o.ownerSlots); err != nil {
+				rows.Close()
+				return err
+			}
+			olds = append(olds, o)
+		}
+		rows.Close()
+		if _, err := tx.Exec(`
+			DROP TABLE client_tokens;
+			CREATE TABLE client_tokens (
+				token_hash   TEXT PRIMARY KEY,
+				token_prefix TEXT NOT NULL DEFAULT '',
+				name         TEXT NOT NULL DEFAULT '',
+				owner        TEXT NOT NULL DEFAULT '',
+				created_at   TEXT NOT NULL DEFAULT '',
+				owner_slots  TEXT NOT NULL DEFAULT '{}',
+				UNIQUE(owner, name)
+			);
+		`); err != nil {
+			return err
+		}
+		for _, o := range olds {
+			if _, err := tx.Exec(
+				`INSERT INTO client_tokens (token_hash, token_prefix, name, owner, created_at, owner_slots) VALUES (?, ?, ?, ?, ?, ?)`,
+				HashSecret(o.token), SecretPrefix(o.token), o.name, o.owner, o.createdAt, o.ownerSlots,
+			); err != nil {
+				return err
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -289,8 +463,8 @@ func (s *State) maybeMigrateJSON(jsonPath, dbfile string) error {
 	}
 	for _, k := range sd.APIKeys {
 		if _, err := tx.Exec(
-			`INSERT OR IGNORE INTO api_keys (key, label, owner, priority, max_concurrent, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-			k.Key, k.Label, k.Owner, k.Priority, k.MaxConcurrent, k.CreatedAt.Format(time.RFC3339),
+			`INSERT OR IGNORE INTO api_keys (key_hash, key_prefix, label, owner, priority, max_concurrent, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			HashSecret(k.Key), SecretPrefix(k.Key), k.Label, k.Owner, k.Priority, k.MaxConcurrent, k.CreatedAt.Format(time.RFC3339),
 		); err != nil {
 			return err
 		}
@@ -298,8 +472,8 @@ func (s *State) maybeMigrateJSON(jsonPath, dbfile string) error {
 	for _, t := range sd.ClientTokens {
 		slots := marshalOwnerSlots(t.OwnerSlots)
 		if _, err := tx.Exec(
-			`INSERT OR IGNORE INTO client_tokens (token, name, owner, created_at, owner_slots) VALUES (?, ?, ?, ?, ?)`,
-			t.Token, t.Name, t.Owner, t.CreatedAt.Format(time.RFC3339), slots,
+			`INSERT OR IGNORE INTO client_tokens (token_hash, token_prefix, name, owner, created_at, owner_slots) VALUES (?, ?, ?, ?, ?, ?)`,
+			HashSecret(t.Token), SecretPrefix(t.Token), t.Name, t.Owner, t.CreatedAt.Format(time.RFC3339), slots,
 		); err != nil {
 			return err
 		}
@@ -459,13 +633,20 @@ func (s *State) DemoteUser(actor, target string) error {
 
 // --- API Keys ---
 
+// LookupAPIKey finds a key record by the plaintext key presented by a caller.
 func (s *State) LookupAPIKey(key string) (APIKey, bool) {
+	return s.LookupAPIKeyByHash(HashSecret(key))
+}
+
+// LookupAPIKeyByHash finds a key record by its stored hash — the identifier
+// the portal uses in forms, since the plaintext is never available again.
+func (s *State) LookupAPIKeyByHash(hash string) (APIKey, bool) {
 	var k APIKey
 	var createdAt string
 	err := s.db.QueryRow(
-		`SELECT key, label, owner, priority, max_concurrent, created_at FROM api_keys WHERE key = ?`,
-		key,
-	).Scan(&k.Key, &k.Label, &k.Owner, &k.Priority, &k.MaxConcurrent, &createdAt)
+		`SELECT key_hash, key_prefix, label, owner, priority, max_concurrent, created_at FROM api_keys WHERE key_hash = ?`,
+		hash,
+	).Scan(&k.KeyHash, &k.KeyPrefix, &k.Label, &k.Owner, &k.Priority, &k.MaxConcurrent, &createdAt)
 	if err != nil {
 		return APIKey{}, false
 	}
@@ -479,9 +660,9 @@ func (s *State) APIKeysFor(owner string, isAdmin bool) []APIKey {
 		err  error
 	)
 	if isAdmin {
-		rows, err = s.db.Query(`SELECT key, label, owner, priority, max_concurrent, created_at FROM api_keys ORDER BY owner, label`)
+		rows, err = s.db.Query(`SELECT key_hash, key_prefix, label, owner, priority, max_concurrent, created_at FROM api_keys ORDER BY owner, label`)
 	} else {
-		rows, err = s.db.Query(`SELECT key, label, owner, priority, max_concurrent, created_at FROM api_keys WHERE owner = ? ORDER BY label`, owner)
+		rows, err = s.db.Query(`SELECT key_hash, key_prefix, label, owner, priority, max_concurrent, created_at FROM api_keys WHERE owner = ? ORDER BY label`, owner)
 	}
 	if err != nil {
 		return nil
@@ -491,7 +672,7 @@ func (s *State) APIKeysFor(owner string, isAdmin bool) []APIKey {
 	for rows.Next() {
 		var k APIKey
 		var createdAt string
-		if err := rows.Scan(&k.Key, &k.Label, &k.Owner, &k.Priority, &k.MaxConcurrent, &createdAt); err == nil {
+		if err := rows.Scan(&k.KeyHash, &k.KeyPrefix, &k.Label, &k.Owner, &k.Priority, &k.MaxConcurrent, &createdAt); err == nil {
 			k.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
 			out = append(out, k)
 		}
@@ -501,8 +682,8 @@ func (s *State) APIKeysFor(owner string, isAdmin bool) []APIKey {
 
 func (s *State) AddAPIKey(k APIKey) error {
 	_, err := s.db.Exec(
-		`INSERT INTO api_keys (key, label, owner, priority, max_concurrent, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		k.Key, k.Label, k.Owner, k.Priority, k.MaxConcurrent, k.CreatedAt.Format(time.RFC3339),
+		`INSERT INTO api_keys (key_hash, key_prefix, label, owner, priority, max_concurrent, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		k.KeyHash, k.KeyPrefix, k.Label, k.Owner, k.Priority, k.MaxConcurrent, k.CreatedAt.Format(time.RFC3339),
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
@@ -513,13 +694,14 @@ func (s *State) AddAPIKey(k APIKey) error {
 	return nil
 }
 
-func (s *State) UpdateAPIKeyPriority(key, priority string) error {
+// UpdateAPIKeyPriority updates a key identified by its hash.
+func (s *State) UpdateAPIKeyPriority(keyHash, priority string) error {
 	switch priority {
 	case "high", "normal", "low":
 	default:
 		return fmt.Errorf("invalid priority %q", priority)
 	}
-	res, err := s.db.Exec(`UPDATE api_keys SET priority = ? WHERE key = ?`, priority, key)
+	res, err := s.db.Exec(`UPDATE api_keys SET priority = ? WHERE key_hash = ?`, priority, keyHash)
 	if err != nil {
 		return err
 	}
@@ -529,11 +711,12 @@ func (s *State) UpdateAPIKeyPriority(key, priority string) error {
 	return nil
 }
 
-func (s *State) UpdateAPIKeyMaxConcurrent(key string, limit int) error {
+// UpdateAPIKeyMaxConcurrent updates a key identified by its hash.
+func (s *State) UpdateAPIKeyMaxConcurrent(keyHash string, limit int) error {
 	if limit < 0 {
 		return fmt.Errorf("max_concurrent must be >= 0")
 	}
-	res, err := s.db.Exec(`UPDATE api_keys SET max_concurrent = ? WHERE key = ?`, limit, key)
+	res, err := s.db.Exec(`UPDATE api_keys SET max_concurrent = ? WHERE key_hash = ?`, limit, keyHash)
 	if err != nil {
 		return err
 	}
@@ -551,15 +734,16 @@ func (s *State) MaxConcurrentFor(key string) int {
 	return k.MaxConcurrent
 }
 
-func (s *State) RevokeAPIKey(owner, key string, isAdmin bool) error {
+// RevokeAPIKey deletes a key identified by its hash.
+func (s *State) RevokeAPIKey(owner, keyHash string, isAdmin bool) error {
 	var (
 		res sql.Result
 		err error
 	)
 	if isAdmin {
-		res, err = s.db.Exec(`DELETE FROM api_keys WHERE key = ?`, key)
+		res, err = s.db.Exec(`DELETE FROM api_keys WHERE key_hash = ?`, keyHash)
 	} else {
-		res, err = s.db.Exec(`DELETE FROM api_keys WHERE key = ? AND owner = ?`, key, owner)
+		res, err = s.db.Exec(`DELETE FROM api_keys WHERE key_hash = ? AND owner = ?`, keyHash, owner)
 	}
 	if err != nil {
 		return err
@@ -607,13 +791,21 @@ func (s *State) LabelFor(key string) string {
 
 // --- Clients ---
 
+// LookupClientToken finds a token record by the plaintext token presented by
+// a connecting client.
 func (s *State) LookupClientToken(token string) (ClientToken, bool) {
+	return s.LookupClientTokenByHash(HashSecret(token))
+}
+
+// LookupClientTokenByHash finds a token record by its stored hash — the
+// identifier used by portal forms and by the hub's connection registry.
+func (s *State) LookupClientTokenByHash(hash string) (ClientToken, bool) {
 	var t ClientToken
 	var createdAt, ownerSlotsJSON string
 	err := s.db.QueryRow(
-		`SELECT token, name, owner, created_at, owner_slots FROM client_tokens WHERE token = ?`,
-		token,
-	).Scan(&t.Token, &t.Name, &t.Owner, &createdAt, &ownerSlotsJSON)
+		`SELECT token_hash, token_prefix, name, owner, created_at, owner_slots FROM client_tokens WHERE token_hash = ?`,
+		hash,
+	).Scan(&t.TokenHash, &t.TokenPrefix, &t.Name, &t.Owner, &createdAt, &ownerSlotsJSON)
 	if err != nil {
 		return ClientToken{}, false
 	}
@@ -628,9 +820,9 @@ func (s *State) ClientTokensFor(owner string, isAdmin bool) []ClientToken {
 		err  error
 	)
 	if isAdmin {
-		rows, err = s.db.Query(`SELECT token, name, owner, created_at, owner_slots FROM client_tokens ORDER BY owner, name`)
+		rows, err = s.db.Query(`SELECT token_hash, token_prefix, name, owner, created_at, owner_slots FROM client_tokens ORDER BY owner, name`)
 	} else {
-		rows, err = s.db.Query(`SELECT token, name, owner, created_at, owner_slots FROM client_tokens WHERE owner = ? ORDER BY name`, owner)
+		rows, err = s.db.Query(`SELECT token_hash, token_prefix, name, owner, created_at, owner_slots FROM client_tokens WHERE owner = ? ORDER BY name`, owner)
 	}
 	if err != nil {
 		return nil
@@ -640,7 +832,7 @@ func (s *State) ClientTokensFor(owner string, isAdmin bool) []ClientToken {
 	for rows.Next() {
 		var t ClientToken
 		var createdAt, ownerSlotsJSON string
-		if err := rows.Scan(&t.Token, &t.Name, &t.Owner, &createdAt, &ownerSlotsJSON); err == nil {
+		if err := rows.Scan(&t.TokenHash, &t.TokenPrefix, &t.Name, &t.Owner, &createdAt, &ownerSlotsJSON); err == nil {
 			t.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
 			json.Unmarshal([]byte(ownerSlotsJSON), &t.OwnerSlots)
 			out = append(out, t)
@@ -651,8 +843,8 @@ func (s *State) ClientTokensFor(owner string, isAdmin bool) []ClientToken {
 
 func (s *State) AddClientToken(t ClientToken) error {
 	_, err := s.db.Exec(
-		`INSERT INTO client_tokens (token, name, owner, created_at, owner_slots) VALUES (?, ?, ?, ?, ?)`,
-		t.Token, t.Name, t.Owner, t.CreatedAt.Format(time.RFC3339), marshalOwnerSlots(t.OwnerSlots),
+		`INSERT INTO client_tokens (token_hash, token_prefix, name, owner, created_at, owner_slots) VALUES (?, ?, ?, ?, ?, ?)`,
+		t.TokenHash, t.TokenPrefix, t.Name, t.Owner, t.CreatedAt.Format(time.RFC3339), marshalOwnerSlots(t.OwnerSlots),
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
@@ -663,15 +855,16 @@ func (s *State) AddClientToken(t ClientToken) error {
 	return nil
 }
 
-func (s *State) RevokeClientToken(owner, token string, isAdmin bool) error {
+// RevokeClientToken deletes a token identified by its hash.
+func (s *State) RevokeClientToken(owner, tokenHash string, isAdmin bool) error {
 	var (
 		res sql.Result
 		err error
 	)
 	if isAdmin {
-		res, err = s.db.Exec(`DELETE FROM client_tokens WHERE token = ?`, token)
+		res, err = s.db.Exec(`DELETE FROM client_tokens WHERE token_hash = ?`, tokenHash)
 	} else {
-		res, err = s.db.Exec(`DELETE FROM client_tokens WHERE token = ? AND owner = ?`, token, owner)
+		res, err = s.db.Exec(`DELETE FROM client_tokens WHERE token_hash = ? AND owner = ?`, tokenHash, owner)
 	}
 	if err != nil {
 		return err
@@ -682,8 +875,10 @@ func (s *State) RevokeClientToken(owner, token string, isAdmin bool) error {
 	return nil
 }
 
-func (s *State) SetClientTokenOwnerSlots(owner, token, model string, slots int, isAdmin bool) error {
-	t, ok := s.LookupClientToken(token)
+// SetClientTokenOwnerSlots updates the per-model owner-slot reservation for a
+// token identified by its hash.
+func (s *State) SetClientTokenOwnerSlots(owner, tokenHash, model string, slots int, isAdmin bool) error {
+	t, ok := s.LookupClientTokenByHash(tokenHash)
 	if !ok || (!isAdmin && t.Owner != owner) {
 		return fmt.Errorf("token not found")
 	}
@@ -695,7 +890,7 @@ func (s *State) SetClientTokenOwnerSlots(owner, token, model string, slots int, 
 		}
 		t.OwnerSlots[model] = slots
 	}
-	_, err := s.db.Exec(`UPDATE client_tokens SET owner_slots = ? WHERE token = ?`, marshalOwnerSlots(t.OwnerSlots), token)
+	_, err := s.db.Exec(`UPDATE client_tokens SET owner_slots = ? WHERE token_hash = ?`, marshalOwnerSlots(t.OwnerSlots), tokenHash)
 	return err
 }
 

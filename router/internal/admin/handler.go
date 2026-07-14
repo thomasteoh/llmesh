@@ -91,15 +91,6 @@ func (a *Admin) State() *State {
 	return a.state
 }
 
-// redactSecret returns a log-safe identifier for a key or token: enough prefix
-// to correlate (type + owner segment) without exposing the secret material.
-func redactSecret(s string) string {
-	if len(s) <= 8 {
-		return "****"
-	}
-	return s[:8] + "…"
-}
-
 func (a *Admin) parseTemplates() error {
 	funcMap := template.FuncMap{
 		"truncate": func(s string, n int) string {

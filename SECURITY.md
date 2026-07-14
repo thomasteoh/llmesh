@@ -30,6 +30,10 @@ llmesh is self-hosted and its security depends on how it is deployed:
   correctly. Leave it `false` when the router is directly exposed.
 - **Keep API keys and client tokens secret.** They authenticate callers and
   workers respectively; anyone holding one can use the corresponding capability.
+  The router stores only SHA-256 hashes of keys and tokens, so they cannot be
+  recovered from a stolen state database — but they are shown exactly once at
+  creation and travel in request headers, so protect them in transit and at
+  the caller.
 - **Restrict the local client API** (`local_api_addr`) to a loopback bind, or
   set `local_api_token`, since it serves unauthenticated inference otherwise.
 - **Serve the update endpoint over HTTPS.** The client only auto-updates over

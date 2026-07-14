@@ -397,7 +397,9 @@ func main() {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		h.ServeWS(w, r, ct.Name, ct.Owner, token, ct.OwnerSlots)
+		// The hub is keyed by the token hash so plaintext secrets never sit in
+		// the connection registry or in-flight job records.
+		h.ServeWS(w, r, ct.Name, ct.Owner, ct.TokenHash, ct.OwnerSlots)
 	})
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		upstreamRouters := adminHandler.State().GetUpstreamRouters()

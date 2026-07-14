@@ -113,14 +113,14 @@ func (a *Admin) handleDashboardJSON(w http.ResponseWriter, r *http.Request) {
 	clients := make([]clientJSON, 0, len(tokens))
 	for _, t := range tokens {
 		c := clientJSON{Name: t.Owner + "/" + t.Name}
-		connCount := a.hub.ConnectedCountByToken(t.Token)
-		ls := a.hub.LastSeenTime(t.Token)
+		connCount := a.hub.ConnectedCountByToken(t.TokenHash)
+		ls := a.hub.LastSeenTime(t.TokenHash)
 		c.Status, c.StatusClass, c.StatusLabel = clientStatusBadge(connCount, !ls.IsZero())
 		if connCount > 0 {
-			mods := a.hub.ConnectedModels(t.Token)
+			mods := a.hub.ConnectedModels(t.TokenHash)
 			sort.Strings(mods)
 			c.Models = strings.Join(mods, ", ")
-			c.Version = a.hub.ConnectedVersion(t.Token)
+			c.Version = a.hub.ConnectedVersion(t.TokenHash)
 		} else if !ls.IsZero() {
 			c.LastSeen = humanTime(ls)
 		}

@@ -71,7 +71,6 @@ type DashboardPage struct {
 
 type ClientRow struct {
 	Name        string
-	Token       string
 	Status      string // "connected" | "offline" | "never_connected"
 	StatusClass string // CSS badge class
 	StatusLabel string // display label with symbol
@@ -243,17 +242,16 @@ func (a *Admin) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	clients := make([]ClientRow, 0, len(tokens))
 	for _, t := range tokens {
 		row := ClientRow{
-			Name:  t.Owner + "/" + t.Name,
-			Token: t.Token,
+			Name: t.Owner + "/" + t.Name,
 		}
-		connCount := a.hub.ConnectedCountByToken(t.Token)
-		ls := a.hub.LastSeenTime(t.Token)
+		connCount := a.hub.ConnectedCountByToken(t.TokenHash)
+		ls := a.hub.LastSeenTime(t.TokenHash)
 		row.Status, row.StatusClass, row.StatusLabel = clientStatusBadge(connCount, !ls.IsZero())
 		if connCount > 0 {
-			mods := a.hub.ConnectedModels(t.Token)
+			mods := a.hub.ConnectedModels(t.TokenHash)
 			sort.Strings(mods)
 			row.Models = strings.Join(mods, ", ")
-			row.Version = a.hub.ConnectedVersion(t.Token)
+			row.Version = a.hub.ConnectedVersion(t.TokenHash)
 		} else if !ls.IsZero() {
 			row.LastSeen = humanTime(ls)
 		}
@@ -355,7 +353,8 @@ func (a *Admin) handleAPIKeyCreate(w http.ResponseWriter, r *http.Request) {
 	k := APIKey{
 		Label:     label,
 		Owner:     owner,
-		Key:       keyVal,
+		KeyHash:   HashSecret(keyVal),
+		KeyPrefix: SecretPrefix(keyVal),
 		Priority:  priority,
 		CreatedAt: time.Now().UTC(),
 	}
@@ -373,13 +372,16 @@ func (a *Admin) handleAPIKeyRevoke(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	key := r.FormValue("key")
-	if err := a.state.RevokeAPIKey(u.Username, key, u.Role == "admin"); err != nil {
+	keyHash := r.FormValue("key_hash")
+	// Resolve the label before deletion so the audit entry names the key.
+	target := ""
+	if k, ok := a.state.LookupAPIKeyByHash(keyHash); ok {
+		target = k.Owner + "/" + k.Label
+	}
+	if err := a.state.RevokeAPIKey(u.Username, keyHash, u.Role == "admin"); err != nil {
 		a.log.Warn("admin: api key revoke failed", "actor", u.Username, "error", err)
 	} else {
-		// Record a non-reversible identifier, never the full secret — the audit
-		// log is readable in the portal and persists after revocation.
-		a.state.RecordAudit(u.Username, "api_key.revoke", redactSecret(key), a.clientIP(r))
+		a.state.RecordAudit(u.Username, "api_key.revoke", target, a.clientIP(r))
 	}
 	http.Redirect(w, r, "/portal/api-keys", http.StatusFound)
 }
@@ -401,10 +403,10 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, r *http.Request, u Use
 	rows := make([]ClientTokenRow, 0, len(rawTokens))
 	for _, t := range rawTokens {
 		row := ClientTokenRow{ClientToken: t, CSRFToken: bp.CSRFToken}
-		connInfos := a.hub.ConnectedClientsByToken(t.Token)
+		connInfos := a.hub.ConnectedClientsByToken(t.TokenHash)
 		if len(connInfos) > 0 {
 			row.Status, row.StatusClass, row.StatusLabel = clientStatusBadge(len(connInfos), false)
-			mods := a.hub.ConnectedModels(t.Token)
+			mods := a.hub.ConnectedModels(t.TokenHash)
 			sort.Strings(mods)
 			for _, m := range mods {
 				row.Models = append(row.Models, ModelWithAliases{
@@ -478,7 +480,7 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, r *http.Request, u Use
 					Jobs:          jobs,
 				})
 			}
-		} else if ls := a.hub.LastSeenTime(t.Token); !ls.IsZero() {
+		} else if ls := a.hub.LastSeenTime(t.TokenHash); !ls.IsZero() {
 			row.Status, row.StatusClass, row.StatusLabel = clientStatusBadge(0, true)
 			row.LastSeen = humanTime(ls)
 		} else {
@@ -548,10 +550,11 @@ func (a *Admin) handleClientTokenCreate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	t := ClientToken{
-		Name:      name,
-		Owner:     owner,
-		Token:     tokVal,
-		CreatedAt: time.Now().UTC(),
+		Name:        name,
+		Owner:       owner,
+		TokenHash:   HashSecret(tokVal),
+		TokenPrefix: SecretPrefix(tokVal),
+		CreatedAt:   time.Now().UTC(),
 	}
 	if err := a.state.AddClientToken(t); err != nil {
 		a.renderClientTokens(w, r, u, "", err.Error())
@@ -567,12 +570,16 @@ func (a *Admin) handleClientTokenRevoke(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	token := r.FormValue("token")
-	if err := a.state.RevokeClientToken(u.Username, token, u.Role == "admin"); err != nil {
+	tokenHash := r.FormValue("token_hash")
+	target := ""
+	if t, ok := a.state.LookupClientTokenByHash(tokenHash); ok {
+		target = t.Owner + "/" + t.Name
+	}
+	if err := a.state.RevokeClientToken(u.Username, tokenHash, u.Role == "admin"); err != nil {
 		a.log.Warn("admin: client token revoke failed", "actor", u.Username, "error", err)
 	} else {
-		a.hub.CloseByToken(token)
-		a.state.RecordAudit(u.Username, "client_token.revoke", redactSecret(token), a.clientIP(r))
+		a.hub.CloseByToken(tokenHash)
+		a.state.RecordAudit(u.Username, "client_token.revoke", target, a.clientIP(r))
 	}
 	http.Redirect(w, r, "/portal/clients", http.StatusFound)
 }
@@ -583,17 +590,17 @@ func (a *Admin) handleClientUpdate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	token := r.FormValue("token")
-	if token == "" {
+	tokenHash := r.FormValue("token_hash")
+	if tokenHash == "" {
 		http.Error(w, "missing token", http.StatusBadRequest)
 		return
 	}
-	ct, ok := a.state.LookupClientToken(token)
+	ct, ok := a.state.LookupClientTokenByHash(tokenHash)
 	if !ok || (u.Role != "admin" && ct.Owner != u.Username) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	n := a.hub.TriggerClientUpdate(token)
+	n := a.hub.TriggerClientUpdate(tokenHash)
 	if n == 0 {
 		a.log.Warn("admin: trigger update - no clients connected", "actor", u.Username)
 	} else {
@@ -608,7 +615,7 @@ func (a *Admin) handleClientTokenOwnerSlots(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	token := r.FormValue("token")
+	tokenHash := r.FormValue("token_hash")
 	model := strings.TrimSpace(r.FormValue("model"))
 	if model == "" {
 		http.Error(w, "model is required", http.StatusBadRequest)
@@ -624,12 +631,12 @@ func (a *Admin) handleClientTokenOwnerSlots(w http.ResponseWriter, r *http.Reque
 		}
 		slots = n
 	}
-	if err := a.state.SetClientTokenOwnerSlots(u.Username, token, model, slots, u.Role == "admin"); err != nil {
+	if err := a.state.SetClientTokenOwnerSlots(u.Username, tokenHash, model, slots, u.Role == "admin"); err != nil {
 		a.log.Warn("admin: owner slots update rejected", "actor", u.Username, "error", err)
 		http.Redirect(w, r, "/portal/clients", http.StatusFound)
 		return
 	}
-	a.hub.SetClientOwnerSlots(token, model, slots)
+	a.hub.SetClientOwnerSlots(tokenHash, model, slots)
 	http.Redirect(w, r, "/portal/clients", http.StatusFound)
 }
 
@@ -1033,9 +1040,9 @@ func (a *Admin) handleAPIKeyPriority(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	key := r.FormValue("key")
+	keyHash := r.FormValue("key_hash")
 	priority := r.FormValue("priority")
-	if err := a.state.UpdateAPIKeyPriority(key, priority); err != nil {
+	if err := a.state.UpdateAPIKeyPriority(keyHash, priority); err != nil {
 		http.Error(w, "could not update priority: "+err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -1049,7 +1056,7 @@ func (a *Admin) handleAPIKeyMaxConcurrent(w http.ResponseWriter, r *http.Request
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	key := r.FormValue("key")
+	keyHash := r.FormValue("key_hash")
 	limitStr := strings.TrimSpace(r.FormValue("max_concurrent"))
 	var limit int
 	if limitStr != "" {
@@ -1060,7 +1067,7 @@ func (a *Admin) handleAPIKeyMaxConcurrent(w http.ResponseWriter, r *http.Request
 		}
 		limit = n
 	}
-	if err := a.state.UpdateAPIKeyMaxConcurrent(key, limit); err != nil {
+	if err := a.state.UpdateAPIKeyMaxConcurrent(keyHash, limit); err != nil {
 		http.Error(w, "could not update max_concurrent: "+err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -1102,7 +1109,8 @@ func (a *Admin) handleJobCancel(w http.ResponseWriter, r *http.Request) {
 	reqID := r.FormValue("request_id")
 	rec, ok := a.hub.LookupInFlightJob(reqID)
 	if ok {
-		ct, ctOK := a.state.LookupClientToken(rec.ClientToken)
+		// rec.ClientToken holds the token hash (the hub never sees plaintext).
+		ct, ctOK := a.state.LookupClientTokenByHash(rec.ClientToken)
 		isClientOwner := ctOK && ct.Owner == u.Username
 		if u.Role != "admin" && rec.Req.Owner != u.Username && !isClientOwner {
 			http.Error(w, "forbidden", http.StatusForbidden)
