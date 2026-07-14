@@ -7,7 +7,7 @@ helper to pass named arguments, e.g.:
   {{template "action-button" dict
       "Action" "/portal/api-keys/revoke"
       "CSRF" $.CSRFToken
-      "Fields" (dict "key" .Key)
+      "Fields" (dict "key_hash" .KeyHash)
       "Confirm" "Revoke this API key?"
       "Class" "btn-danger btn-xs icon-btn"
       "Label" "✕"

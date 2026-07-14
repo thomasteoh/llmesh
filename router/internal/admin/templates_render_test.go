@@ -70,7 +70,7 @@ func TestTemplatesRender(t *testing.T) {
 		d["NewKey"] = "sk-alice-abc123"
 		d["Users"] = []any{"alice", "bob"}
 		d["Keys"] = []any{map[string]any{
-			"Owner": "alice", "Label": "prod", "Key": "sk-alice-secretvalue1234567890",
+			"Owner": "alice", "Label": "prod", "KeyHash": "deadbeef", "KeyPrefix": "sk-alice-1a2b…",
 			"Priority": "high", "CreatedAt": now,
 		}}
 		renderPage(t, "api-keys", d)
@@ -89,14 +89,14 @@ func TestTemplatesRender(t *testing.T) {
 			"Models": "llama3", "InFlight": 1, "MaxConcurrent": 4, "Jobs": []any{job},
 		}
 		row := map[string]any{
-			"Name": "macbook", "Token": "ct-alice-xyz", "StatusClass": "connected",
+			"Name": "macbook", "TokenHash": "aabbcc", "TokenPrefix": "ct-alice-1a2b…", "StatusClass": "connected",
 			"StatusLabel": "● connected", "LastSeen": "", "IsRouter": false,
 			"CSRFToken":   "csrf",
 			"Connections": []any{conn},
 			"ModelSlots":  []any{map[string]any{"Name": "llama3", "OwnerSlots": 2}},
 		}
 		routerRow := map[string]any{
-			"Name": "downstream", "Token": "ct-alice-dwn", "StatusClass": "connected",
+			"Name": "downstream", "TokenHash": "ddeeff", "TokenPrefix": "ct-alice-3c4d…", "StatusClass": "connected",
 			"StatusLabel": "● connected", "IsRouter": true, "CSRFToken": "csrf",
 		}
 		d := base("clients")

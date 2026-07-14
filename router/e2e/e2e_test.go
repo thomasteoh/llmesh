@@ -69,10 +69,11 @@ func setupTestRouter(t *testing.T) (routerURL, apiKey, clientToken string, clean
 		t.Fatalf("gen API key: %v", keyErr)
 	}
 	st.AddAPIKey(admin.APIKey{
-		Label:    "test",
-		Owner:    "testuser",
-		Key:      apiKey,
-		Priority: "normal",
+		Label:     "test",
+		Owner:     "testuser",
+		KeyHash:   admin.HashSecret(apiKey),
+		KeyPrefix: admin.SecretPrefix(apiKey),
+		Priority:  "normal",
 	})
 
 	// Create client token for the mock client
@@ -81,9 +82,10 @@ func setupTestRouter(t *testing.T) (routerURL, apiKey, clientToken string, clean
 		t.Fatalf("gen client token: %v", keyErr)
 	}
 	st.AddClientToken(admin.ClientToken{
-		Name:  "test-client",
-		Owner: "testuser",
-		Token: clientToken,
+		Name:        "test-client",
+		Owner:       "testuser",
+		TokenHash:   admin.HashSecret(clientToken),
+		TokenPrefix: admin.SecretPrefix(clientToken),
 	})
 
 	// Wire components (same as main.go)
@@ -1164,10 +1166,11 @@ func TestE2E_AdminStateAPIKey(t *testing.T) {
 	}
 
 	st.AddAPIKey(admin.APIKey{
-		Label:    "test-key",
-		Owner:    "testowner",
-		Key:      key,
-		Priority: "high",
+		Label:     "test-key",
+		Owner:     "testowner",
+		KeyHash:   admin.HashSecret(key),
+		KeyPrefix: admin.SecretPrefix(key),
+		Priority:  "high",
 	})
 
 	if !st.ValidAPIKey(key) {
@@ -1189,17 +1192,18 @@ func TestE2E_AdminStateAPIKey(t *testing.T) {
 
 	// Duplicate key
 	err = st.AddAPIKey(admin.APIKey{
-		Label:    "test-key-dup",
-		Owner:    "testowner",
-		Key:      "sk-testowner-dup",
-		Priority: "normal",
+		Label:     "test-key-dup",
+		Owner:     "testowner",
+		KeyHash:   admin.HashSecret("sk-testowner-dup"),
+		KeyPrefix: admin.SecretPrefix("sk-testowner-dup"),
+		Priority:  "normal",
 	})
 	if err != nil {
 		t.Fatalf("AddAPIKey (non-duplicate): %v", err)
 	}
 
 	// Revoke
-	err = st.RevokeAPIKey("testowner", key, true)
+	err = st.RevokeAPIKey("testowner", admin.HashSecret(key), true)
 	if err != nil {
 		t.Fatalf("RevokeAPIKey: %v", err)
 	}
@@ -1220,9 +1224,10 @@ func TestE2E_AdminStateClientToken(t *testing.T) {
 
 	token := "ct-testowner-mock12345678"
 	st.AddClientToken(admin.ClientToken{
-		Name:  "test-client",
-		Owner: "testowner",
-		Token: token,
+		Name:        "test-client",
+		Owner:       "testowner",
+		TokenHash:   admin.HashSecret(token),
+		TokenPrefix: admin.SecretPrefix(token),
 	})
 
 	ct, ok := st.LookupClientToken(token)
@@ -1239,7 +1244,7 @@ func TestE2E_AdminStateClientToken(t *testing.T) {
 	}
 
 	// Revoke
-	err = st.RevokeClientToken("testowner", token, true)
+	err = st.RevokeClientToken("testowner", admin.HashSecret(token), true)
 	if err != nil {
 		t.Fatalf("RevokeClientToken: %v", err)
 	}
@@ -1339,7 +1344,7 @@ func TestE2E_SchedulerDispatch(t *testing.T) {
 	q := queue.New()
 	h := hub.New(slog.Default())
 	st, _ := admin.LoadState(t.TempDir() + "/state.json")
-	st.AddAPIKey(admin.APIKey{Key: "sk-user", Owner: "alice", Priority: "normal"})
+	st.AddAPIKey(admin.APIKey{KeyHash: admin.HashSecret("sk-user"), Owner: "alice", Priority: "normal"})
 
 	sched := scheduler.New(q, h, st, slog.Default())
 	sched.Start()

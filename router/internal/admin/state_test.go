@@ -2,6 +2,7 @@ package admin
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"path/filepath"
 	"testing"
@@ -60,14 +61,14 @@ func TestActiveAdminCount(t *testing.T) {
 
 func TestAPIKey_AddRevoke(t *testing.T) {
 	s, _ := LoadState(filepath.Join(t.TempDir(), "state.json"))
-	k := APIKey{Label: "prod", Owner: "alice", Key: "sk-alice-abc123", Priority: "high"}
+	k := testAPIKey("prod", "alice", "sk-alice-abc123", "high")
 	if err := s.AddAPIKey(k); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := s.LookupAPIKey("sk-alice-abc123"); !ok {
 		t.Fatal("key not found after add")
 	}
-	if err := s.RevokeAPIKey("alice", "sk-alice-abc123", false); err != nil {
+	if err := s.RevokeAPIKey("alice", HashSecret("sk-alice-abc123"), false); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := s.LookupAPIKey("sk-alice-abc123"); ok {
@@ -77,24 +78,24 @@ func TestAPIKey_AddRevoke(t *testing.T) {
 
 func TestAPIKey_LabelUniqueness(t *testing.T) {
 	s, _ := LoadState(filepath.Join(t.TempDir(), "state.json"))
-	s.AddAPIKey(APIKey{Label: "dev", Owner: "alice", Key: "sk-alice-1"})
-	if err := s.AddAPIKey(APIKey{Label: "dev", Owner: "alice", Key: "sk-alice-2"}); err == nil {
+	s.AddAPIKey(testAPIKey("dev", "alice", "sk-alice-1", "normal"))
+	if err := s.AddAPIKey(testAPIKey("dev", "alice", "sk-alice-2", "normal")); err == nil {
 		t.Fatal("expected error for duplicate label")
 	}
 	// different owner OK
-	if err := s.AddAPIKey(APIKey{Label: "dev", Owner: "bob", Key: "sk-bob-1"}); err != nil {
+	if err := s.AddAPIKey(testAPIKey("dev", "bob", "sk-bob-1", "normal")); err != nil {
 		t.Fatalf("different owner should be allowed: %v", err)
 	}
 }
 
 func TestClientToken_AddRevoke(t *testing.T) {
 	s, _ := LoadState(filepath.Join(t.TempDir(), "state.json"))
-	tok := ClientToken{Name: "mac", Owner: "alice", Token: "ct-alice-abc123"}
+	tok := testClientToken("mac", "alice", "ct-alice-abc123")
 	s.AddClientToken(tok)
 	if _, ok := s.LookupClientToken("ct-alice-abc123"); !ok {
 		t.Fatal("token not found after add")
 	}
-	s.RevokeClientToken("alice", "ct-alice-abc123", false)
+	s.RevokeClientToken("alice", HashSecret("ct-alice-abc123"), false)
 	if _, ok := s.LookupClientToken("ct-alice-abc123"); ok {
 		t.Fatal("token found after revoke")
 	}
@@ -102,7 +103,7 @@ func TestClientToken_AddRevoke(t *testing.T) {
 
 func TestValidAPIKey(t *testing.T) {
 	s, _ := LoadState(filepath.Join(t.TempDir(), "state.json"))
-	s.AddAPIKey(APIKey{Label: "x", Owner: "alice", Key: "sk-alice-xyz"})
+	s.AddAPIKey(testAPIKey("x", "alice", "sk-alice-xyz", "normal"))
 	if !s.ValidAPIKey("sk-alice-xyz") {
 		t.Fatal("expected valid")
 	}
@@ -113,7 +114,7 @@ func TestValidAPIKey(t *testing.T) {
 
 func TestPriorityFor(t *testing.T) {
 	s, _ := LoadState(filepath.Join(t.TempDir(), "state.json"))
-	s.AddAPIKey(APIKey{Label: "hi", Owner: "a", Key: "sk-a-hi", Priority: "high"})
+	s.AddAPIKey(testAPIKey("hi", "a", "sk-a-hi", "high"))
 	if p := s.PriorityFor("sk-a-hi"); p != types.PriorityHigh {
 		t.Fatalf("want PriorityHigh, got %v", p)
 	}
@@ -321,5 +322,93 @@ func TestCSRFConsume(t *testing.T) {
 	// Invalid token fails and state unchanged (token already consumed, so still fails)
 	if s.ConsumeCSRF("alice", "wrong-token") {
 		t.Fatal("expected invalid token to fail")
+	}
+}
+
+// --- Hashed-secret helpers and migration ---
+
+func testAPIKey(label, owner, plain, priority string) APIKey {
+	return APIKey{Label: label, Owner: owner, KeyHash: HashSecret(plain), KeyPrefix: SecretPrefix(plain), Priority: priority}
+}
+
+func testClientToken(name, owner, plain string) ClientToken {
+	return ClientToken{Name: name, Owner: owner, TokenHash: HashSecret(plain), TokenPrefix: SecretPrefix(plain)}
+}
+
+func TestSecretPrefix(t *testing.T) {
+	p := SecretPrefix("sk-alice-0123456789abcdef0123456789abcdef")
+	if p != "sk-alice-0123…" {
+		t.Fatalf("unexpected prefix %q", p)
+	}
+	if got := SecretPrefix("short"); got != "****" {
+		t.Fatalf("short secrets must be fully masked, got %q", got)
+	}
+}
+
+// TestMigrateSecretColumns verifies that a database created with the old
+// plaintext schema is rewritten to hashed storage on open, and that plaintext
+// lookups still resolve to the migrated rows.
+func TestMigrateSecretColumns(t *testing.T) {
+	dir := t.TempDir()
+	dbfile := filepath.Join(dir, "state.db")
+
+	db, err := sql.Open("sqlite", dbfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE api_keys (
+			key            TEXT PRIMARY KEY,
+			label          TEXT NOT NULL DEFAULT '',
+			owner          TEXT NOT NULL DEFAULT '',
+			priority       TEXT NOT NULL DEFAULT 'normal',
+			max_concurrent INTEGER NOT NULL DEFAULT 0,
+			created_at     TEXT NOT NULL DEFAULT '',
+			UNIQUE(owner, label)
+		);
+		CREATE TABLE client_tokens (
+			token       TEXT PRIMARY KEY,
+			name        TEXT NOT NULL DEFAULT '',
+			owner       TEXT NOT NULL DEFAULT '',
+			created_at  TEXT NOT NULL DEFAULT '',
+			owner_slots TEXT NOT NULL DEFAULT '{}',
+			UNIQUE(owner, name)
+		);
+		INSERT INTO api_keys (key, label, owner, priority, max_concurrent, created_at)
+			VALUES ('sk-alice-0123456789abcdef0123456789abcdef', 'prod', 'alice', 'high', 3, '2026-01-01T00:00:00Z');
+		INSERT INTO client_tokens (token, name, owner, created_at, owner_slots)
+			VALUES ('ct-bob-0123456789abcdef0123456789abcdef', 'mac', 'bob', '2026-01-01T00:00:00Z', '{"m1":2}');
+	`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	s, err := LoadState(dbfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	k, ok := s.LookupAPIKey("sk-alice-0123456789abcdef0123456789abcdef")
+	if !ok {
+		t.Fatal("migrated key not found by plaintext lookup")
+	}
+	if k.KeyHash != HashSecret("sk-alice-0123456789abcdef0123456789abcdef") {
+		t.Fatal("migrated key hash mismatch")
+	}
+	if k.KeyPrefix != "sk-alice-0123…" || k.Label != "prod" || k.Priority != "high" || k.MaxConcurrent != 3 {
+		t.Fatalf("migrated key fields wrong: %+v", k)
+	}
+
+	tok, ok := s.LookupClientToken("ct-bob-0123456789abcdef0123456789abcdef")
+	if !ok {
+		t.Fatal("migrated token not found by plaintext lookup")
+	}
+	if tok.Name != "mac" || tok.Owner != "bob" || tok.OwnerSlots["m1"] != 2 {
+		t.Fatalf("migrated token fields wrong: %+v", tok)
+	}
+
+	// The plaintext columns must be gone.
+	if tableHasColumn(s.db, "api_keys", "key") || tableHasColumn(s.db, "client_tokens", "token") {
+		t.Fatal("plaintext columns still present after migration")
 	}
 }

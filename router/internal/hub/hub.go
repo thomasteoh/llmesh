@@ -85,7 +85,7 @@ type Client struct {
 	inFlight               atomic.Int32
 	Name                   string
 	Owner                  string
-	Token                  string
+	Token                  string         // token hash (SHA-256 hex) — the hub never holds plaintext tokens
 	Version                string         // client version from register message
 	OwnerSlots             map[string]int // model → slots reserved for owner; 0/unset = fully shared
 	wg                     sync.WaitGroup // tracks writeLoop + readLoop goroutines

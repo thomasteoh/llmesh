@@ -300,12 +300,16 @@ func main() {
 	adminHandler.SetUpstreamReloader(func() { conn.Reload(ctx, adminHandler.State().GetUpstreamRouters()) })
 	adminHandler.SetConnectorStatus(conn.Connected)
 
+	// Persistent time-series usage tracking, flushed to the state DB.
+	usageRec := admin.NewUsageRecorder(adminHandler.State(), logring.NewLogger(sink, "admin", slog.LevelInfo))
+
 	apiHandler = &api.Handler{
 		Keys:              adminHandler.State(),
 		Models:            h,
 		Aliases:           adminHandler.State(),
 		Opts:              adminHandler.State(),
 		Stats:             reqStats,
+		Usage:             usageRec,
 		Queue:             q,
 		Correlation:       store,
 		Scheduler:         sched,
@@ -397,7 +401,9 @@ func main() {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		h.ServeWS(w, r, ct.Name, ct.Owner, token, ct.OwnerSlots)
+		// The hub is keyed by the token hash so plaintext secrets never sit in
+		// the connection registry or in-flight job records.
+		h.ServeWS(w, r, ct.Name, ct.Owner, ct.TokenHash, ct.OwnerSlots)
 	})
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		upstreamRouters := adminHandler.State().GetUpstreamRouters()
@@ -484,6 +490,9 @@ func main() {
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			log.Error("shutdown error", "error", err)
 		}
+
+		// Flush buffered usage counters after in-flight requests have settled.
+		usageRec.Close()
 	}()
 
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {

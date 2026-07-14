@@ -10,11 +10,18 @@
 <body class="auth-body">
 <div class="auth-card">
   <div class="brand">llmesh</div>
-  {{if .Error}}<div class="flash error">{{.Error}}</div>{{end}}
+  <h1>Sign in to the portal</h1>
+  {{if .Error}}<div class="form-error">{{.Error}}</div>{{end}}
   <form method="POST" action="/portal/login">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-    <label>Username<input name="username" type="text" autocomplete="username" autofocus></label>
-    <label>Password<input name="password" type="password" autocomplete="current-password"></label>
+    <div class="form-group">
+      <label for="username">Username</label>
+      <input id="username" name="username" type="text" autocomplete="username" autofocus>
+    </div>
+    <div class="form-group">
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password">
+    </div>
     <button type="submit">Sign in</button>
   </form>
 </div>

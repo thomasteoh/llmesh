@@ -1,4 +1,8 @@
 {{define "content"}}
+<div class="page-head">
+  <div class="page-title">API Keys</div>
+  <div class="page-sub">Credentials for callers of the inference API</div>
+</div>
 {{if .NewKey}}
 <div class="new-key-banner" role="alert">
   <p>&#10003; Key created. Copy it now &mdash; it will not be shown again.</p>
@@ -52,12 +56,12 @@
       {{range .Keys}}
       <tr>
         <td data-label="Label"><span class="muted">{{.Owner}}/</span>{{.Label}}</td>
-        <td data-label="Key" class="muted text-mono text-xs">{{truncate .Key 20}}&hellip; <button class="btn-copy" data-copy="{{.Key}}" title="Copy full key">&#10697;</button></td>
+        <td data-label="Key" class="muted text-mono text-xs">{{.KeyPrefix}}</td>
         <td data-label="Priority">
           {{if $.IsAdmin}}
           <form method="POST" action="/portal/api-keys/priority" class="inline-flex items-center gap-1">
             <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-            <input type="hidden" name="key" value="{{.Key}}">
+            <input type="hidden" name="key_hash" value="{{.KeyHash}}">
             <select name="priority" class="priority-inline priority-{{.Priority}}" title="Change priority">
               <option value="high"{{if eq .Priority "high"}} selected{{end}}>high</option>
               <option value="normal"{{if eq .Priority "normal"}} selected{{end}}>normal</option>
@@ -71,7 +75,7 @@
         </td>
         <td data-label="Created" class="muted">{{.CreatedAt.Format "2006-01-02"}}</td>
         <td class="cell-actions">
-          {{template "action-button" dict "Action" "/portal/api-keys/revoke" "CSRF" $.CSRFToken "Fields" (dict "key" .Key) "Confirm" "Revoke this API key? This cannot be undone." "Class" "btn-danger btn-xs icon-btn" "Label" "✕" "Title" "Revoke"}}
+          {{template "action-button" dict "Action" "/portal/api-keys/revoke" "CSRF" $.CSRFToken "Fields" (dict "key_hash" .KeyHash) "Confirm" "Revoke this API key? This cannot be undone." "Class" "btn-danger btn-xs icon-btn" "Label" "✕" "Title" "Revoke"}}
         </td>
       </tr>
       {{else}}

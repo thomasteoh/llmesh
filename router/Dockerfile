@@ -10,8 +10,8 @@ ARG INCLUDE_CLIENTS=true
 # Build router binary
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w -X main.version=${VERSION}" -o /router ./router/cmd/router/
 
-# Ensure /dist exists (clients or empty dir)
-RUN mkdir -p /dist
+# Ensure /dist and /downloads exist (clients or empty dirs)
+RUN mkdir -p /dist /downloads
 
 # Build client binaries for multiple platforms (only when INCLUDE_CLIENTS is true)
 RUN if [ "${INCLUDE_CLIENTS}" = "true" ]; then \
@@ -44,6 +44,12 @@ RUN mkdir -p /downloads
 COPY --from=builder /router /router
 COPY --from=builder /dist /downloads
 COPY --from=builder /downloads /downloads
+# Run as an unprivileged user. /data (the state database volume) is owned by
+# it so named volumes work out of the box; for bind mounts, chown the host
+# directory to uid 10001 (rootful docker) or map your user onto uid 10001
+# with `--userns=keep-id:uid=10001,gid=10001` (rootless podman).
+RUN adduser -D -u 10001 llmesh && mkdir -p /data && chown llmesh:llmesh /data
+USER llmesh
 # Assumes the default listen port (53002). If server.port is changed, override
 # with a compose-level healthcheck.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \

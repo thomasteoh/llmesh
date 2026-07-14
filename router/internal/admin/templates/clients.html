@@ -10,7 +10,7 @@
       {{range .ModelSlots}}
       <form method="POST" action="/portal/clients/owner-slots" class="form-inline" style="margin:2px 0;">
         <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-        <input type="hidden" name="token" value="{{$.Token}}">
+        <input type="hidden" name="token_hash" value="{{$.TokenHash}}">
         <input type="hidden" name="model" value="{{.Name}}">
         <span class="conn-name" style="min-width:140px;">{{.Name}}</span>
         {{if gt .OwnerSlots 0}}
@@ -75,6 +75,10 @@
 {{end}}
 
 {{define "content"}}
+<div class="page-head">
+  <div class="page-title">Clients</div>
+  <div class="page-sub">Worker tokens and live connections</div>
+</div>
 {{if .NewToken}}
 <div class="new-key-banner" role="alert">
   <p>&#10003; Token created. Copy it now &mdash; it will not be shown again.</p>
@@ -135,7 +139,7 @@
         <tbody>
           {{range .Tokens}}
           <tr>
-            <td data-label="Client">{{.Name}} <button class="btn-copy" data-copy="{{.Token}}" title="Copy token">&#10697;</button></td>
+            <td data-label="Client">{{.Name}} <span class="muted text-mono text-xs">{{.TokenPrefix}}</span></td>
             <td data-label="Status">{{template "status-badge" dict "Class" .StatusClass "Label" .StatusLabel}}</td>
             <td data-label="Last seen" class="muted">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
             <td class="cell-actions">
@@ -143,9 +147,9 @@
                 {{if .IsRouter}}
                 <span class="badge muted-badge" title="Downstream router — update not applicable">router</span>
                 {{else}}
-                {{template "action-button" dict "Action" "/portal/clients/update" "CSRF" $.CSRFToken "Fields" (dict "token" .Token) "Confirm" "Trigger in-place update for connected clients with this token?" "Class" "btn-secondary btn-xs icon-btn" "Label" "↑" "Title" "Trigger update"}}
+                {{template "action-button" dict "Action" "/portal/clients/update" "CSRF" $.CSRFToken "Fields" (dict "token_hash" .TokenHash) "Confirm" "Trigger in-place update for connected clients with this token?" "Class" "btn-secondary btn-xs icon-btn" "Label" "↑" "Title" "Trigger update"}}
                 {{end}}
-                {{template "action-button" dict "Action" "/portal/clients/revoke" "CSRF" $.CSRFToken "Fields" (dict "token" .Token) "Confirm" "Revoke this client token? The client will be disconnected and cannot reconnect." "Class" "btn-danger btn-xs icon-btn" "Label" "✕" "Title" "Revoke"}}
+                {{template "action-button" dict "Action" "/portal/clients/revoke" "CSRF" $.CSRFToken "Fields" (dict "token_hash" .TokenHash) "Confirm" "Revoke this client token? The client will be disconnected and cannot reconnect." "Class" "btn-danger btn-xs icon-btn" "Label" "✕" "Title" "Revoke"}}
               </div>
             </td>
           </tr>
@@ -175,7 +179,7 @@
     <tbody>
       {{range .Tokens}}
       <tr>
-        <td data-label="Name">{{.Name}} <button class="btn-copy" data-copy="{{.Token}}" title="Copy token">&#10697;</button></td>
+        <td data-label="Name">{{.Name}} <span class="muted text-mono text-xs">{{.TokenPrefix}}</span></td>
         <td data-label="Status">{{template "status-badge" dict "Class" .StatusClass "Label" .StatusLabel}}</td>
         <td data-label="Last seen" class="muted">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
         <td class="cell-actions">
@@ -183,9 +187,9 @@
             {{if .IsRouter}}
             <span class="badge muted-badge" title="Downstream router — update not applicable">router</span>
             {{else}}
-            {{template "action-button" dict "Action" "/portal/clients/update" "CSRF" $.CSRFToken "Fields" (dict "token" .Token) "Confirm" "Trigger in-place update for connected clients with this token?" "Class" "btn-secondary btn-xs icon-btn" "Label" "↑" "Title" "Trigger update"}}
+            {{template "action-button" dict "Action" "/portal/clients/update" "CSRF" $.CSRFToken "Fields" (dict "token_hash" .TokenHash) "Confirm" "Trigger in-place update for connected clients with this token?" "Class" "btn-secondary btn-xs icon-btn" "Label" "↑" "Title" "Trigger update"}}
             {{end}}
-            {{template "action-button" dict "Action" "/portal/clients/revoke" "CSRF" $.CSRFToken "Fields" (dict "token" .Token) "Confirm" "Revoke this client token? The client will be disconnected and cannot reconnect." "Class" "btn-danger btn-xs icon-btn" "Label" "✕" "Title" "Revoke"}}
+            {{template "action-button" dict "Action" "/portal/clients/revoke" "CSRF" $.CSRFToken "Fields" (dict "token_hash" .TokenHash) "Confirm" "Revoke this client token? The client will be disconnected and cannot reconnect." "Class" "btn-danger btn-xs icon-btn" "Label" "✕" "Title" "Revoke"}}
           </div>
         </td>
       </tr>

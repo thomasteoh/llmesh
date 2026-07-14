@@ -60,6 +60,12 @@ type StatsRecorder interface {
 	Record(model, user string, prompt, completion int)
 }
 
+// UsageRecorder persists per-request usage for time-series reporting.
+// Satisfied by *admin.UsageRecorder (duck typing — no import needed).
+type UsageRecorder interface {
+	RecordUsage(model, owner, keyLabel string, prompt, completion int)
+}
+
 // Canceller is satisfied by *hub.Hub (duck typing — no import needed).
 // CancelRequest broadcasts a cancel to the client holding the given requestID.
 type Canceller interface {
@@ -116,6 +122,7 @@ type Handler struct {
 	Aliases           AliasStore
 	Opts              OptStore // optional; nil = no request optimization
 	Stats             StatsRecorder
+	Usage             UsageRecorder
 	Queue             Enqueuer
 	Correlation       ResponseStore
 	Scheduler         Waker
@@ -179,7 +186,7 @@ func (h *Handler) cancelRequest(reqID string) {
 // Alias names are resolved to their first underlying model before recording
 // so stats always accumulate under the canonical model name.
 func (h *Handler) recordStats(req *types.InferenceRequest, usage *types.UsageInfo) {
-	if h.Stats == nil || usage == nil {
+	if usage == nil {
 		return
 	}
 	model := req.Model
@@ -188,7 +195,12 @@ func (h *Handler) recordStats(req *types.InferenceRequest, usage *types.UsageInf
 			model = targets[0]
 		}
 	}
-	h.Stats.Record(model, req.Owner, usage.PromptTokens, usage.CompletionTokens)
+	if h.Stats != nil {
+		h.Stats.Record(model, req.Owner, usage.PromptTokens, usage.CompletionTokens)
+	}
+	if h.Usage != nil {
+		h.Usage.RecordUsage(model, req.Owner, req.APIKeyLabel, usage.PromptTokens, usage.CompletionTokens)
+	}
 }
 
 func (h *Handler) enqueue(

@@ -30,7 +30,15 @@ llmesh is self-hosted and its security depends on how it is deployed:
   correctly. Leave it `false` when the router is directly exposed.
 - **Keep API keys and client tokens secret.** They authenticate callers and
   workers respectively; anyone holding one can use the corresponding capability.
+  The router stores only SHA-256 hashes of keys and tokens, so they cannot be
+  recovered from a stolen state database — but they are shown exactly once at
+  creation and travel in request headers, so protect them in transit and at
+  the caller.
 - **Restrict the local client API** (`local_api_addr`) to a loopback bind, or
   set `local_api_token`, since it serves unauthenticated inference otherwise.
 - **Serve the update endpoint over HTTPS.** The client only auto-updates over
   TLS and only installs sha256-verified, strictly-newer binaries.
+- **Containers run as non-root** (uid 10001) for the router, client, and shim
+  images. Keep it that way — for bind-mounted state, chown the host directory
+  to 10001 (rootful docker) or map your user with
+  `--userns=keep-id:uid=10001,gid=10001` (rootless podman).
