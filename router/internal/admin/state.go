@@ -236,6 +236,17 @@ func createSchema(db *sql.DB) error {
 			key   TEXT PRIMARY KEY,
 			value TEXT NOT NULL DEFAULT ''
 		);
+		CREATE TABLE IF NOT EXISTS usage_hourly (
+			bucket            TEXT NOT NULL,
+			owner             TEXT NOT NULL DEFAULT '',
+			key_label         TEXT NOT NULL DEFAULT '',
+			model             TEXT NOT NULL DEFAULT '',
+			requests          INTEGER NOT NULL DEFAULT 0,
+			prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+			completion_tokens INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (bucket, owner, key_label, model)
+		);
+		CREATE INDEX IF NOT EXISTS idx_usage_hourly_owner ON usage_hourly(owner, bucket);
 		CREATE TABLE IF NOT EXISTS audit_log (
 			id        INTEGER PRIMARY KEY AUTOINCREMENT,
 			at        TEXT NOT NULL,
