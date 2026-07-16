@@ -44,12 +44,20 @@ func genRandomKey(n int) string {
 // returns the httptest.Server URL, the generated API key, the generated client token,
 // and a cleanup function.
 func setupTestRouter(t *testing.T) (routerURL, apiKey, clientToken string, cleanup func()) {
+	routerURL, apiKey, clientToken, _, cleanup = setupTestRouterState(t)
+	return
+}
+
+// setupTestRouterState is setupTestRouter that also returns the admin State, for
+// tests that need to seed aliases, extra keys, or owner-slot reservations.
+func setupTestRouterState(t *testing.T) (routerURL, apiKey, clientToken string, st *admin.State, cleanup func()) {
 	t.Helper()
 	dir := t.TempDir()
 	statePath := dir + "/state.json"
 
 	// Create admin state with test user, API key, and client token
-	st, err := admin.LoadState(statePath)
+	var err error
+	st, err = admin.LoadState(statePath)
 	if err != nil {
 		t.Fatalf("load state: %v", err)
 	}
@@ -139,6 +147,7 @@ func setupTestRouter(t *testing.T) (routerURL, apiKey, clientToken string, clean
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/models", apiHandler.ModelList())
+	mux.HandleFunc("/v1/models/slots", apiHandler.ModelSlots())
 	mux.HandleFunc("/v1/chat/completions", apiHandler.OpenAI())
 	mux.HandleFunc("/v1/messages", apiHandler.Anthropic())
 	mux.HandleFunc("/v1/responses", apiHandler.Responses())
@@ -944,6 +953,168 @@ func TestE2E_ModelList(t *testing.T) {
 		t.Errorf("expected object=list, got %v", modelList["object"])
 	}
 	t.Logf("model list OK: %v", modelList)
+}
+
+// TestE2E_ModelSlots verifies the non-standard GET /v1/models/slots endpoint:
+// auth is required, only models the key can obtain a slot on are returned, and
+// aliases resolving to a model are listed alongside it.
+func TestE2E_ModelSlots(t *testing.T) {
+	routerURL, apiKey, clientToken, st, cleanup := setupTestRouterState(t)
+	defer cleanup()
+
+	// Alias "fast" → model-a, to verify alias inversion in the response.
+	if err := st.AddAlias("fast", "model-a"); err != nil {
+		t.Fatalf("add alias: %v", err)
+	}
+
+	models := []types.ModelInfo{
+		{Name: "model-a", ContextSize: 4096},
+		{Name: "model-b", ContextSize: 8192},
+	}
+	conn := connectMockClient(t, routerURL, clientToken, models) // MaxConcurrent 4, owner testuser
+	defer conn.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	// No auth → 401.
+	resp, err := http.Get(routerURL + "/v1/models/slots")
+	if err != nil {
+		t.Fatalf("GET /v1/models/slots: %v", err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401 without auth, got %d", resp.StatusCode)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	// With auth → 200. Caller owns the client, so both models expose all 4 slots.
+	req, _ := http.NewRequest("GET", routerURL+"/v1/models/slots", nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	resp2, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /v1/models/slots with auth: %v", err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp2.Body)
+		t.Fatalf("expected 200, got %d: %s", resp2.StatusCode, body)
+	}
+
+	var out struct {
+		Object string `json:"object"`
+		Data   []struct {
+			Model          string   `json:"model"`
+			AvailableSlots int      `json:"available_slots"`
+			TotalSlots     int      `json:"total_slots"`
+			ContextWindow  int      `json:"context_window"`
+			Aliases        []string `json:"aliases"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp2.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Object != "list" {
+		t.Errorf("object = %q, want list", out.Object)
+	}
+	byModel := map[string]struct {
+		avail, total, ctx int
+		aliases           []string
+	}{}
+	for _, d := range out.Data {
+		byModel[d.Model] = struct {
+			avail, total, ctx int
+			aliases           []string
+		}{d.AvailableSlots, d.TotalSlots, d.ContextWindow, d.Aliases}
+	}
+	a, ok := byModel["model-a"]
+	if !ok {
+		t.Fatalf("model-a missing from response: %+v", out.Data)
+	}
+	if a.avail != 4 || a.total != 4 {
+		t.Errorf("model-a: avail=%d total=%d, want 4/4", a.avail, a.total)
+	}
+	if a.ctx != 4096 {
+		t.Errorf("model-a context_window = %d, want 4096", a.ctx)
+	}
+	if len(a.aliases) != 1 || a.aliases[0] != "fast" {
+		t.Errorf("model-a aliases = %v, want [fast]", a.aliases)
+	}
+	if _, ok := byModel["model-b"]; !ok {
+		t.Errorf("model-b missing from response: %+v", out.Data)
+	}
+	// The alias name itself must not appear as its own model entry.
+	if _, ok := byModel["fast"]; ok {
+		t.Errorf("alias 'fast' should not be a separate model entry")
+	}
+}
+
+// TestE2E_ModelSlotsOwnerReservation verifies that a caller who is not the
+// client owner is excluded from a model whose slots are fully reserved for the
+// owner, and included (with the reservation deducted) when they are not.
+func TestE2E_ModelSlotsOwnerReservation(t *testing.T) {
+	routerURL, _, _, st, cleanup := setupTestRouterState(t)
+	defer cleanup()
+
+	// A second user "outsider" with their own API key.
+	st.AddUser(admin.User{Username: "outsider", PasswordHash: "x", Role: "member"})
+	outsiderKey, err := admin.GenAPIKeyValue("outsider")
+	if err != nil {
+		t.Fatalf("gen key: %v", err)
+	}
+	st.AddAPIKey(admin.APIKey{
+		Label: "k", Owner: "outsider",
+		KeyHash: admin.HashSecret(outsiderKey), KeyPrefix: admin.SecretPrefix(outsiderKey),
+		Priority: "normal",
+	})
+
+	// A client token owned by testuser, reserving all 4 slots of "reserved-model"
+	// for its owner and leaving "shared-model" fully shared.
+	ownerToken, err := admin.GenClientTokenValue("testuser")
+	if err != nil {
+		t.Fatalf("gen token: %v", err)
+	}
+	st.AddClientToken(admin.ClientToken{
+		Name: "reserving", Owner: "testuser",
+		TokenHash: admin.HashSecret(ownerToken), TokenPrefix: admin.SecretPrefix(ownerToken),
+		OwnerSlots: map[string]int{"reserved-model": 4},
+	})
+
+	models := []types.ModelInfo{
+		{Name: "reserved-model", ContextSize: 4096},
+		{Name: "shared-model", ContextSize: 4096},
+	}
+	conn := connectMockClient(t, routerURL, ownerToken, models) // MaxConcurrent 4
+	defer conn.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	req, _ := http.NewRequest("GET", routerURL+"/v1/models/slots", nil)
+	req.Header.Set("Authorization", "Bearer "+outsiderKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	var out struct {
+		Data []struct {
+			Model          string `json:"model"`
+			AvailableSlots int    `json:"available_slots"`
+		} `json:"data"`
+	}
+	json.NewDecoder(resp.Body).Decode(&out)
+	seen := map[string]int{}
+	for _, d := range out.Data {
+		seen[d.Model] = d.AvailableSlots
+	}
+	// reserved-model is fully reserved for testuser → outsider has no access.
+	if _, ok := seen["reserved-model"]; ok {
+		t.Errorf("reserved-model should be excluded for non-owner, got %v", out.Data)
+	}
+	// shared-model is available to the outsider.
+	if seen["shared-model"] != 4 {
+		t.Errorf("shared-model avail = %d, want 4", seen["shared-model"])
+	}
 }
 
 // TestE2E_RequestIDCorrelation verifies that chunks sent by the client

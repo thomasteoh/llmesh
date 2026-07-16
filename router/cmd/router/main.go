@@ -387,6 +387,7 @@ func main() {
 		http.FileServer(http.Dir("/downloads")).ServeHTTP(w, r)
 	})))
 	mux.HandleFunc("/v1/models", apiHandler.ModelList())
+	mux.HandleFunc("/v1/models/slots", apiHandler.ModelSlots())
 	mux.HandleFunc("/v1/chat/completions", apiHandler.OpenAI())
 	mux.HandleFunc("/v1/messages", apiHandler.Anthropic())
 	mux.HandleFunc("/v1/responses", apiHandler.Responses())

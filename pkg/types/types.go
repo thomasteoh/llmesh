@@ -100,6 +100,19 @@ type ModelInfo struct {
 	ContextTrain int    `json:"context_train,omitempty"` // n_ctx_train: model's training context length; 0 = unknown
 }
 
+// ModelSlots reports live inference-slot availability for one model from the
+// perspective of a particular caller (owner). AvailableSlots is how many slots
+// the caller could acquire right now; TotalSlots is the caller-usable capacity
+// ceiling. Both account for per-client owner-slot reservations, so they mirror
+// what the scheduler would actually grant that caller. ContextSize is the
+// largest configured context window advertised for the model.
+type ModelSlots struct {
+	Model          string
+	AvailableSlots int
+	TotalSlots     int
+	ContextSize    int
+}
+
 // RegisterMsg is sent by the client on connect to advertise capabilities.
 type RegisterMsg struct {
 	Type          string      `json:"type"` // "register"

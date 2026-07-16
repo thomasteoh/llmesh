@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -43,6 +44,7 @@ type APIKeyStore interface {
 type ModelStore interface {
 	ActiveModels() []string
 	ActiveModelInfos() []types.ModelInfo
+	AvailableSlotsByModel(owner string) []types.ModelSlots
 }
 
 // AliasStore is satisfied by *admin.State (duck typing — no import needed).
@@ -778,6 +780,65 @@ func (h *Handler) ModelList() http.HandlerFunc {
 				})
 			}
 		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"object": "list",
+			"data":   entries,
+		})
+	}
+}
+
+// ModelSlots handles GET /v1/models/slots, a non-standard (llmesh-specific)
+// endpoint returning each model the caller can currently obtain a slot on,
+// with the number of available slots. Access is governed by per-client
+// owner-slot reservations: a model is returned only when the caller's key can
+// acquire at least one slot on it right now. Aliases that resolve to a listed
+// model are included so callers know every name that reaches that capacity.
+func (h *Handler) ModelSlots() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		key := ExtractBearer(r)
+		if key == "" || !h.Keys.ValidAPIKey(key) {
+			unauthorised(w)
+			return
+		}
+		owner := h.Keys.OwnerFor(key)
+		slots := h.Models.AvailableSlotsByModel(owner)
+
+		// Invert alias→targets into model→[]aliases.
+		aliasesByModel := make(map[string][]string)
+		if h.Aliases != nil {
+			for alias, targets := range h.Aliases.AliasMap() {
+				for _, t := range targets {
+					aliasesByModel[t] = append(aliasesByModel[t], alias)
+				}
+			}
+		}
+
+		type slotEntry struct {
+			Model          string   `json:"model"`
+			AvailableSlots int      `json:"available_slots"`
+			TotalSlots     int      `json:"total_slots"`
+			ContextWindow  int      `json:"context_window,omitempty"`
+			Aliases        []string `json:"aliases,omitempty"`
+		}
+		entries := make([]slotEntry, 0, len(slots))
+		for _, s := range slots {
+			// Only surface models the key can actually use right now.
+			if s.AvailableSlots <= 0 {
+				continue
+			}
+			al := aliasesByModel[s.Model]
+			sort.Strings(al)
+			entries = append(entries, slotEntry{
+				Model:          s.Model,
+				AvailableSlots: s.AvailableSlots,
+				TotalSlots:     s.TotalSlots,
+				ContextWindow:  s.ContextSize,
+				Aliases:        al,
+			})
+		}
+		sort.Slice(entries, func(i, j int) bool { return entries[i].Model < entries[j].Model })
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{

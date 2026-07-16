@@ -431,11 +431,23 @@ Replace `[HOST]` and `[PORT]` with your router's address (port default: `53002`)
 | `POST /v1/chat/completions` | OpenAI chat completions (streaming + non-streaming) |
 | `POST /v1/messages` | Anthropic messages API |
 | `POST /v1/responses` | OpenAI Responses API |
-| `GET /v1/models` | List available models |
+| `GET /v1/models` | List available models (OpenAI-compatible) |
+| `GET /v1/models/slots` | llmesh-specific: models the key can currently get a slot on, with available slot counts |
 | `GET /health` | Health check |
 | `GET /portal` | Admin dashboard |
 
 All `/v1/*` endpoints require `Authorization: Bearer <api-key>`.
+
+`GET /v1/models/slots` returns only the models the calling key can obtain a slot on **right now**, so it reflects live capacity and per-client owner-slot reservations rather than the full catalogue. Each entry reports `available_slots` (slots the key could acquire immediately), `total_slots` (the key's usable capacity ceiling), `context_window`, and any `aliases` that resolve to the model:
+
+```json
+{
+  "object": "list",
+  "data": [
+    { "model": "llama3", "available_slots": 3, "total_slots": 4, "context_window": 8192, "aliases": ["fast"] }
+  ]
+}
+```
 
 ---
 
