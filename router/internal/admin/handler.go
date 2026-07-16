@@ -1,7 +1,9 @@
 package admin
 
 import (
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"fmt"
 	"html/template"
 	"log/slog"
@@ -34,6 +36,10 @@ type Admin struct {
 	log           *slog.Logger
 	sink          *logring.Sink
 	rateLimiter   *rateLimiter
+	// assetVersion is a short content hash of the embedded static assets. It is
+	// appended to asset URLs (?v=) so a redeploy that changes the CSS/JS forces
+	// browsers to fetch the new file instead of serving a stale cached copy.
+	assetVersion string
 	// trustProxy enables honouring X-Forwarded-For/Proto. Off by default so a
 	// direct client cannot spoof its IP to bypass rate limiting.
 	trustProxy bool
@@ -79,6 +85,7 @@ func New(statePath string, h *hub.Hub, q *queue.Queue, reqCount func() int64, s 
 		sink:          sink,
 		rateLimiter:   newRateLimiter(1*time.Minute, 5*time.Minute),
 	}
+	a.assetVersion = assetVersion()
 	if err := a.parseTemplates(); err != nil {
 		return nil, err
 	}
@@ -91,8 +98,28 @@ func (a *Admin) State() *State {
 	return a.state
 }
 
+// assetVersion returns a short content hash over the embedded static assets.
+// Any change to a served asset changes the hash, which invalidates the
+// versioned URL and any cached copy keyed by it.
+func assetVersion() string {
+	h := sha256.New()
+	for _, name := range []string{"static/admin.css", "static/admin.js"} {
+		b, err := adminFS.ReadFile(name)
+		if err != nil {
+			continue
+		}
+		h.Write(b)
+	}
+	return hex.EncodeToString(h.Sum(nil))[:12]
+}
+
 func (a *Admin) parseTemplates() error {
 	funcMap := template.FuncMap{
+		// asset returns a cache-busting URL for an embedded static file, e.g.
+		// {{asset "admin.css"}} -> /portal/static/admin.css?v=<hash>.
+		"asset": func(name string) string {
+			return "/portal/static/" + name + "?v=" + a.assetVersion
+		},
 		"truncate": func(s string, n int) string {
 			if len(s) <= n {
 				return s
@@ -145,8 +172,19 @@ func (a *Admin) parseTemplates() error {
 func (a *Admin) registerRoutes() {
 	mux := http.NewServeMux()
 
-	// Static assets
-	mux.Handle("/portal/static/", http.StripPrefix("/portal", http.FileServer(http.FS(adminFS))))
+	// Static assets. A content-hash ETag lets browsers revalidate cheaply, and
+	// versioned (?v=) requests are marked immutable so a redeploy that changes
+	// an asset serves fresh bytes under a new URL rather than a stale cache.
+	staticFS := http.StripPrefix("/portal", http.FileServer(http.FS(adminFS)))
+	mux.Handle("/portal/static/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"`+a.assetVersion+`"`)
+		if r.URL.Query().Get("v") != "" {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		staticFS.ServeHTTP(w, r)
+	}))
 
 	// Auth (no session required)
 	mux.HandleFunc("/portal/login", a.requireRateLimit(a.handleLogin, 5))

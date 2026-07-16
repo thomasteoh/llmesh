@@ -5,7 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{{.Name}}</title>
-  <link rel="stylesheet" href="/portal/static/admin.css">
+  <link rel="stylesheet" href="{{asset "admin.css"}}">
   <script>(function(){var t;try{t=localStorage.getItem('llmesh-theme');}catch(e){}if(!t&&window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches)t='light';if(t)document.documentElement.setAttribute('data-theme',t);})();</script>
 </head>
 <body>
@@ -44,6 +44,6 @@
     <main>{{block "content" .}}{{end}}</main>
   </div>
 </div>
-<script src="/portal/static/admin.js"></script>
+<script src="{{asset "admin.js"}}"></script>
 </body>
 </html>
