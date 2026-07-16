@@ -564,6 +564,88 @@ func (h *Hub) AvailableClientList() []ClientSummary {
 	return out
 }
 
+// AvailableSlotsByModel reports, for every model currently served by a
+// connected client, how many inference slots the given owner could acquire
+// right now and the caller-usable capacity ceiling. It mirrors the scheduler's
+// dispatch accounting: an owner may take any free slot on its own clients,
+// while a non-owner is bounded by each client's per-model OwnerSlots
+// reservation. Models served only by clients exclusively reserved to other
+// owners yield TotalSlots == 0 for this caller (no access).
+func (h *Hub) AvailableSlotsByModel(owner string) []types.ModelSlots {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	type acc struct {
+		available int
+		total     int
+		ctx       int
+	}
+	byModel := make(map[string]*acc)
+	at := func(model string) *acc {
+		a := byModel[model]
+		if a == nil {
+			a = &acc{}
+			byModel[model] = a
+		}
+		return a
+	}
+
+	for _, c := range h.clients {
+		if c.Models == nil {
+			continue // not yet registered
+		}
+		free := c.MaxConcurrent - c.InFlight()
+		if free < 0 {
+			free = 0
+		}
+		for m := range c.Models {
+			a := at(m)
+			if c.ModelContextSizes[m] > a.ctx {
+				a.ctx = c.ModelContextSizes[m]
+			}
+			if owner == c.Owner {
+				// The client owner is not subject to its own reservation and may
+				// use any free slot, whoever currently holds the others.
+				a.total += c.MaxConcurrent
+				a.available += free
+				continue
+			}
+			// Non-owner: capped by MaxConcurrent minus slots reserved for the
+			// client's owner on this model, then by how many non-owner jobs are
+			// already running, then by the overall free-slot count.
+			nonOwnerCap := c.MaxConcurrent - c.OwnerSlots[m]
+			if nonOwnerCap <= 0 {
+				continue // exclusively reserved for the client owner
+			}
+			a.total += nonOwnerCap
+			used := 0
+			for id := range h.jobsByClient[c.ID] {
+				if rec, ok := h.jobs[id]; ok && rec.Req.Owner != c.Owner && rec.Req.Model == m {
+					used++
+				}
+			}
+			remaining := nonOwnerCap - used
+			if remaining > free {
+				remaining = free
+			}
+			if remaining > 0 {
+				a.available += remaining
+			}
+		}
+	}
+
+	out := make([]types.ModelSlots, 0, len(byModel))
+	for m, a := range byModel {
+		out = append(out, types.ModelSlots{
+			Model:          m,
+			AvailableSlots: a.available,
+			TotalSlots:     a.total,
+			ContextSize:    a.ctx,
+		})
+	}
+	return out
+}
+
 // MaxContextForModel returns the largest n_ctx reported by any connected and registered
 // client serving model (or any of its aliases). Checks all clients, not just available
 // ones, so a busy client with large context still counts. Returns 0 if no client is

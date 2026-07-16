@@ -483,3 +483,114 @@ func TestCancelRequest_NoopForUnknown(t *testing.T) {
 		t.Errorf("InFlight = %d, want 0 after CancelRequest on unknown ID", client.InFlight())
 	}
 }
+
+// addSlotClient registers a fake client directly in the hub for slot-accounting
+// tests, bypassing the WebSocket handshake.
+func addSlotClient(h *Hub, id, owner string, maxConc int, models []string, ownerSlots map[string]int, ctx map[string]int) {
+	mset := make(map[string]bool, len(models))
+	for _, m := range models {
+		mset[m] = true
+	}
+	c := &Client{
+		ID:                id,
+		Owner:             owner,
+		Token:             "hash-" + id,
+		MaxConcurrent:     maxConc,
+		Models:            mset,
+		OwnerSlots:        ownerSlots,
+		ModelContextSizes: ctx,
+	}
+	h.mu.Lock()
+	h.clients[id] = c
+	h.mu.Unlock()
+}
+
+// addSlotJob tracks a fake in-flight job on a client for the given model/owner.
+func addSlotJob(h *Hub, clientID, reqID, owner, model string) {
+	h.IncrInFlight(clientID)
+	h.mu.Lock()
+	h.jobs[reqID] = InFlightRecord{
+		ClientID: clientID,
+		Req:      types.InferenceRequest{ID: reqID, Owner: owner, Model: model},
+	}
+	if h.jobsByClient[clientID] == nil {
+		h.jobsByClient[clientID] = make(map[string]struct{})
+	}
+	h.jobsByClient[clientID][reqID] = struct{}{}
+	h.mu.Unlock()
+}
+
+func findSlots(t *testing.T, list []types.ModelSlots, model string) types.ModelSlots {
+	t.Helper()
+	for _, s := range list {
+		if s.Model == model {
+			return s
+		}
+	}
+	t.Fatalf("model %q not found in slot list %+v", model, list)
+	return types.ModelSlots{}
+}
+
+func TestAvailableSlotsByModel(t *testing.T) {
+	h := New(slog.Default())
+	// alice's client: 4 slots, 2 reserved for alice on llama3, ctx 8192.
+	addSlotClient(h, "ca", "alice", 4, []string{"llama3"}, map[string]int{"llama3": 2}, map[string]int{"llama3": 8192})
+	// bob's client: 2 shared slots serving llama3 + qwen.
+	addSlotClient(h, "cb", "bob", 2, []string{"llama3", "qwen"}, nil, map[string]int{"llama3": 4096, "qwen": 2048})
+	// dave's client: 1 slot fully reserved for dave (exclusive).
+	addSlotClient(h, "cd", "dave", 1, []string{"secret"}, map[string]int{"secret": 1}, nil)
+
+	// ── alice (owns ca) ──
+	// llama3: ca (own) → free 4, total 4; cb (non-owner) → cap 2, avail 2, total 2.
+	al := h.AvailableSlotsByModel("alice")
+	l := findSlots(t, al, "llama3")
+	if l.AvailableSlots != 6 || l.TotalSlots != 6 {
+		t.Errorf("alice llama3: got avail=%d total=%d, want 6/6", l.AvailableSlots, l.TotalSlots)
+	}
+	if l.ContextSize != 8192 {
+		t.Errorf("alice llama3 ctx: got %d, want 8192", l.ContextSize)
+	}
+	q := findSlots(t, al, "qwen")
+	if q.AvailableSlots != 2 || q.TotalSlots != 2 {
+		t.Errorf("alice qwen: got avail=%d total=%d, want 2/2", q.AvailableSlots, q.TotalSlots)
+	}
+	// secret is exclusive to dave: alice has no access.
+	s := findSlots(t, al, "secret")
+	if s.AvailableSlots != 0 || s.TotalSlots != 0 {
+		t.Errorf("alice secret: got avail=%d total=%d, want 0/0 (no access)", s.AvailableSlots, s.TotalSlots)
+	}
+
+	// ── carol (owns nothing) ──
+	// llama3: ca (non-owner) → cap 4-2=2; cb → 2. avail 4, total 4.
+	cl := h.AvailableSlotsByModel("carol")
+	l = findSlots(t, cl, "llama3")
+	if l.AvailableSlots != 4 || l.TotalSlots != 4 {
+		t.Errorf("carol llama3: got avail=%d total=%d, want 4/4", l.AvailableSlots, l.TotalSlots)
+	}
+
+	// ── dave (owns cd, exclusive) ──
+	dl := h.AvailableSlotsByModel("dave")
+	sec := findSlots(t, dl, "secret")
+	if sec.AvailableSlots != 1 || sec.TotalSlots != 1 {
+		t.Errorf("dave secret: got avail=%d total=%d, want 1/1", sec.AvailableSlots, sec.TotalSlots)
+	}
+
+	// ── in-flight reduces availability ──
+	// A non-owner (carol) job on ca for llama3 consumes 1 of alice's reserved-free
+	// pool: ca free drops to 3 (alice sees 3), and carol's non-owner remaining on
+	// ca drops to 1 (cap 2 - 1 used).
+	addSlotJob(h, "ca", "job1", "carol", "llama3")
+
+	al = h.AvailableSlotsByModel("alice")
+	l = findSlots(t, al, "llama3")
+	// ca: free 3 (owner uses any free); cb: 2. → 5.
+	if l.AvailableSlots != 5 {
+		t.Errorf("alice llama3 after 1 job: got avail=%d, want 5", l.AvailableSlots)
+	}
+	cl = h.AvailableSlotsByModel("carol")
+	l = findSlots(t, cl, "llama3")
+	// ca: cap 2 - 1 used = 1, min(1, free 3) = 1; cb: 2. → 3.
+	if l.AvailableSlots != 3 {
+		t.Errorf("carol llama3 after 1 job: got avail=%d, want 3", l.AvailableSlots)
+	}
+}
