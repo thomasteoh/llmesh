@@ -12,6 +12,7 @@ import (
 // the same template features (notably the dict helper used by partials).
 func testFuncMap() template.FuncMap {
 	return template.FuncMap{
+		"asset": func(name string) string { return "/portal/static/" + name + "?v=test" },
 		"truncate": func(s string, n int) string {
 			if len(s) <= n {
 				return s
