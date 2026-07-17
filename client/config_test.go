@@ -45,6 +45,10 @@ func TestConfigValidate(t *testing.T) {
 			RouterURL: "http://x", RouterToken: "tok",
 			Models: []ModelConfig{{Name: "m", Endpoint: "not-a-url"}},
 		}},
+		{"model empty header name", Config{
+			RouterURL: "http://x", RouterToken: "tok",
+			Models: []ModelConfig{{Name: "m", Endpoint: "http://localhost:8081", Headers: map[string]string{"  ": "v"}}},
+		}},
 	}
 
 	for i := range cases {
@@ -85,6 +89,47 @@ func TestLoadConfig_MaxConcurrent(t *testing.T) {
 	}
 	if cfg.MaxConcurrent != 8 {
 		t.Errorf("explicit max_concurrent = %d, want 8", cfg.MaxConcurrent)
+	}
+}
+
+func TestRequestHeaders(t *testing.T) {
+	// Nothing configured → nil (no headers added).
+	if h := (ModelConfig{Endpoint: "http://x"}).RequestHeaders(); h != nil {
+		t.Errorf("RequestHeaders with no auth = %v, want nil", h)
+	}
+
+	// api_key → bearer Authorization.
+	h := (ModelConfig{APIKey: "sk-123"}).RequestHeaders()
+	if got := h.Get("Authorization"); got != "Bearer sk-123" {
+		t.Errorf("Authorization = %q, want %q", got, "Bearer sk-123")
+	}
+
+	// Custom headers are included, and override the derived Authorization.
+	h = (ModelConfig{
+		APIKey:  "sk-123",
+		Headers: map[string]string{"X-Api-Key": "gw", "Authorization": "Custom xyz"},
+	}).RequestHeaders()
+	if got := h.Get("X-Api-Key"); got != "gw" {
+		t.Errorf("X-Api-Key = %q, want gw", got)
+	}
+	if got := h.Get("Authorization"); got != "Custom xyz" {
+		t.Errorf("Authorization override = %q, want %q", got, "Custom xyz")
+	}
+}
+
+func TestHeadersFor(t *testing.T) {
+	cfg := Config{Models: []ModelConfig{
+		{Name: "auth", Endpoint: "http://localhost:8081", APIKey: "sk-1"},
+		{Name: "open", Endpoint: "http://localhost:8082"},
+	}}
+	if got := cfg.HeadersFor("auth").Get("Authorization"); got != "Bearer sk-1" {
+		t.Errorf("HeadersFor(auth) Authorization = %q, want Bearer sk-1", got)
+	}
+	if h := cfg.HeadersFor("open"); h != nil {
+		t.Errorf("HeadersFor(open) = %v, want nil", h)
+	}
+	if h := cfg.HeadersFor("unknown"); h != nil {
+		t.Errorf("HeadersFor(unknown) = %v, want nil", h)
 	}
 }
 

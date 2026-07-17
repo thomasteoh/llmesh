@@ -123,6 +123,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		s.st.IncrDone()
 	}()
 
+	// Backend headers (bearer api_key and/or custom headers) configured for this
+	// model, injected after the caller's local-API token is stripped.
+	backendHeaders := s.cfg.HeadersFor(envelope.Model)
+
 	proxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
 			req.URL.Scheme = target.Scheme
@@ -133,6 +137,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			req.Body = io.NopCloser(bytes.NewReader(body))
 			req.ContentLength = int64(len(body))
 			req.Header.Del("Authorization")
+			for k, vs := range backendHeaders {
+				for _, v := range vs {
+					req.Header.Set(k, v)
+				}
+			}
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			if r.Context().Err() != nil {

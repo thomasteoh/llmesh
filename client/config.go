@@ -2,6 +2,7 @@ package client
 
 import (
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
@@ -17,6 +18,37 @@ type ModelConfig struct {
 	Name         string `yaml:"name,omitempty"`
 	Endpoint     string `yaml:"endpoint"`
 	ChatTemplate string `yaml:"chat_template,omitempty"` // overrides model's built-in Jinja template
+
+	// APIKey, when set, is sent to the endpoint as "Authorization: Bearer <key>"
+	// on every request. Use for backends that require authentication (vLLM,
+	// LM Studio with an API key, llama.cpp --api-key, hosted OpenAI-compatible
+	// servers). Empty means no Authorization header is added.
+	APIKey string `yaml:"api_key,omitempty"`
+
+	// Headers are extra HTTP headers sent to the endpoint on every request. Use
+	// for gateways that need custom headers (e.g. "x-api-key", tenant routing).
+	// A header set here overrides one llmesh would otherwise send (including
+	// Authorization, so a non-standard auth header can replace the bearer scheme).
+	Headers map[string]string `yaml:"headers,omitempty"`
+}
+
+// RequestHeaders returns the HTTP headers to attach to every request sent to
+// this model's endpoint: an Authorization bearer header derived from APIKey (if
+// set), plus any configured custom Headers. Custom headers are applied last so
+// they take precedence over the derived Authorization header. Returns nil when
+// nothing is configured, so callers can add it without allocating.
+func (m ModelConfig) RequestHeaders() http.Header {
+	if m.APIKey == "" && len(m.Headers) == 0 {
+		return nil
+	}
+	h := http.Header{}
+	if m.APIKey != "" {
+		h.Set("Authorization", "Bearer "+m.APIKey)
+	}
+	for k, v := range m.Headers {
+		h.Set(k, v)
+	}
+	return h
 }
 
 type Config struct {
@@ -84,6 +116,11 @@ func (c *Config) Validate() error {
 		if err != nil || (eu.Scheme != "http" && eu.Scheme != "https") {
 			return fmt.Errorf("models[%d]: endpoint must start with http:// or https://", i)
 		}
+		for name := range m.Headers {
+			if strings.TrimSpace(name) == "" {
+				return fmt.Errorf("models[%d]: header name must not be empty", i)
+			}
+		}
 	}
 	return nil
 }
@@ -124,6 +161,18 @@ func (c *Config) EndpointFor(model string) string {
 		}
 	}
 	return ""
+}
+
+// HeadersFor returns the per-request HTTP headers configured for the given model
+// (bearer api_key and/or custom headers). Returns nil when the model is unknown
+// or has no headers configured.
+func (c *Config) HeadersFor(model string) http.Header {
+	for _, m := range c.Models {
+		if en := c.effectiveName(m); en != "" && en == model {
+			return m.RequestHeaders()
+		}
+	}
+	return nil
 }
 
 // AvailableModels returns the resolved names of all configured models.

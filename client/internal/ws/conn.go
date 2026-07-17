@@ -57,7 +57,7 @@ func (p *clientModelProvider) Models(ctx context.Context) ([]types.ModelInfo, in
 	models := make([]types.ModelInfo, 0, len(p.cfg.Models))
 	totalSlots := 0
 	for _, m := range p.cfg.Models {
-		lc := llamacpp.New(m.Endpoint)
+		lc := llamacpp.New(m.Endpoint, m.RequestHeaders())
 
 		// Resolve the model name: explicit config name wins; otherwise ask the
 		// endpoint what model it serves via /v1/models.

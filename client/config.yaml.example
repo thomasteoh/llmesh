@@ -14,3 +14,8 @@ models:
   - name: "unsloth/qwen3-30b-a3b"                   # or set the name explicitly
     endpoint: "http://host.docker.internal:8081"
     # chat_template: "qwen2.5"   # override model's built-in Jinja template (optional)
+    # api_key: "sk-backend-key"  # optional - sent as "Authorization: Bearer <key>" to this endpoint.
+    #                            # Use for backends that require auth (vLLM, LM Studio, llama.cpp --api-key).
+    # headers:                   # optional - extra HTTP headers sent to this endpoint on every request.
+    #   x-api-key: "gateway-token"   # e.g. a gateway that needs a non-standard auth header
+    #   x-tenant: "team-a"           # a header set here overrides one llmesh would otherwise send
