@@ -17,10 +17,43 @@ func TestProbeModelID(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	got := New(srv.URL).ProbeModelID(context.Background())
+	got := New(srv.URL, nil).ProbeModelID(context.Background())
 	if got != "deepseek-v4-flash" {
 		t.Errorf("ProbeModelID = %q, want deepseek-v4-flash", got)
 	}
+}
+
+func TestApplyHeaders(t *testing.T) {
+	var gotAuth, gotCustom string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotCustom = r.Header.Get("X-Api-Key")
+		w.Write([]byte(`{"object":"list","data":[{"id":"m","object":"model"}]}`))
+	}))
+	defer srv.Close()
+
+	hdr := http.Header{}
+	hdr.Set("Authorization", "Bearer secret-key")
+	hdr.Set("X-Api-Key", "gateway-token")
+	New(srv.URL, hdr).ProbeModelID(context.Background())
+
+	if gotAuth != "Bearer secret-key" {
+		t.Errorf("Authorization = %q, want %q", gotAuth, "Bearer secret-key")
+	}
+	if gotCustom != "gateway-token" {
+		t.Errorf("X-Api-Key = %q, want %q", gotCustom, "gateway-token")
+	}
+}
+
+func TestApplyHeaders_NilNoAuth(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if h := r.Header.Get("Authorization"); h != "" {
+			t.Errorf("unexpected Authorization header %q for nil headers", h)
+		}
+		w.Write([]byte(`{"object":"list","data":[{"id":"m","object":"model"}]}`))
+	}))
+	defer srv.Close()
+	New(srv.URL, nil).ProbeModelID(context.Background())
 }
 
 func TestProbeModelID_Errors(t *testing.T) {
@@ -42,7 +75,7 @@ func TestProbeModelID_Errors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(tc.handler)
 			defer srv.Close()
-			if got := New(srv.URL).ProbeModelID(context.Background()); got != "" {
+			if got := New(srv.URL, nil).ProbeModelID(context.Background()); got != "" {
 				t.Errorf("expected empty model id, got %q", got)
 			}
 		})

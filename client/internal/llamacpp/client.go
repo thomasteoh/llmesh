@@ -35,12 +35,28 @@ type ChunkCallback func(delta string, toolCallsDelta json.RawMessage, done bool,
 type Client struct {
 	endpoint   string
 	httpClient *http.Client
+	// header holds extra headers (bearer api_key and/or custom headers) applied
+	// to every request. nil when the endpoint needs no authentication.
+	header http.Header
 }
 
-func New(endpoint string) *Client {
+// New creates a client for the given endpoint. header, when non-nil, is applied
+// to every request (e.g. Authorization for an authenticated backend); pass nil
+// for an unauthenticated endpoint.
+func New(endpoint string, header http.Header) *Client {
 	return &Client{
 		endpoint:   endpoint,
 		httpClient: &http.Client{},
+		header:     header,
+	}
+}
+
+// applyHeaders copies the client's configured headers onto req.
+func (c *Client) applyHeaders(req *http.Request) {
+	for k, vs := range c.header {
+		for _, v := range vs {
+			req.Header.Set(k, v)
+		}
 	}
 }
 
@@ -98,6 +114,7 @@ func (c *Client) ProbeModelID(ctx context.Context) string {
 	if err != nil {
 		return ""
 	}
+	c.applyHeaders(req)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return ""
@@ -127,6 +144,7 @@ func (c *Client) ProbeProps(ctx context.Context) Props {
 	if err != nil {
 		return Props{}
 	}
+	c.applyHeaders(req)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return Props{}
@@ -184,6 +202,7 @@ func (c *Client) Infer(ctx context.Context, req types.InferenceRequest, chatTemp
 		return fmt.Errorf("new request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	c.applyHeaders(httpReq)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -241,6 +260,7 @@ func (c *Client) checkHealth(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	c.applyHeaders(req)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return err

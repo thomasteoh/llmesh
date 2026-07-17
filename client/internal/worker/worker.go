@@ -55,7 +55,7 @@ func Handle(ctx context.Context, job types.JobMsg, cfg *clientPkg.Config, send S
 	}()
 	defer close(keepAliveDone)
 
-	llmClient := llamacpp.New(endpoint)
+	llmClient := llamacpp.New(endpoint, cfg.HeadersFor(req.Model))
 	chatTemplate := cfg.ChatTemplateFor(req.Model)
 	err := llmClient.Infer(ctx, req, chatTemplate, func(delta string, toolCallsDelta json.RawMessage, done bool, finishReason string, usage *types.UsageInfo) {
 		if done && usage != nil {

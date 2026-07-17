@@ -189,6 +189,9 @@ models:
   - name: "unsloth/qwen3-30b-a3b"                    # or set the name explicitly
     endpoint: "http://host.docker.internal:8081"
     # chat_template: "qwen2.5"                      # optional: override model's built-in Jinja template
+    # api_key: "sk-backend-key"                     # optional: sent as Authorization: Bearer to this endpoint
+    # headers:                                      # optional: extra headers sent to this endpoint
+    #   x-api-key: "gateway-token"
 ```
 
 | Field | Required | Default | Description |
@@ -200,6 +203,8 @@ models:
 | `models[].name` | No | auto | Model name as callers will request it. When omitted, auto-detected from the endpoint's `/v1/models` at connect time. |
 | `models[].endpoint` | Yes | — | HTTP base URL of the llama.cpp server for this model |
 | `models[].chat_template` | No | — | Override the model's built-in Jinja chat template (e.g. `"qwen2.5"`) |
+| `models[].api_key` | No | — | Sent to the endpoint as `Authorization: Bearer <key>` on every request. Use for backends that require authentication (vLLM, LM Studio, llama.cpp `--api-key`, hosted OpenAI-compatible servers). |
+| `models[].headers` | No | — | Map of extra HTTP headers sent to the endpoint on every request (e.g. a gateway needing `x-api-key` or tenant routing). A header set here overrides one llmesh would otherwise send, including `Authorization`. |
 
 The `router_token` must be created first in the router's admin UI under **Clients**.
 

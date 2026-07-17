@@ -142,6 +142,24 @@ HTTP server for this model (e.g.\~\fIhttp://localhost:8080\fR).
 The client appends
 .I /v1/chat/completions
 when forwarding jobs.
+.TP
+.B api_key
+Optional.
+When set, sent to the endpoint as
+.I "Authorization: Bearer <key>"
+on every request.
+Use for backends that require authentication (vLLM, LM Studio,
+.B llama.cpp
+.IR \-\-api\-key ,
+hosted OpenAI-compatible servers).
+.TP
+.B headers
+Optional map of extra HTTP headers sent to the endpoint on every request
+(e.g.\~a gateway needing
+.I x\-api\-key
+or tenant routing).
+A header set here overrides one the client would otherwise send, including
+.IR Authorization .
 .RE
 .SH EXAMPLES
 .SS Run with a custom config file
