@@ -9,6 +9,10 @@ router_token: "ct-yourname-yourtoken"   # client token from the router admin UI 
 # local_api_token: ""      # optional - require "Authorization: Bearer <token>" on the local
 #                           # endpoint. Set this if local_api_addr is not loopback-only.
 # metrics_addr: ":9091"    # expose expvar metrics at http://<host>:9091/debug/vars; omit to disable
+# auto_update: false       # optional - poll hourly for a newer binary and self-update when idle
+# remote_update: true      # optional - honour update requests pushed by the router (admin UI
+#                           # "update" button). Default true. Set false to deny the router the
+#                           # ability to swap this client's binary; auto_update still applies.
 models:
   - endpoint: "http://host.docker.internal:8080"   # name auto-detected from this endpoint's /v1/models
   - name: "unsloth/qwen3-30b-a3b"                   # or set the name explicitly
