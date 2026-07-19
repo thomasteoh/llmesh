@@ -120,6 +120,26 @@ send
 .IR "Authorization: Bearer <token>" .
 Empty (the default) leaves the endpoint open.
 .TP
+.B auto_update
+Optional boolean.
+When true, the client polls hourly for a newer binary and, when a newer version
+is available and the client is idle, replaces itself and re-execs.
+Defaults to
+.BR false .
+Has no effect on dev builds or when the update endpoint is not HTTPS.
+.TP
+.B remote_update
+Optional boolean controlling whether the client honours update requests pushed
+by the router (the admin UI update button).
+Defaults to
+.BR true ,
+so existing deployments keep working.
+Set to
+.B false
+to deny the router the ability to swap this client's binary; the
+.B auto_update
+poll (if enabled) still applies, since that update is initiated locally.
+.TP
 .B models
 List of model definitions.
 Each entry maps a llama.cpp endpoint to the model name callers will use.

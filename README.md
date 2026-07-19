@@ -184,6 +184,8 @@ router_url: "wss://llmesh.example.com/ws/client"  # WebSocket URL of the router
 router_token: "ct-admin-xxxxxxxxxxxxxxxx"           # client token from router admin UI
 # max_concurrent: 4                                 # optional — omit to auto-detect from llama.cpp slots
 # local_api_addr: ":8089"                           # optional — local OpenAI-compatible endpoint (see below)
+# auto_update: false                                # optional — poll hourly and self-update when idle
+# remote_update: true                               # optional — honour router-pushed updates (default true)
 models:
   - endpoint: "http://host.docker.internal:8080"    # name auto-detected from this endpoint
   - name: "unsloth/qwen3-30b-a3b"                    # or set the name explicitly
@@ -200,6 +202,8 @@ models:
 | `router_token` | Yes | — | Client token created in the router admin UI |
 | `max_concurrent` | No | auto | Max simultaneous inference jobs across router and local requests combined. When omitted, auto-detected from llama.cpp's reported slot count (falls back to 1). Set explicitly to override. |
 | `local_api_addr` | No | — | Bind address for a local OpenAI-compatible HTTP endpoint. When set, the client listens on this address and accepts `POST /v1/chat/completions` and `GET /v1/models` directly, routing to the appropriate llama.cpp backend without going through the router. Local requests share the same concurrency pool as router-dispatched jobs and take priority when slots are contested. Useful for other processes on the same host that want low-latency direct access. Example: `":8089"` |
+| `auto_update` | No | `false` | Poll hourly for a newer binary and self-update when idle. No effect on dev builds or when the update endpoint is not HTTPS. |
+| `remote_update` | No | `true` | Honour update requests pushed by the router (the admin UI update button). Set to `false` to deny the router the ability to swap this client's binary; the `auto_update` poll, being locally initiated, still applies. |
 | `models[].name` | No | auto | Model name as callers will request it. When omitted, auto-detected from the endpoint's `/v1/models` at connect time. |
 | `models[].endpoint` | Yes | — | HTTP base URL of the llama.cpp server for this model |
 | `models[].chat_template` | No | — | Override the model's built-in Jinja chat template (e.g. `"qwen2.5"`) |

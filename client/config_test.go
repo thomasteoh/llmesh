@@ -133,6 +133,53 @@ func TestHeadersFor(t *testing.T) {
 	}
 }
 
+func TestRemoteUpdateEnabled(t *testing.T) {
+	// Omitted → enabled (preserves existing behaviour).
+	if !(&Config{}).RemoteUpdateEnabled() {
+		t.Error("RemoteUpdateEnabled with field omitted = false, want true")
+	}
+	tru, fls := true, false
+	if !(&Config{RemoteUpdate: &tru}).RemoteUpdateEnabled() {
+		t.Error("RemoteUpdateEnabled(true) = false, want true")
+	}
+	if (&Config{RemoteUpdate: &fls}).RemoteUpdateEnabled() {
+		t.Error("RemoteUpdateEnabled(false) = true, want false")
+	}
+}
+
+func TestLoadConfig_RemoteUpdate(t *testing.T) {
+	write := func(t *testing.T, body string) string {
+		t.Helper()
+		p := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(p, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	base := "router_url: http://localhost:8080\nrouter_token: tok\nmodels:\n  - endpoint: http://localhost:8081\n"
+
+	// Omitted → nil → enabled.
+	cfg, err := LoadConfig(write(t, base))
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.RemoteUpdate != nil {
+		t.Errorf("remote_update omitted = %v, want nil", cfg.RemoteUpdate)
+	}
+	if !cfg.RemoteUpdateEnabled() {
+		t.Error("remote_update omitted should be enabled")
+	}
+
+	// Explicit false → disabled.
+	cfg, err = LoadConfig(write(t, base+"remote_update: false\n"))
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.RemoteUpdateEnabled() {
+		t.Error("remote_update: false should be disabled")
+	}
+}
+
 func TestEffectiveNameResolution(t *testing.T) {
 	cfg := Config{
 		Models: []ModelConfig{

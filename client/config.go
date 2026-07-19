@@ -70,8 +70,17 @@ type Config struct {
 	// is derived automatically from router_url. When a new version is found and the
 	// client is idle (no active jobs), the binary is replaced and the process
 	// re-executes itself. Has no effect on dev builds.
-	// Portal-triggered updates (via the admin UI) work regardless of this setting.
+	// Portal-triggered updates (via the admin UI) work regardless of this setting,
+	// unless remote_update is disabled.
 	AutoUpdate bool `yaml:"auto_update"`
+
+	// RemoteUpdate controls whether the client honours update requests pushed by
+	// the router (the admin UI "update" button). When false, router-triggered
+	// updates are ignored; the client only ever updates itself via the auto_update
+	// poll it opts into locally. A nil value (field omitted) means enabled, so
+	// existing deployments keep their current behaviour. Set to false to deny a
+	// router the ability to swap this client's binary.
+	RemoteUpdate *bool `yaml:"remote_update"`
 
 	detectedTemplates sync.Map // model name → chat_template detected from /props; not from config file
 	resolvedNames     sync.Map // endpoint → model name auto-detected from /v1/models when config name is omitted
@@ -185,6 +194,13 @@ func (c *Config) AvailableModels() []string {
 		}
 	}
 	return names
+}
+
+// RemoteUpdateEnabled reports whether the client honours router-triggered
+// (portal) update requests. Defaults to true when remote_update is omitted so
+// existing deployments keep working; set remote_update: false to opt out.
+func (c *Config) RemoteUpdateEnabled() bool {
+	return c.RemoteUpdate == nil || *c.RemoteUpdate
 }
 
 // KeepAliveInterval returns the worker keep-alive interval derived from

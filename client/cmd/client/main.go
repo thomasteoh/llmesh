@@ -43,6 +43,7 @@ Config file fields (YAML):
                   routing to the appropriate llama.cpp backend without going through the router.
                   Active local requests are counted as jobs in the status line.
   auto_update     enable hourly self-update checks (default: false)
+  remote_update   honour update requests pushed by the router (default: true)
   models:
     - endpoint:   llama.cpp base URL (e.g. http://localhost:8080)  (required)
       name:       model identifier (e.g. llama3.2:3b)
@@ -124,12 +125,16 @@ Config file fields (YAML):
 		go updater.Run(ctx, manifestURL, version, cfg.AutoUpdate, func() bool {
 			return st.ActiveJobs.Load() == 0
 		}, triggerCh, log)
-		conn.SetOnUpdate(func() {
-			select {
-			case triggerCh <- struct{}{}:
-			default:
-			}
-		})
+		if cfg.RemoteUpdateEnabled() {
+			conn.SetOnUpdate(func() {
+				select {
+				case triggerCh <- struct{}{}:
+				default:
+				}
+			})
+		} else {
+			log.Info("remote update disabled — ignoring router-triggered update requests")
+		}
 	}
 
 	conn.Run(ctx) // blocks until ctx cancelled, reconnects on disconnect
