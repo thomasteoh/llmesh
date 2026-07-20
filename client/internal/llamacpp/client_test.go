@@ -2,10 +2,40 @@ package llamacpp
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
+
+func TestInferUsageToUsageInfo(t *testing.T) {
+	// A nil backend usage passes straight through as nil.
+	if (*inferUsage)(nil).toUsageInfo() != nil {
+		t.Error("nil inferUsage should map to nil UsageInfo")
+	}
+
+	// prompt_tokens_details.cached_tokens is carried onto CacheReadTokens.
+	var u inferUsage
+	if err := json.Unmarshal([]byte(`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"prompt_tokens_details":{"cached_tokens":80}}`), &u); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	got := u.toUsageInfo()
+	if got.PromptTokens != 100 || got.CompletionTokens != 20 || got.TotalTokens != 120 {
+		t.Errorf("base token counts wrong: %+v", got)
+	}
+	if got.CacheReadTokens != 80 {
+		t.Errorf("CacheReadTokens = %d, want 80", got.CacheReadTokens)
+	}
+
+	// A backend that reports no cache details leaves CacheReadTokens zero.
+	var noCache inferUsage
+	if err := json.Unmarshal([]byte(`{"prompt_tokens":5,"completion_tokens":1,"total_tokens":6}`), &noCache); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if noCache.toUsageInfo().CacheReadTokens != 0 {
+		t.Error("CacheReadTokens should be 0 when backend reports no cache details")
+	}
+}
 
 func TestProbeModelID(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

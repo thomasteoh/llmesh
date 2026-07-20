@@ -231,6 +231,15 @@ docker compose -f docker-compose.client.yml up -d
 
 `host.docker.internal` resolves to the Docker host — use this to reach llama.cpp servers running on the same machine outside Docker.
 
+### Prompt caching
+
+Prompt caching is handled at the backend, not the router, and it already works with no extra configuration:
+
+- **KV / prefix reuse:** the client sends `cache_prompt` to the backend, so llama.cpp (and engines like [ds4](https://github.com/antirez/ds4), which keeps a disk-persistent KV cache) reuse computation for shared prefixes automatically. Enable the router's **prefix affinity** optimization (admin UI) to keep same-conversation requests on the client whose cache is already warm; this matters most for backends whose cache is per-instance and not shared across the fleet.
+- **Usage reporting:** when a backend reports cache token counts, the router surfaces them in the response `usage` object in each API's own shape (OpenAI `prompt_tokens_details.cached_tokens`, Anthropic `cache_read_input_tokens` / `cache_creation_input_tokens`, Responses `input_tokens_details.cached_tokens`). Backends that report nothing leave the usage object unchanged.
+
+Anthropic-style `cache_control` markers on message blocks pass through to the backend untouched, but the router does not interpret them; caching is driven by the backend's own prefix matching.
+
 ---
 
 ### 3. Shim (optional)

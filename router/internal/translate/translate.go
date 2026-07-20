@@ -210,10 +210,42 @@ func OpenAISSEChunk(requestID, model string, chunk types.ChunkMsg) string {
 		}},
 	}
 	if chunk.Usage != nil {
-		payload["usage"] = chunk.Usage
+		payload["usage"] = openAIUsage(chunk.Usage)
 	}
 	b, _ := json.Marshal(payload)
 	return "data: " + string(b)
+}
+
+// openAIUsage renders UsageInfo in OpenAI chat-completions shape, nesting the
+// cached prompt-token count under prompt_tokens_details only when the backend
+// reported one. Omitting it otherwise keeps output byte-identical for backends
+// that do not do prompt caching.
+func openAIUsage(u *types.UsageInfo) map[string]any {
+	m := map[string]any{
+		"prompt_tokens":     u.PromptTokens,
+		"completion_tokens": u.CompletionTokens,
+		"total_tokens":      u.TotalTokens,
+	}
+	if u.CacheReadTokens > 0 {
+		m["prompt_tokens_details"] = map[string]any{"cached_tokens": u.CacheReadTokens}
+	}
+	return m
+}
+
+// anthropicUsage renders UsageInfo in Anthropic shape, adding cache_read /
+// cache_creation input-token counts only when the backend reported them.
+func anthropicUsage(u *types.UsageInfo) map[string]any {
+	m := map[string]any{
+		"input_tokens":  u.PromptTokens,
+		"output_tokens": u.CompletionTokens,
+	}
+	if u.CacheReadTokens > 0 {
+		m["cache_read_input_tokens"] = u.CacheReadTokens
+	}
+	if u.CacheCreationTokens > 0 {
+		m["cache_creation_input_tokens"] = u.CacheCreationTokens
+	}
+	return m
 }
 
 // OpenAISSEDone returns the terminal SSE line for OpenAI streaming.
@@ -250,7 +282,7 @@ func OpenAIFullResponse(requestID, model, content, finishReason string, toolCall
 		},
 	}
 	if usage != nil {
-		resp["usage"] = usage
+		resp["usage"] = openAIUsage(usage)
 	}
 	return resp
 }
@@ -412,7 +444,18 @@ func (s *AnthropicStreamer) Done(finishReason string, usage *types.UsageInfo) []
 		"delta": map[string]any{"stop_reason": stopReason, "stop_sequence": nil},
 	}
 	if usage != nil {
-		messageDelta["usage"] = map[string]any{"output_tokens": usage.CompletionTokens}
+		// Anthropic streaming carries output_tokens in message_delta (input and
+		// cache counts belong in message_start, which this streamer does not
+		// emit). Keep output_tokens as before and surface cache counts here as a
+		// best-effort extra when the backend reported them.
+		u := map[string]any{"output_tokens": usage.CompletionTokens}
+		if usage.CacheReadTokens > 0 {
+			u["cache_read_input_tokens"] = usage.CacheReadTokens
+		}
+		if usage.CacheCreationTokens > 0 {
+			u["cache_creation_input_tokens"] = usage.CacheCreationTokens
+		}
+		messageDelta["usage"] = u
 	}
 	out = append(out, sseEvent("message_delta", messageDelta))
 	out = append(out, sseEvent("message_stop", map[string]any{"type": "message_stop"}))
@@ -459,10 +502,7 @@ func AnthropicFullResponse(requestID, model, content, finishReason string, toolC
 		"stop_sequence": nil,
 	}
 	if usage != nil {
-		resp["usage"] = map[string]any{
-			"input_tokens":  usage.PromptTokens,
-			"output_tokens": usage.CompletionTokens,
-		}
+		resp["usage"] = anthropicUsage(usage)
 	}
 	return resp
 }
@@ -508,11 +548,15 @@ func OpenAIResponsesFullResponse(requestID, model, content string, usage *types.
 		},
 	}
 	if usage != nil {
-		resp["usage"] = map[string]any{
+		u := map[string]any{
 			"input_tokens":  usage.PromptTokens,
 			"output_tokens": usage.CompletionTokens,
 			"total_tokens":  usage.TotalTokens,
 		}
+		if usage.CacheReadTokens > 0 {
+			u["input_tokens_details"] = map[string]any{"cached_tokens": usage.CacheReadTokens}
+		}
+		resp["usage"] = u
 	}
 	return resp
 }
