@@ -190,11 +190,22 @@ type JobMsg struct {
 	Request InferenceRequest `json:"request"`
 }
 
-// UsageInfo carries token counts from the model.
+// UsageInfo carries token counts from the model. The cache fields are best-effort
+// pass-through: they are populated only when the backend reports prompt-cache
+// accounting, and left zero otherwise. They use neutral internal names; the
+// translate layer maps them onto each API's own usage shape on the way out.
 type UsageInfo struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+	// CacheReadTokens is the number of prompt tokens served from a warm cache
+	// (OpenAI usage.prompt_tokens_details.cached_tokens; Anthropic
+	// usage.cache_read_input_tokens). A subset of PromptTokens.
+	CacheReadTokens int `json:"cache_read_tokens,omitempty"`
+	// CacheCreationTokens is the number of prompt tokens written to the cache on
+	// this request (Anthropic usage.cache_creation_input_tokens). Backends that
+	// only do automatic caching (llama.cpp, ds4) do not report this.
+	CacheCreationTokens int `json:"cache_creation_tokens,omitempty"`
 }
 
 // ChunkMsg is sent by the client for each token chunk (or full response if non-streaming).

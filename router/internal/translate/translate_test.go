@@ -349,3 +349,75 @@ func jsonEqual(a, b any) bool {
 	bb, _ := json.Marshal(b)
 	return string(ab) == string(bb)
 }
+
+// TestUsageCacheSurfacing checks that backend-reported prompt-cache token counts
+// are mapped onto each API's own usage shape, and that they are omitted entirely
+// when the backend reported none (so output stays unchanged for non-caching
+// backends).
+func TestUsageCacheSurfacing(t *testing.T) {
+	t.Run("openai full response nests cached_tokens", func(t *testing.T) {
+		usage := &types.UsageInfo{PromptTokens: 100, CompletionTokens: 20, TotalTokens: 120, CacheReadTokens: 80}
+		resp := OpenAIFullResponse("req-1", "m", "hi", "stop", nil, usage)
+		u := resp["usage"].(map[string]any)
+		details, ok := u["prompt_tokens_details"].(map[string]any)
+		if !ok {
+			t.Fatalf("prompt_tokens_details missing: %v", u)
+		}
+		if details["cached_tokens"] != 80 {
+			t.Errorf("cached_tokens = %v, want 80", details["cached_tokens"])
+		}
+	})
+
+	t.Run("openai omits details when no cache", func(t *testing.T) {
+		usage := &types.UsageInfo{PromptTokens: 100, CompletionTokens: 20, TotalTokens: 120}
+		resp := OpenAIFullResponse("req-1", "m", "hi", "stop", nil, usage)
+		u := resp["usage"].(map[string]any)
+		if _, ok := u["prompt_tokens_details"]; ok {
+			t.Errorf("prompt_tokens_details should be absent, got: %v", u)
+		}
+	})
+
+	t.Run("openai sse chunk nests cached_tokens", func(t *testing.T) {
+		chunk := types.ChunkMsg{Usage: &types.UsageInfo{PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12, CacheReadTokens: 7}}
+		_, payload := parseSSE(t, OpenAISSEChunk("req-1", "m", chunk))
+		u := payload["usage"].(map[string]any)
+		details, ok := u["prompt_tokens_details"].(map[string]any)
+		if !ok || details["cached_tokens"] != float64(7) {
+			t.Errorf("cached_tokens not surfaced in SSE chunk: %v", u)
+		}
+	})
+
+	t.Run("anthropic full response surfaces cache fields", func(t *testing.T) {
+		usage := &types.UsageInfo{PromptTokens: 100, CompletionTokens: 20, CacheReadTokens: 60, CacheCreationTokens: 40}
+		resp := AnthropicFullResponse("req-1", "m", "hi", "stop", nil, usage)
+		u := resp["usage"].(map[string]any)
+		if u["cache_read_input_tokens"] != 60 {
+			t.Errorf("cache_read_input_tokens = %v, want 60", u["cache_read_input_tokens"])
+		}
+		if u["cache_creation_input_tokens"] != 40 {
+			t.Errorf("cache_creation_input_tokens = %v, want 40", u["cache_creation_input_tokens"])
+		}
+	})
+
+	t.Run("anthropic omits cache fields when none", func(t *testing.T) {
+		usage := &types.UsageInfo{PromptTokens: 100, CompletionTokens: 20}
+		resp := AnthropicFullResponse("req-1", "m", "hi", "stop", nil, usage)
+		u := resp["usage"].(map[string]any)
+		if _, ok := u["cache_read_input_tokens"]; ok {
+			t.Errorf("cache_read_input_tokens should be absent, got: %v", u)
+		}
+		if _, ok := u["cache_creation_input_tokens"]; ok {
+			t.Errorf("cache_creation_input_tokens should be absent, got: %v", u)
+		}
+	})
+
+	t.Run("responses full response nests cached_tokens", func(t *testing.T) {
+		usage := &types.UsageInfo{PromptTokens: 100, CompletionTokens: 20, TotalTokens: 120, CacheReadTokens: 90}
+		resp := OpenAIResponsesFullResponse("req-1", "m", "hi", usage)
+		u := resp["usage"].(map[string]any)
+		details, ok := u["input_tokens_details"].(map[string]any)
+		if !ok || details["cached_tokens"] != 90 {
+			t.Errorf("input_tokens_details.cached_tokens not surfaced: %v", u)
+		}
+	})
+}

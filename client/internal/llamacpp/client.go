@@ -80,9 +80,30 @@ type inferRequest struct {
 }
 
 type inferUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens        int `json:"prompt_tokens"`
+	CompletionTokens    int `json:"completion_tokens"`
+	TotalTokens         int `json:"total_tokens"`
+	PromptTokensDetails struct {
+		// cached_tokens is the OpenAI-compatible field for prompt tokens served
+		// from a warm cache. llama.cpp reports it when cache_prompt hits;
+		// ds4 and other prefix-caching backends report it here too.
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
+}
+
+// toUsageInfo maps a backend usage object onto the internal UsageInfo, carrying
+// the cached-token count through when the backend reported one. Returns nil for
+// a nil receiver so callers can pass it straight through.
+func (u *inferUsage) toUsageInfo() *types.UsageInfo {
+	if u == nil {
+		return nil
+	}
+	return &types.UsageInfo{
+		PromptTokens:     u.PromptTokens,
+		CompletionTokens: u.CompletionTokens,
+		TotalTokens:      u.TotalTokens,
+		CacheReadTokens:  u.PromptTokensDetails.CachedTokens,
+	}
 }
 
 type inferChunkDelta struct {
@@ -386,11 +407,7 @@ func (c *Client) readStream(ctx context.Context, cancel context.CancelFunc, resp
 			}
 			// Stash usage from any chunk that carries it (usage-only chunk has no choices).
 			if chunk.Usage != nil {
-				pendingUsage = &types.UsageInfo{
-					PromptTokens:     chunk.Usage.PromptTokens,
-					CompletionTokens: chunk.Usage.CompletionTokens,
-					TotalTokens:      chunk.Usage.TotalTokens,
-				}
+				pendingUsage = chunk.Usage.toUsageInfo()
 			}
 			if len(chunk.Choices) == 0 {
 				continue
@@ -441,14 +458,6 @@ func (c *Client) readBatch(resp *http.Response, cb ChunkCallback) error {
 		return fmt.Errorf("llama.cpp batch response had no choices")
 	}
 	choice := result.Choices[0]
-	var u *types.UsageInfo
-	if result.Usage != nil {
-		u = &types.UsageInfo{
-			PromptTokens:     result.Usage.PromptTokens,
-			CompletionTokens: result.Usage.CompletionTokens,
-			TotalTokens:      result.Usage.TotalTokens,
-		}
-	}
-	cb(choice.Message.Content, choice.Message.ToolCalls, true, choice.FinishReason, u)
+	cb(choice.Message.Content, choice.Message.ToolCalls, true, choice.FinishReason, result.Usage.toUsageInfo())
 	return nil
 }
