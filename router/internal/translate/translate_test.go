@@ -295,3 +295,57 @@ func TestOpenAIInbound_TemperaturePresence(t *testing.T) {
 		t.Errorf("omitted temperature should be nil, got %v", *omitted.Temperature)
 	}
 }
+
+// TestInbound_MultimodalPassthrough locks in that image/audio content parts
+// survive translation byte-for-byte. The router is capability-agnostic about
+// message content (Content is json.RawMessage), and downstream routing/backends
+// rely on the exact parts reaching the worker unchanged. If a future refactor
+// switches Content to structured types, this test fails loudly.
+func TestInbound_MultimodalPassthrough(t *testing.T) {
+	t.Run("openai image_url", func(t *testing.T) {
+		body := `{"model":"llava","messages":[{"role":"user","content":[{"type":"text","text":"what is this?"},{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgoAAAANSU"}}]}]}`
+		req, err := OpenAIInbound([]byte(body))
+		if err != nil {
+			t.Fatalf("OpenAIInbound: %v", err)
+		}
+		if len(req.Messages) != 1 {
+			t.Fatalf("got %d messages, want 1", len(req.Messages))
+		}
+		var want any
+		_ = json.Unmarshal([]byte(`[{"type":"text","text":"what is this?"},{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgoAAAANSU"}}]`), &want)
+		var got any
+		if err := json.Unmarshal(req.Messages[0].Content, &got); err != nil {
+			t.Fatalf("content is not valid json: %v", err)
+		}
+		if !jsonEqual(want, got) {
+			t.Errorf("image content not preserved:\n got %s", req.Messages[0].Content)
+		}
+		if !strings.Contains(string(req.Messages[0].Content), "image_url") {
+			t.Error("image_url part dropped from content")
+		}
+	})
+
+	t.Run("anthropic image source", func(t *testing.T) {
+		body := `{"model":"claude","max_tokens":10,"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"/9j/4AAQSk"}}]}]}`
+		req, err := AnthropicInbound([]byte(body))
+		if err != nil {
+			t.Fatalf("AnthropicInbound: %v", err)
+		}
+		if len(req.Messages) != 1 {
+			t.Fatalf("got %d messages, want 1", len(req.Messages))
+		}
+		c := string(req.Messages[0].Content)
+		for _, sub := range []string{`"type":"image"`, `"media_type":"image/jpeg"`, `"data":"/9j/4AAQSk"`} {
+			if !strings.Contains(c, sub) {
+				t.Errorf("anthropic image content missing %q: %s", sub, c)
+			}
+		}
+	})
+}
+
+// jsonEqual compares two decoded JSON values for deep equality.
+func jsonEqual(a, b any) bool {
+	ab, _ := json.Marshal(a)
+	bb, _ := json.Marshal(b)
+	return string(ab) == string(bb)
+}

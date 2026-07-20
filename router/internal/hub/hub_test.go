@@ -594,3 +594,42 @@ func TestAvailableSlotsByModel(t *testing.T) {
 		t.Errorf("carol llama3 after 1 job: got avail=%d, want 3", l.AvailableSlots)
 	}
 }
+
+func TestModelModalityVerdict(t *testing.T) {
+	h := New(slog.Default())
+
+	// Text-only client (known capability): serves "vision-model" as text only.
+	textConn := dialHub(t, h, "mac", "alice", "ct-text")
+	defer textConn.Close()
+	time.Sleep(20 * time.Millisecond)
+	textReg := `{"type":"register","models":[{"name":"vision-model","modalities":["text"]}],"max_concurrent":2}`
+	if err := textConn.WriteMessage(websocket.TextMessage, []byte(textReg)); err != nil {
+		t.Fatalf("register text client: %v", err)
+	}
+	// Unknown-capability client: serves "mystery" with no advertised modalities.
+	unkConn := dialHub(t, h, "mac2", "alice", "ct-unk")
+	defer unkConn.Close()
+	time.Sleep(20 * time.Millisecond)
+	unkReg := `{"type":"register","models":[{"name":"mystery"}],"max_concurrent":2}`
+	if err := unkConn.WriteMessage(websocket.TextMessage, []byte(unkReg)); err != nil {
+		t.Fatalf("register unknown client: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	// No requirement: always compatible.
+	if compat, unknown := h.ModelModalityVerdict("vision-model", nil, nil); !compat || unknown {
+		t.Errorf("no requirement verdict = (%v,%v), want (true,false)", compat, unknown)
+	}
+	// Known text-only model asked for vision: neither compatible nor unknown → reject.
+	if compat, unknown := h.ModelModalityVerdict("vision-model", nil, []string{"vision"}); compat || unknown {
+		t.Errorf("text-only vision verdict = (%v,%v), want (false,false)", compat, unknown)
+	}
+	// Unknown-capability model asked for vision: not compatible, but unknown → don't reject.
+	if compat, unknown := h.ModelModalityVerdict("mystery", nil, []string{"vision"}); compat || !unknown {
+		t.Errorf("unknown model vision verdict = (%v,%v), want (false,true)", compat, unknown)
+	}
+	// "any" is never hard-rejected.
+	if compat, unknown := h.ModelModalityVerdict("any", nil, []string{"vision"}); compat || !unknown {
+		t.Errorf("any verdict = (%v,%v), want (false,true)", compat, unknown)
+	}
+}

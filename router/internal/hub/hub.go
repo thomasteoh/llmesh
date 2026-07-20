@@ -78,10 +78,11 @@ type Client struct {
 	ID                     string
 	conn                   *websocket.Conn
 	send                   chan []byte
-	Models                 map[string]bool // nil until "register" message received
-	ModelContextSizes      map[string]int  // model name → n_ctx in tokens (0 = unknown)
-	ModelContextTrainSizes map[string]int  // model name → n_ctx_train in tokens (0 = unknown)
-	MaxConcurrent          int             // 0 until "register" message received
+	Models                 map[string]bool     // nil until "register" message received
+	ModelContextSizes      map[string]int      // model name → n_ctx in tokens (0 = unknown)
+	ModelContextTrainSizes map[string]int      // model name → n_ctx_train in tokens (0 = unknown)
+	ModelModalities        map[string][]string // model name → advertised input modalities; absent = unknown
+	MaxConcurrent          int                 // 0 until "register" message received
 	inFlight               atomic.Int32
 	Name                   string
 	Owner                  string
@@ -360,6 +361,7 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 		client.Models = make(map[string]bool)
 		client.ModelContextSizes = make(map[string]int)
 		client.ModelContextTrainSizes = make(map[string]int)
+		client.ModelModalities = make(map[string][]string)
 		for _, m := range msg.Models {
 			client.Models[m.Name] = true
 			if m.ContextSize > 0 {
@@ -367,6 +369,9 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 			}
 			if m.ContextTrain > 0 {
 				client.ModelContextTrainSizes[m.Name] = m.ContextTrain
+			}
+			if len(m.Modalities) > 0 {
+				client.ModelModalities[m.Name] = m.Modalities
 			}
 		}
 		client.MaxConcurrent = msg.MaxConcurrent
@@ -551,6 +556,13 @@ func (h *Hub) AvailableClientList() []ClientSummary {
 		for k, v := range c.ModelContextSizes {
 			ctxSizes[k] = v
 		}
+		var modalities map[string][]string
+		if len(c.ModelModalities) > 0 {
+			modalities = make(map[string][]string, len(c.ModelModalities))
+			for k, v := range c.ModelModalities {
+				modalities[k] = v
+			}
+		}
 		out = append(out, ClientSummary{
 			ID:                c.ID,
 			Owner:             c.Owner,
@@ -559,6 +571,7 @@ func (h *Hub) AvailableClientList() []ClientSummary {
 			InFlight:          c.InFlight(),
 			ModelContextSizes: ctxSizes,
 			OwnerSlots:        ownerSlots,
+			ModelModalities:   modalities,
 		})
 	}
 	return out
@@ -668,6 +681,47 @@ func (h *Hub) MaxContextForModel(model string, aliases map[string][]string) int 
 	return best
 }
 
+// ModelModalityVerdict reports, across all connected clients serving model (or
+// its aliases), whether any client is compatible with the required non-text
+// modalities and whether any client's capabilities are unknown. The handler
+// fast-fails a request only when it is certain no client can serve it: a capable
+// client means serve, an unknown-capability client means let it try, and only
+// when every serving client positively lacks a required modality is the request
+// rejected. This keeps pass-through working for backends that never report
+// their capabilities. Returns (true, false) when nothing is required.
+func (h *Hub) ModelModalityVerdict(model string, aliases map[string][]string, required []string) (anyCompatible, anyUnknown bool) {
+	if len(required) == 0 {
+		return true, false
+	}
+	// "any" can resolve to any served model; don't hard-reject it here — leave
+	// routing to the scheduler, which skips known-incompatible clients.
+	if model == "any" {
+		return false, true
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	check := func(name string) {
+		for _, c := range h.clients {
+			if c.Models == nil || !c.Models[name] {
+				continue
+			}
+			adv := c.ModelModalities[name]
+			if len(adv) == 0 {
+				anyUnknown = true
+				continue
+			}
+			if types.ModalitiesCompatible(adv, required) {
+				anyCompatible = true
+			}
+		}
+	}
+	check(model)
+	for _, target := range aliases[model] {
+		check(target)
+	}
+	return anyCompatible, anyUnknown
+}
+
 // ActiveModels returns all model names currently advertised by connected clients.
 func (h *Hub) ActiveModels() []string {
 	h.mu.RLock()
@@ -692,6 +746,7 @@ func (h *Hub) ActiveModelInfos() []types.ModelInfo {
 	defer h.mu.RUnlock()
 	ctxSizes := make(map[string]int)
 	ctxTrain := make(map[string]int)
+	modalities := make(map[string]map[string]bool) // model → set of advertised modalities
 	for _, c := range h.clients {
 		for m := range c.Models {
 			if _, ok := ctxSizes[m]; !ok {
@@ -704,11 +759,22 @@ func (h *Hub) ActiveModelInfos() []types.ModelInfo {
 			if c.ModelContextTrainSizes[m] > ctxTrain[m] {
 				ctxTrain[m] = c.ModelContextTrainSizes[m]
 			}
+			for _, mod := range c.ModelModalities[m] {
+				if modalities[m] == nil {
+					modalities[m] = make(map[string]bool)
+				}
+				modalities[m][mod] = true
+			}
 		}
 	}
 	out := make([]types.ModelInfo, 0, len(ctxSizes))
 	for m := range ctxSizes {
-		out = append(out, types.ModelInfo{Name: m, ContextSize: ctxSizes[m], ContextTrain: ctxTrain[m]})
+		var mods []string
+		for mod := range modalities[m] {
+			mods = append(mods, mod)
+		}
+		sort.Strings(mods)
+		out = append(out, types.ModelInfo{Name: m, ContextSize: ctxSizes[m], ContextTrain: ctxTrain[m], Modalities: mods})
 	}
 	return out
 }

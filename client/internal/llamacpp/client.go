@@ -104,6 +104,11 @@ type Props struct {
 	NCtxTrain    int    // n_ctx_train: model's training context length
 	TotalSlots   int    // total_slots: parallel inference slots (--parallel flag)
 	ChatTemplate string // chat_template: Jinja template embedded in the model
+	// Modalities lists non-text input types the backend reported it accepts
+	// (from the /props "modalities" object), e.g. "vision", "audio". Nil when
+	// the endpoint did not report modalities (older servers) — capability is
+	// then treated as unknown by the router.
+	Modalities []string
 }
 
 // ProbeModelID fetches /v1/models and returns the id of the first model the
@@ -151,19 +156,41 @@ func (c *Client) ProbeProps(ctx context.Context) Props {
 	}
 	defer resp.Body.Close()
 	var p struct {
-		NCtx         int    `json:"n_ctx"`
-		NCtxTrain    int    `json:"n_ctx_train"`
-		TotalSlots   int    `json:"total_slots"`
-		ChatTemplate string `json:"chat_template"`
+		NCtx         int             `json:"n_ctx"`
+		NCtxTrain    int             `json:"n_ctx_train"`
+		TotalSlots   int             `json:"total_slots"`
+		ChatTemplate string          `json:"chat_template"`
+		Modalities   json.RawMessage `json:"modalities"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
 		return Props{}
+	}
+	// The "modalities" object is present only on servers that report capability.
+	// Its presence marks capability as "known" (always include the text
+	// sentinel); absence leaves Modalities nil so the router treats it as
+	// unknown and never excludes this backend.
+	var modalities []string
+	if len(p.Modalities) > 0 && string(p.Modalities) != "null" {
+		modalities = append(modalities, types.ModalityText)
+		var mo struct {
+			Vision bool `json:"vision"`
+			Audio  bool `json:"audio"`
+		}
+		if json.Unmarshal(p.Modalities, &mo) == nil {
+			if mo.Vision {
+				modalities = append(modalities, types.ModalityVision)
+			}
+			if mo.Audio {
+				modalities = append(modalities, types.ModalityAudio)
+			}
+		}
 	}
 	return Props{
 		NCtx:         p.NCtx,
 		NCtxTrain:    p.NCtxTrain,
 		TotalSlots:   p.TotalSlots,
 		ChatTemplate: p.ChatTemplate,
+		Modalities:   modalities,
 	}
 }
 

@@ -43,6 +43,14 @@ func metricsHandler(ah *api.Handler, q *queue.Queue, h *hub.Hub, s *stats.Stats,
 			"Number of inference jobs currently dispatched to clients",
 			float64(len(h.AllInFlightJobs())))
 
+		writeGauge(&b, "llmrouter_requests_rejected_too_large_total",
+			"Total requests rejected for exceeding the body-size limit since process start",
+			float64(ah.RejectedTooLarge()))
+
+		writeGauge(&b, "llmrouter_multimodal_requests_total",
+			"Total accepted requests carrying non-text input (images/audio) since process start",
+			float64(ah.MultimodalRequests()))
+
 		// --- Per-model counters ---
 		fmt.Fprintf(&b, "# HELP llmrouter_model_requests_total Total requests per model since process start.\n")
 		fmt.Fprintf(&b, "# TYPE llmrouter_model_requests_total counter\n")

@@ -17,6 +17,11 @@ type Config struct {
 		// reverse proxy that sets them — otherwise a client can spoof its IP and
 		// bypass per-IP rate limiting. Default: false.
 		TrustProxyHeaders bool `yaml:"trust_proxy_headers"`
+		// MaxRequestMB caps the inbound API request body size, in mebibytes.
+		// Raise it to accept multimodal requests (base64 images/audio), which
+		// easily exceed a text-only budget. Default: 8. Clamped to 15 so a body
+		// that clears ingress still fits the 16 MiB client WebSocket frame limit.
+		MaxRequestMB int `yaml:"max_request_mb"`
 	} `yaml:"server"`
 	Name     string `yaml:"name"` // brand name shown on landing page
 	Host     string `yaml:"host"` // hostname clients use to connect
@@ -79,6 +84,16 @@ type Timeouts struct {
 	KeepAlive     time.Duration
 	Lease         time.Duration
 	QueueMaxDepth int
+}
+
+// MaxRequestBytes returns the resolved inbound request body limit in bytes,
+// applying the default (8 MiB) when unset. The api.Handler clamps the value to
+// its ceiling; returning 0 here means "use the handler default".
+func (c *Config) MaxRequestBytes() int {
+	if c.Server.MaxRequestMB <= 0 {
+		return 0
+	}
+	return c.Server.MaxRequestMB << 20
 }
 
 // LoadConfig reads a YAML config file at path.

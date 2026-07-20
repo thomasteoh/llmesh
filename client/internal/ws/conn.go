@@ -73,11 +73,17 @@ func (p *clientModelProvider) Models(ctx context.Context) ([]types.ModelInfo, in
 		}
 
 		props := lc.ProbeProps(ctx)
-		models = append(models, types.ModelInfo{Name: name, ContextSize: props.NCtx, ContextTrain: props.NCtxTrain})
+		modalities := m.EffectiveModalities(props.Modalities)
+		models = append(models, types.ModelInfo{
+			Name:         name,
+			ContextSize:  props.NCtx,
+			ContextTrain: props.NCtxTrain,
+			Modalities:   modalities,
+		})
 		if props.NCtx > 0 {
 			log.Info("ws: model props", "model", name,
 				"context_size", props.NCtx, "context_train", props.NCtxTrain,
-				"total_slots", props.TotalSlots)
+				"total_slots", props.TotalSlots, "modalities", modalities)
 		}
 		if props.ChatTemplate != "" {
 			p.cfg.SetDetectedTemplate(name, props.ChatTemplate)

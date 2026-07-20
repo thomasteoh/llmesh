@@ -3,8 +3,61 @@ package types
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 )
+
+// Input modality slugs. ModalityText is a sentinel meaning "capabilities are
+// known": a client that has determined what its backend accepts always
+// advertises at least ModalityText, so an empty advertised set can be told
+// apart on the wire from a known text-only backend.
+const (
+	ModalityText   = "text"
+	ModalityVision = "vision"
+	ModalityAudio  = "audio"
+	ModalityVideo  = "video"
+)
+
+// ModalityForContentType maps an OpenAI/Anthropic/Responses content-part "type"
+// to the non-text input modality it requires, or "" for plain-text or unknown
+// parts. Matching is substring-based so it covers the various spellings
+// ("image_url", "input_image", "image"; "input_audio", "audio"; "video_url").
+func ModalityForContentType(t string) string {
+	switch {
+	case strings.Contains(t, "image"):
+		return ModalityVision
+	case strings.Contains(t, "audio"):
+		return ModalityAudio
+	case strings.Contains(t, "video"):
+		return ModalityVideo
+	default:
+		return ""
+	}
+}
+
+// ModalitiesCompatible reports whether a client advertising the given input
+// modalities can serve a request requiring `required` (non-text) modalities.
+// An empty advertised set means the client's capabilities are unknown, so it is
+// treated as compatible and never excluded — this preserves pass-through for
+// backends that don't report their capabilities.
+func ModalitiesCompatible(advertised, required []string) bool {
+	if len(required) == 0 || len(advertised) == 0 {
+		return true
+	}
+	for _, r := range required {
+		found := false
+		for _, a := range advertised {
+			if a == r {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
 
 // Priority tiers — lower number = higher priority
 type Priority int
@@ -58,9 +111,13 @@ type InferenceRequest struct {
 	Owner       string          `json:"owner"`                   // username of the API-key holder
 	APIKeyLabel string          `json:"api_key_label,omitempty"` // "owner/label" of the key used
 	WordCount   int             `json:"word_count,omitempty"`    // approximate word count across all messages
-	EnqueuedAt  time.Time       `json:"enqueued_at"`
-	Attempts    int             `json:"attempts,omitempty"`  // number of times this request has errored and been retried
-	OriginID    string          `json:"origin_id,omitempty"` // request ID assigned by the originating router; set by upstream connector for cross-hop tracing
+	// Modalities lists the non-text input modalities this request carries
+	// (e.g. "vision", "audio"), detected from message content parts at ingress.
+	// Empty for plain-text requests. Used to route to capable clients.
+	Modalities []string  `json:"modalities,omitempty"`
+	EnqueuedAt time.Time `json:"enqueued_at"`
+	Attempts   int       `json:"attempts,omitempty"`  // number of times this request has errored and been retried
+	OriginID   string    `json:"origin_id,omitempty"` // request ID assigned by the originating router; set by upstream connector for cross-hop tracing
 }
 
 // RequestOptimization holds the router-wide toggles that shape inbound requests
@@ -98,6 +155,12 @@ type ModelInfo struct {
 	Name         string `json:"name"`
 	ContextSize  int    `json:"context_size,omitempty"`  // n_ctx: configured context window in tokens; 0 = unknown
 	ContextTrain int    `json:"context_train,omitempty"` // n_ctx_train: model's training context length; 0 = unknown
+	// Modalities lists the input modalities this backend accepts. When the
+	// client has determined its capabilities it includes at least
+	// ModalityText plus any detected extras ("vision", "audio"). Empty means
+	// the capabilities are unknown (the backend did not report them and none
+	// were configured), in which case the router never excludes the client.
+	Modalities []string `json:"modalities,omitempty"`
 }
 
 // ModelSlots reports live inference-slot availability for one model from the
@@ -187,6 +250,10 @@ type ClientSummary struct {
 	InFlight          int            // current in-flight job count
 	ModelContextSizes map[string]int // n_ctx per model; 0 = unknown
 	OwnerSlots        map[string]int // model → slots reserved for owner; 0/unset = fully shared
+	// ModelModalities maps model name → advertised input modalities. A model
+	// with no entry (or an empty list) has unknown capabilities and is never
+	// excluded by the modality check.
+	ModelModalities map[string][]string
 }
 
 // EstimateTokens returns an approximate token count for a request given an input
