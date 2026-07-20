@@ -257,6 +257,18 @@ func (s *Scheduler) drainQueue() {
 					}
 				}
 			}
+			// Skip this client if the request needs input modalities the client
+			// positively does not support. Clients with unknown capabilities
+			// (no advertised modalities) are never skipped, preserving
+			// pass-through for backends that don't report capability.
+			if len(req.Modalities) > 0 {
+				if !types.ModalitiesCompatible(c.ModelModalities[resolved], req.Modalities) {
+					s.log.Debug("scheduler: skipping client — model lacks required modalities",
+						"client_id", c.ID, "model", resolved,
+						"required", req.Modalities, "advertised", c.ModelModalities[resolved])
+					continue
+				}
+			}
 			// Compare using the locally-tracked in-flight count, not the
 			// snapshot's stale value, so load-spreading stays accurate.
 			cc := c

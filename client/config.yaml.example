@@ -23,3 +23,6 @@ models:
     # headers:                   # optional - extra HTTP headers sent to this endpoint on every request.
     #   x-api-key: "gateway-token"   # e.g. a gateway that needs a non-standard auth header
     #   x-tenant: "team-a"           # a header set here overrides one llmesh would otherwise send
+    # modalities: ["vision"]     # optional - declare non-text input this backend accepts (e.g. vision,
+    #                            # audio). Auto-detected from llama.cpp /props when omitted; set it for
+    #                            # backends that don't report capability so the router routes media here.

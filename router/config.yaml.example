@@ -2,3 +2,6 @@ name: "llmesh"              # brand name shown on landing page and admin UI
 host: "llmesh.example.com"  # public hostname used in admin UI client setup instructions
 server:
   port: 53002
+  # max_request_mb: 8   # optional - max inbound request body size in MiB (default 8, capped at 15).
+  #                     # Raise to accept multimodal requests (base64 images/audio) that exceed a
+  #                     # text-only budget; the cap keeps a body within the client WebSocket frame limit.

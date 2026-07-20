@@ -316,3 +316,87 @@ func TestBetterClient(t *testing.T) {
 		})
 	}
 }
+
+// registerModelModalities registers a single model with advertised modalities.
+func registerModelModalities(t *testing.T, conn *websocket.Conn, model string, modalities []string) {
+	t.Helper()
+	type modelEntry struct {
+		Name       string   `json:"name"`
+		Modalities []string `json:"modalities,omitempty"`
+	}
+	type regMsg struct {
+		Type          string       `json:"type"`
+		Models        []modelEntry `json:"models"`
+		MaxConcurrent int          `json:"max_concurrent"`
+	}
+	data, _ := json.Marshal(regMsg{Type: "register", Models: []modelEntry{{Name: model, Modalities: modalities}}, MaxConcurrent: 2})
+	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+}
+
+func TestDrainQueue_SkipsKnownTextOnlyForVision(t *testing.T) {
+	h := hub.New(slog.Default())
+	q := queue.New()
+	s := New(q, h, noAlias{}, slog.Default())
+
+	conn := dialClient(t, h, "alice", "ct-alice-txt", nil)
+	registerModelModalities(t, conn, "llava", []string{"text"}) // known text-only
+
+	q.Push(types.InferenceRequest{
+		ID: "req-img", Model: "llava", Owner: "alice",
+		Modalities: []string{"vision"}, EnqueuedAt: time.Now(),
+	})
+	s.drainQueue()
+
+	if q.Len() == 0 {
+		t.Error("vision request must not dispatch to a known text-only client; it should remain queued")
+	}
+	if job := readJob(t, conn, 100*time.Millisecond); job != nil {
+		t.Errorf("text-only client received vision job: %s", job.Request.ID)
+	}
+}
+
+func TestDrainQueue_DispatchesToVisionCapable(t *testing.T) {
+	h := hub.New(slog.Default())
+	q := queue.New()
+	s := New(q, h, noAlias{}, slog.Default())
+
+	conn := dialClient(t, h, "alice", "ct-alice-vis", nil)
+	registerModelModalities(t, conn, "llava", []string{"text", "vision"})
+
+	q.Push(types.InferenceRequest{
+		ID: "req-img", Model: "llava", Owner: "alice",
+		Modalities: []string{"vision"}, EnqueuedAt: time.Now(),
+	})
+	s.drainQueue()
+
+	job := readJob(t, conn, 300*time.Millisecond)
+	if job == nil {
+		t.Fatal("vision-capable client should receive the vision job")
+	}
+	if job.Request.ID != "req-img" {
+		t.Errorf("dispatched wrong job: got %s, want req-img", job.Request.ID)
+	}
+}
+
+func TestDrainQueue_UnknownCapabilityNotExcluded(t *testing.T) {
+	h := hub.New(slog.Default())
+	q := queue.New()
+	s := New(q, h, noAlias{}, slog.Default())
+
+	conn := dialClient(t, h, "alice", "ct-alice-unk", nil)
+	registerModels(t, conn, "llava") // no modalities advertised → unknown capability
+
+	q.Push(types.InferenceRequest{
+		ID: "req-img", Model: "llava", Owner: "alice",
+		Modalities: []string{"vision"}, EnqueuedAt: time.Now(),
+	})
+	s.drainQueue()
+
+	job := readJob(t, conn, 300*time.Millisecond)
+	if job == nil {
+		t.Fatal("unknown-capability client must still receive the job (pass-through preserved)")
+	}
+}

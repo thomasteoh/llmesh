@@ -87,6 +87,15 @@ type ContextChecker interface {
 	MaxContextForModel(model string, aliases map[string][]string) int
 }
 
+// ModalityChecker is satisfied by *hub.Hub (duck typing — no import needed).
+// ModelModalityVerdict reports whether any connected client serving the model
+// can handle the required non-text input modalities, and whether any serving
+// client's capabilities are unknown (so a request is only hard-rejected when
+// certain no client can serve it).
+type ModalityChecker interface {
+	ModelModalityVerdict(model string, aliases map[string][]string, required []string) (anyCompatible, anyUnknown bool)
+}
+
 // OwnerInFlighter is satisfied by *hub.Hub (duck typing — no import needed).
 // OwnerInFlight returns the number of jobs currently in flight for owner.
 type OwnerInFlighter interface {
@@ -119,27 +128,61 @@ type Waker interface {
 }
 
 type Handler struct {
-	Keys              APIKeyStore
-	Models            ModelStore
-	Aliases           AliasStore
-	Opts              OptStore // optional; nil = no request optimization
-	Stats             StatsRecorder
-	Usage             UsageRecorder
-	Queue             Enqueuer
-	Correlation       ResponseStore
-	Scheduler         Waker
-	Canceller         Canceller       // optional; nil = no cancellation
-	Workers           WorkerChecker   // optional; nil = skip worker fast-fail
-	ContextSizes      ContextChecker  // optional; nil = skip context size validation
-	InFlight          OwnerInFlighter // optional; nil = skip per-owner concurrency check
-	Limits            LimitProvider   // optional; nil = no per-key concurrency limits
-	Dedup             *dedup.Registry // optional; nil = no coalescing
+	Keys         APIKeyStore
+	Models       ModelStore
+	Aliases      AliasStore
+	Opts         OptStore // optional; nil = no request optimization
+	Stats        StatsRecorder
+	Usage        UsageRecorder
+	Queue        Enqueuer
+	Correlation  ResponseStore
+	Scheduler    Waker
+	Canceller    Canceller       // optional; nil = no cancellation
+	Workers      WorkerChecker   // optional; nil = skip worker fast-fail
+	ContextSizes ContextChecker  // optional; nil = skip context size validation
+	Modalities   ModalityChecker // optional; nil = skip modality fast-fail
+	InFlight     OwnerInFlighter // optional; nil = skip per-owner concurrency check
+	Limits       LimitProvider   // optional; nil = no per-key concurrency limits
+	Dedup        *dedup.Registry // optional; nil = no coalescing
+	// MaxRequestBytes caps the inbound request body size. 0 = default (8 MiB);
+	// values above the 15 MiB ceiling are clamped so a body that clears ingress
+	// still fits the client WebSocket frame limit once wrapped in a job.
+	MaxRequestBytes   int
 	TTFTTimeout       time.Duration
 	ActivityTimeout   time.Duration
 	BatchTimeout      time.Duration
 	KeepAliveInterval time.Duration
 	requestCount      atomic.Int64
+	oversizeCount     atomic.Int64 // requests rejected for exceeding MaxRequestBytes
+	multimodalCount   atomic.Int64 // requests carrying non-text input modalities
 }
+
+const (
+	defaultMaxRequestBytes = 8 << 20 // 8 MiB — comfortably fits typical base64 images
+	// maxRequestBytesCeiling keeps the configurable limit below the 16 MiB
+	// WebSocket frame cap (hub.maxReadBytes) so a body that clears ingress still
+	// fits the client's read limit once wrapped in a JobMsg envelope.
+	maxRequestBytesCeiling = 15 << 20 // 15 MiB
+)
+
+func (h *Handler) maxRequestBytes() int64 {
+	n := h.MaxRequestBytes
+	if n <= 0 {
+		n = defaultMaxRequestBytes
+	}
+	if n > maxRequestBytesCeiling {
+		n = maxRequestBytesCeiling
+	}
+	return int64(n)
+}
+
+// RejectedTooLarge returns the number of requests rejected for exceeding the
+// body-size limit since startup.
+func (h *Handler) RejectedTooLarge() int64 { return h.oversizeCount.Load() }
+
+// MultimodalRequests returns the number of accepted requests carrying non-text
+// input modalities (images/audio) since startup.
+func (h *Handler) MultimodalRequests() int64 { return h.multimodalCount.Load() }
 
 func (h *Handler) ttftTimeout() time.Duration {
 	if h.TTFTTimeout > 0 {
@@ -234,12 +277,13 @@ func (h *Handler) enqueue(
 
 	// MaxBytesReader (not LimitReader) so an over-limit body is rejected with a
 	// clear 413 rather than silently truncated into invalid or partial JSON.
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	r.Body = http.MaxBytesReader(w, r.Body, h.maxRequestBytes())
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
-			apiLogger().Warn("api: request body too large", "ip", clientIP(r))
+			h.oversizeCount.Add(1)
+			apiLogger().Warn("api: request body too large", "limit_bytes", h.maxRequestBytes(), "ip", clientIP(r))
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusRequestEntityTooLarge)
 			w.Write([]byte(`{"error":{"message":"request body too large","type":"invalid_request_error"}}` + "\n"))
@@ -292,10 +336,40 @@ func (h *Handler) enqueue(
 		}
 	}
 
+	// Analyse message content once: approximate prompt word count (used for the
+	// context fast-fail and scheduler context check) and the non-text input
+	// modalities the request carries (used for capability routing).
+	wordCount, modalities := analyzeMessages(req)
+	req.Modalities = modalities
+	if len(modalities) > 0 {
+		h.multimodalCount.Add(1)
+	}
+
+	// Fast-fail: reject a request carrying input modalities that no connected
+	// client can serve. Only rejects when certain — if any serving client is
+	// compatible, or any has unknown capabilities, the request proceeds so
+	// pass-through keeps working for backends that don't report capability.
+	if h.Modalities != nil && len(modalities) > 0 {
+		if compatible, unknown := h.Modalities.ModelModalityVerdict(req.Model, aliases, modalities); !compatible && !unknown {
+			apiLogger().Warn("api: model does not support required input modalities",
+				"model", req.Model, "modalities", modalities, "ip", clientIP(r))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			b, _ := json.Marshal(map[string]any{
+				"error": map[string]any{
+					"message": fmt.Sprintf("model %q does not support %v input", req.Model, modalities),
+					"type":    "invalid_request_error",
+					"code":    "unsupported_modality",
+				},
+			})
+			w.Write(b)
+			return
+		}
+	}
+
 	// Fast-fail: reject if the estimated token count exceeds what every connected
 	// client for this model can handle. If some clients have enough context but are
 	// busy, we queue normally and the scheduler will wait for one of them.
-	wordCount := messageWordCount(req)
 	if h.ContextSizes != nil {
 		if wordCount > 0 {
 			maxCtx := h.ContextSizes.MaxContextForModel(req.Model, aliases)
@@ -417,7 +491,7 @@ func (h *Handler) enqueue(
 	req.Priority = h.Keys.PriorityFor(key)
 	req.Owner = h.Keys.OwnerFor(key)
 	req.APIKeyLabel = h.Keys.LabelFor(key)
-	req.WordCount = messageWordCount(req)
+	req.WordCount = wordCount
 	h.requestCount.Add(1)
 	req.EnqueuedAt = time.Now()
 
@@ -681,28 +755,68 @@ func (h *Handler) writeBatch(w http.ResponseWriter, req *types.InferenceRequest,
 	}
 }
 
-// messageWordCount returns an approximate word count across all messages in req.
-// It tries to extract plain text from content fields; falls back to raw bytes.
-func messageWordCount(req *types.InferenceRequest) int {
-	count := 0
+const (
+	// perImagePromptWords / perAudioPromptWords approximate the prompt budget a
+	// vision/audio content part consumes once the backend tokenises it,
+	// expressed as word-equivalents (EstimateTokens multiplies words by 4/3).
+	// Bounded constants keep a media part from being ignored entirely (0 tokens)
+	// while never letting a base64 blob dominate the estimate. Approximate by
+	// design — the context fast-fail only needs the right order of magnitude.
+	perImagePromptWords = 600
+	perAudioPromptWords = 400
+	// rawFallbackWordCap bounds the whitespace-split fallback for content that
+	// is neither a plain string nor a recognised parts array, so an unusual
+	// structured shape cannot dominate the estimate.
+	rawFallbackWordCap = 4096
+)
+
+// analyzeMessages returns an approximate prompt word count and the sorted set of
+// non-text input modalities present across all messages. Plain-string content
+// is counted by words; a structured content-part array contributes its text
+// parts' words plus a fixed word-equivalent allowance for each image/audio part
+// (which would otherwise count as zero, under-estimating a vision prompt).
+// Content that parses as neither falls back to a capped whitespace split.
+func analyzeMessages(req *types.InferenceRequest) (wordCount int, modalities []string) {
+	seen := map[string]bool{}
+	addModality := func(m string) {
+		if m == "" || seen[m] {
+			return
+		}
+		seen[m] = true
+		modalities = append(modalities, m)
+	}
 	for _, m := range req.Messages {
 		var s string
 		if json.Unmarshal(m.Content, &s) == nil {
-			count += len(strings.Fields(s))
+			wordCount += len(strings.Fields(s))
 			continue
 		}
-		var blocks []struct {
+		var parts []struct {
+			Type string `json:"type"`
 			Text string `json:"text"`
 		}
-		if json.Unmarshal(m.Content, &blocks) == nil {
-			for _, b := range blocks {
-				count += len(strings.Fields(b.Text))
+		if json.Unmarshal(m.Content, &parts) == nil {
+			for _, p := range parts {
+				wordCount += len(strings.Fields(p.Text))
+				switch mod := types.ModalityForContentType(p.Type); mod {
+				case types.ModalityVision, types.ModalityVideo:
+					wordCount += perImagePromptWords
+					addModality(mod)
+				case types.ModalityAudio:
+					wordCount += perAudioPromptWords
+					addModality(mod)
+				}
 			}
 			continue
 		}
-		count += len(strings.Fields(string(m.Content)))
+		if n := len(strings.Fields(string(m.Content))); n > rawFallbackWordCap {
+			wordCount += rawFallbackWordCap
+		} else {
+			wordCount += n
+		}
 	}
-	return count
+	sort.Strings(modalities)
+	return wordCount, modalities
 }
 
 func (h *Handler) OpenAI() http.HandlerFunc {

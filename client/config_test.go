@@ -203,3 +203,28 @@ func TestEffectiveNameResolution(t *testing.T) {
 		t.Errorf("EndpointFor(detected) after resolution = %q, want http://localhost:8082", got)
 	}
 }
+
+func TestEffectiveModalities(t *testing.T) {
+	detected := []string{"text", "vision"}
+
+	// No explicit config → detected passed through unchanged (including nil).
+	if got := (ModelConfig{}).EffectiveModalities(detected); len(got) != 2 || got[1] != "vision" {
+		t.Errorf("no config = %v, want detected %v", got, detected)
+	}
+	if got := (ModelConfig{}).EffectiveModalities(nil); got != nil {
+		t.Errorf("no config, nil detected = %v, want nil (unknown)", got)
+	}
+
+	// Explicit config wins and is normalised to include the text sentinel.
+	got := (ModelConfig{Modalities: []string{"vision"}}).EffectiveModalities(nil)
+	want := []string{"text", "vision"}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("explicit config = %v, want %v", got, want)
+	}
+
+	// An explicit "text" is not duplicated.
+	got = (ModelConfig{Modalities: []string{"text", "audio"}}).EffectiveModalities(detected)
+	if len(got) != 2 || got[0] != "text" || got[1] != "audio" {
+		t.Errorf("explicit with text = %v, want [text audio]", got)
+	}
+}

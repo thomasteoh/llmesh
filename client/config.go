@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+	"llmesh/pkg/types"
 )
 
 type ModelConfig struct {
@@ -30,6 +31,30 @@ type ModelConfig struct {
 	// A header set here overrides one llmesh would otherwise send (including
 	// Authorization, so a non-standard auth header can replace the bearer scheme).
 	Headers map[string]string `yaml:"headers,omitempty"`
+
+	// Modalities explicitly declares the non-text input types this backend
+	// accepts, e.g. ["vision"] or ["vision", "audio"]. Set this for backends
+	// that don't report capability via llama.cpp /props (vLLM, hosted servers)
+	// so the router routes image/audio requests here. When set it overrides
+	// auto-detection; when omitted, capability is detected from /props.
+	Modalities []string `yaml:"modalities,omitempty"`
+}
+
+// EffectiveModalities returns the advertised input modalities for this model.
+// An explicit config list wins over detected; it is normalised to always
+// include the "text" sentinel so the router treats the capability as known.
+// Returns detected unchanged (possibly nil = unknown) when nothing is configured.
+func (m ModelConfig) EffectiveModalities(detected []string) []string {
+	if len(m.Modalities) == 0 {
+		return detected
+	}
+	out := []string{types.ModalityText}
+	for _, mod := range m.Modalities {
+		if mod != "" && mod != types.ModalityText {
+			out = append(out, mod)
+		}
+	}
+	return out
 }
 
 // RequestHeaders returns the HTTP headers to attach to every request sent to

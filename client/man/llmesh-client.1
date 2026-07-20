@@ -180,6 +180,16 @@ Optional map of extra HTTP headers sent to the endpoint on every request
 or tenant routing).
 A header set here overrides one the client would otherwise send, including
 .IR Authorization .
+.TP
+.B modalities
+Optional list of non-text input types this backend accepts
+.RI ( vision ,
+.IR audio ).
+Auto-detected from the llama.cpp
+.I /props
+endpoint when omitted; set explicitly for backends that do not report their
+capabilities so the router routes image/audio requests here.
+When set it is advertised to the router in place of auto-detection.
 .RE
 .SH EXAMPLES
 .SS Run with a custom config file

@@ -146,6 +146,7 @@ server:
 | `name` | No | `llmesh` | Brand name shown on the landing page |
 | `host` | No | `llmesh.example.com` | Public hostname — shown in admin UI when generating client config |
 | `server.port` | No | `53002` | Port the router listens on |
+| `server.max_request_mb` | No | `8` | Max inbound request body size in MiB. Raise to accept multimodal requests (base64 images/audio); clamped to 15 so a body that clears ingress still fits the client WebSocket frame limit. |
 
 **Start**
 
@@ -194,6 +195,8 @@ models:
     # api_key: "sk-backend-key"                     # optional: sent as Authorization: Bearer to this endpoint
     # headers:                                      # optional: extra headers sent to this endpoint
     #   x-api-key: "gateway-token"
+    # modalities: ["vision"]                        # optional: declare non-text input this backend accepts
+    #                                               # (auto-detected from llama.cpp /props when omitted)
 ```
 
 | Field | Required | Default | Description |
@@ -209,8 +212,16 @@ models:
 | `models[].chat_template` | No | — | Override the model's built-in Jinja chat template (e.g. `"qwen2.5"`) |
 | `models[].api_key` | No | — | Sent to the endpoint as `Authorization: Bearer <key>` on every request. Use for backends that require authentication (vLLM, LM Studio, llama.cpp `--api-key`, hosted OpenAI-compatible servers). |
 | `models[].headers` | No | — | Map of extra HTTP headers sent to the endpoint on every request (e.g. a gateway needing `x-api-key` or tenant routing). A header set here overrides one llmesh would otherwise send, including `Authorization`. |
+| `models[].modalities` | No | auto | Non-text input types this backend accepts, e.g. `["vision"]` or `["vision", "audio"]`. Auto-detected from llama.cpp `/props` when omitted. Set explicitly for backends that don't report capability (vLLM, hosted servers) so the router routes image/audio requests here. |
 
 The `router_token` must be created first in the router's admin UI under **Clients**.
+
+### Multimodal input (images / audio)
+
+Image and audio content parts (OpenAI `image_url` / `input_audio`, Anthropic `image` blocks) pass through the router to the backend unchanged, so a vision- or audio-capable backend works without extra configuration. Two things make it reliable:
+
+- **Body size** — base64 media easily exceeds a text-only budget, so raise `server.max_request_mb` on the router if needed (default 8 MiB).
+- **Routing** — the router sends a request carrying non-text parts only to a client whose model advertises that capability. Capability is auto-detected from llama.cpp `/props`; set `models[].modalities` explicitly for backends that don't report it. A client that advertises nothing is treated as unknown and never excluded, so existing setups keep working. When every connected client for a model is known to lack the required modality, the request is rejected up front with `unsupported_modality` rather than dispatched and failed.
 
 **Start**
 
