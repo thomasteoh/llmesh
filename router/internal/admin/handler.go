@@ -62,6 +62,49 @@ func (a *Admin) SetConnectorStatus(fn func(url string) bool) { a.upstreamConnect
 // honoured. Enable only when the router is behind a trusted reverse proxy.
 func (a *Admin) SetTrustProxy(v bool) { a.trustProxy = v }
 
+// defaultConfiguredHost mirrors the fallback assigned in router/config.go when
+// no host is set in the config file. When a.host still equals this sentinel the
+// operator never configured a real host, so the portal prefers an auto-detected
+// or admin-set value over showing the placeholder.
+const defaultConfiguredHost = "llmesh.example.com"
+
+// effectiveHost resolves the public hostname shown throughout the portal and
+// written into downloadable client configs. Precedence, highest first:
+//  1. the admin-set override from the settings table (a deliberate choice),
+//  2. a real host from the config file (anything other than the placeholder),
+//  3. the host the browser actually used to reach the portal (auto-detection),
+//  4. the configured value as a last resort (the placeholder).
+func (a *Admin) effectiveHost(r *http.Request) string {
+	if h := a.state.PortalHost(); h != "" {
+		return h
+	}
+	if a.host != "" && a.host != defaultConfiguredHost {
+		return a.host
+	}
+	if h := requestHost(r, a.trustProxy); h != "" {
+		return h
+	}
+	return a.host
+}
+
+// requestHost returns the host the client used to reach the router: the
+// X-Forwarded-Host set by a trusted proxy when trustProxy is enabled, otherwise
+// the request's own Host header. Returns "" when nothing usable is present.
+func requestHost(r *http.Request, trustProxy bool) string {
+	if r == nil {
+		return ""
+	}
+	if trustProxy {
+		if xfh := r.Header.Get("X-Forwarded-Host"); xfh != "" {
+			if i := strings.IndexByte(xfh, ','); i >= 0 {
+				xfh = xfh[:i] // take the first hop in a comma-separated chain
+			}
+			return strings.TrimSpace(xfh)
+		}
+	}
+	return r.Host
+}
+
 // New creates an Admin handler. statePath is the path to state.json.
 func New(statePath string, h *hub.Hub, q *queue.Queue, reqCount func() int64, s *stats.Stats, routerVersion, name, host string, sink *logring.Sink) (*Admin, error) {
 	if reqCount == nil {
@@ -262,6 +305,7 @@ func (a *Admin) registerRoutes() {
 	mux.HandleFunc("/portal/settings/upstream/add", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleUpstreamAdd)), 20))
 	mux.HandleFunc("/portal/settings/upstream/remove", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleUpstreamRemove)), 20))
 	mux.HandleFunc("/portal/settings/optimization", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleOptimizationUpdate)), 20))
+	mux.HandleFunc("/portal/settings/host", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleHostUpdate)), 20))
 
 	// Dashboard JSON API
 	mux.HandleFunc("/portal/api/dashboard", a.requireAuth(a.handleDashboardJSON))

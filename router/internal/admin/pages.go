@@ -3,6 +3,7 @@ package admin
 import (
 	"fmt"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -179,6 +180,10 @@ type SettingsPage struct {
 	Users     []UserRow
 	Upstreams []UpstreamRouterRow
 	Opt       types.RequestOptimization
+	// PortalHost is the admin-set host override (empty when unset). The resolved
+	// value in effect is basePage.Host; this is the raw stored override so the
+	// form shows blank when the host is auto-detected rather than pinned.
+	PortalHost string
 }
 
 type UserRow struct {
@@ -207,7 +212,7 @@ func (a *Admin) newBasePage(page string, u User, r *http.Request) basePage {
 		IsAdmin:       u.Role == "admin",
 		RouterVersion: a.routerVersion,
 		Name:          a.name,
-		Host:          a.host,
+		Host:          a.effectiveHost(r),
 	}
 	// Read the session's CSRF token (set once at login, stable for the session).
 	// Session-scoped tokens let concurrent tabs for the same user operate independently.
@@ -657,7 +662,7 @@ func (a *Admin) handleClientTokenConfig(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	yaml := fmt.Sprintf("router_url: \"wss://%s/ws/client\"\nrouter_token: \"%s\"\n# max_concurrent: 4        # optional - omit to auto-detect from llama.cpp slot count\nmodels:\n  - endpoint: \"http://localhost:8080\"   # model name auto-detected from this endpoint's /v1/models\n", a.host, token)
+	yaml := fmt.Sprintf("router_url: \"wss://%s/ws/client\"\nrouter_token: \"%s\"\n# max_concurrent: 4        # optional - omit to auto-detect from llama.cpp slot count\nmodels:\n  - endpoint: \"http://localhost:8080\"   # model name auto-detected from this endpoint's /v1/models\n", a.effectiveHost(r), token)
 	w.Header().Set("Content-Type", "application/x-yaml")
 	w.Header().Set("Content-Disposition", `attachment; filename="config.yaml"`)
 	fmt.Fprint(w, yaml)
@@ -710,7 +715,7 @@ models:
   #   backend:
   #     type: command
   #     command: "/path/to/adapter.sh"
-`, a.host, token)
+`, a.effectiveHost(r), token)
 	w.Header().Set("Content-Type", "application/x-yaml")
 	w.Header().Set("Content-Disposition", `attachment; filename="shim-config.yaml"`)
 	fmt.Fprint(w, yaml)
@@ -796,10 +801,11 @@ func (a *Admin) renderSettings(w http.ResponseWriter, r *http.Request, u User, f
 	bp.Flash = flash
 	bp.Error = errMsg
 	a.render(w, "settings", SettingsPage{
-		basePage:  bp,
-		Users:     rows,
-		Upstreams: upstreamRows,
-		Opt:       a.state.RequestOpts(),
+		basePage:   bp,
+		Users:      rows,
+		Upstreams:  upstreamRows,
+		Opt:        a.state.RequestOpts(),
+		PortalHost: a.state.PortalHost(),
 	})
 }
 
@@ -876,6 +882,56 @@ func (a *Admin) handleOptimizationUpdate(w http.ResponseWriter, r *http.Request)
 	a.state.RecordAudit(u.Username, "settings.optimization", "", a.clientIP(r))
 	a.log.Info("admin: request-optimization settings updated", "actor", u.Username)
 	http.Redirect(w, r, "/portal/settings#tab-optimization", http.StatusFound)
+}
+
+// hostPattern matches a bare hostname or IP with an optional port. It rejects a
+// scheme, path, whitespace, or quotes, all of which would corrupt the URLs and
+// downloadable YAML the host is interpolated into.
+var hostPattern = regexp.MustCompile(`^[A-Za-z0-9.-]+(:[0-9]+)?$`)
+
+// normalizePortalHost cleans an admin-supplied host. An empty input is valid and
+// means "clear the override" (revert to configured/auto-detected). A non-empty
+// value has any scheme and trailing path stripped, then must be a plain
+// host[:port]; otherwise an error is returned.
+func normalizePortalHost(in string) (string, error) {
+	h := strings.TrimSpace(in)
+	if h == "" {
+		return "", nil
+	}
+	if i := strings.Index(h, "://"); i >= 0 {
+		h = h[i+3:]
+	}
+	h = strings.TrimSuffix(h, "/")
+	if i := strings.IndexByte(h, '/'); i >= 0 {
+		h = h[:i]
+	}
+	if !hostPattern.MatchString(h) {
+		return "", fmt.Errorf("invalid host %q: use a hostname or host:port, without scheme or path", in)
+	}
+	return h, nil
+}
+
+func (a *Admin) handleHostUpdate(w http.ResponseWriter, r *http.Request) {
+	u := ctxGetUser(r)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	host, err := normalizePortalHost(r.FormValue("host"))
+	if err != nil {
+		a.renderSettings(w, r, u, "", err.Error())
+		return
+	}
+	if err := a.state.SetPortalHost(host); err != nil {
+		a.renderSettings(w, r, u, "", err.Error())
+		return
+	}
+	a.state.RecordAudit(u.Username, "settings.host", host, a.clientIP(r))
+	if host == "" {
+		a.renderSettings(w, r, u, "Public host cleared; it will be detected automatically.", "")
+		return
+	}
+	a.renderSettings(w, r, u, fmt.Sprintf("Public host set to %q.", host), "")
 }
 
 func (a *Admin) handleChangePassword(w http.ResponseWriter, r *http.Request) {

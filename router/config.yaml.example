@@ -1,5 +1,7 @@
 name: "llmesh"              # brand name shown on landing page and admin UI
-host: "llmesh.example.com"  # public hostname used in admin UI client setup instructions
+host: "llmesh.example.com"  # public hostname used in client setup instructions. Optional:
+                            # if omitted it is auto-detected from the request, and an admin
+                            # can override it in the portal (Settings → General).
 server:
   port: 53002
   # max_request_mb: 8   # optional - max inbound request body size in MiB (default 8, capped at 15).

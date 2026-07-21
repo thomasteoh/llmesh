@@ -107,7 +107,7 @@ In short: an **API key (`sk-`)** lets someone ask llmesh for an answer; a **clie
 https://<your-router-host>/v1
 ```
 
-That host is the `host` value from the router's `config.yaml`. The portal shows the exact URL at the top of the **API Keys** page, and the WebSocket URL workers use (`wss://<host>/ws/client`) at the top of the **Clients** page. Everything else hangs off the base URL — `/v1/chat/completions`, `/v1/messages`, `/v1/responses`, `/v1/models`.
+That host resolves in this order: an admin override set in the portal (**Settings → General → Public address**), then the `host` value from the router's `config.yaml`, then the address your browser used to reach the portal (auto-detected, honouring `X-Forwarded-Host` when the router runs behind a trusted proxy). Set it explicitly in the portal when the portal is reached over a different hostname than clients use. The portal shows the exact URL at the top of the **API Keys** page, and the WebSocket URL workers use (`wss://<host>/ws/client`) at the top of the **Clients** page. Everything else hangs off the base URL — `/v1/chat/completions`, `/v1/messages`, `/v1/responses`, `/v1/models`.
 
 ```bash
 curl https://<your-router-host>/v1/chat/completions \
@@ -144,7 +144,7 @@ server:
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `name` | No | `llmesh` | Brand name shown on the landing page |
-| `host` | No | `llmesh.example.com` | Public hostname — shown in admin UI when generating client config |
+| `host` | No | auto-detected | Public hostname shown in the portal and written into generated client configs. Optional: when unset it is auto-detected from the request, and an admin can override it in the portal (Settings → General). |
 | `server.port` | No | `53002` | Port the router listens on |
 | `server.max_request_mb` | No | `8` | Max inbound request body size in MiB. Raise to accept multimodal requests (base64 images/audio); clamped to 15 so a body that clears ingress still fits the client WebSocket frame limit. |
 

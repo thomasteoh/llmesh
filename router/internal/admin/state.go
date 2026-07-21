@@ -1168,3 +1168,30 @@ func (s *State) SetRequestOpt(key string, enabled bool) error {
 	s.optCache.Store(nil)
 	return nil
 }
+
+// portalHostKey is the settings-table key holding the admin-set public host that
+// overrides the configured/auto-detected value in the portal.
+const portalHostKey = "portal.host"
+
+// PortalHost returns the admin-configured public host override, or "" when none
+// is set (in which case the caller falls back to config/auto-detection).
+func (s *State) PortalHost() string {
+	var v string
+	s.db.QueryRow(`SELECT value FROM settings WHERE key = ?`, portalHostKey).Scan(&v)
+	return v
+}
+
+// SetPortalHost stores the public host override. An empty host clears the
+// override so the portal reverts to the configured or auto-detected value.
+func (s *State) SetPortalHost(host string) error {
+	if host == "" {
+		_, err := s.db.Exec(`DELETE FROM settings WHERE key = ?`, portalHostKey)
+		return err
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO settings (key, value) VALUES (?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		portalHostKey, host,
+	)
+	return err
+}

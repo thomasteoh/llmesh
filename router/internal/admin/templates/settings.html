@@ -7,6 +7,7 @@
   <div class="tab-bar underline">
     <button class="tab-btn active" data-tab-target="tab-password" data-tab-hash>Password</button>
     {{if .IsAdmin}}
+    <button class="tab-btn" data-tab-target="tab-general" data-tab-hash>General</button>
     <button class="tab-btn" data-tab-target="tab-users" data-tab-hash>Users</button>
     <button class="tab-btn" data-tab-target="tab-upstreams" data-tab-hash>Upstreams</button>
     <button class="tab-btn" data-tab-target="tab-optimization" data-tab-hash>Optimization</button>
@@ -31,6 +32,25 @@
   </div>
 
   {{if .IsAdmin}}
+  {{/* ── General tab ── */}}
+  <div id="tab-general" class="tab-panel">
+    <div class="settings-narrow">
+      <div class="card">
+        <div class="card-title">Public address</div>
+        <p class="table-hint mb-3">The hostname clients use to reach this router. It appears in the setup instructions and API endpoint URLs, and is written into downloadable client configs. Leave it blank to detect it automatically from the address you use to reach this portal; set it explicitly when the portal is reached over a different hostname than clients use (for example behind a reverse proxy).</p>
+        <form method="POST" action="/portal/settings/host">
+          <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+          <div class="form-group mb-3">
+            <label>Host <span class="muted">(hostname or host:port, no scheme)</span></label>
+            <input name="host" value="{{.PortalHost}}" placeholder="{{.Host}}">
+          </div>
+          <p class="table-hint mb-3">Currently in effect: <code>{{.Host}}</code>{{if eq .PortalHost ""}} <span class="muted">(auto-detected)</span>{{end}}</p>
+          <button type="submit" class="btn">Save public address</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
   {{/* ── Users tab ── */}}
   <div id="tab-users" class="tab-panel">
     <div class="mt-2">
