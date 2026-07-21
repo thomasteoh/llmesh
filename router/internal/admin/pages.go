@@ -1004,6 +1004,54 @@ func (a *Admin) handleUserDemote(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/portal/settings", http.StatusFound)
 }
 
+func (a *Admin) handleUserResetPassword(w http.ResponseWriter, r *http.Request) {
+	u := ctxGetUser(r)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	target := r.FormValue("username")
+	if target == u.Username {
+		a.renderSettings(w, r, u, "", "Use Change Password to update your own account.")
+		return
+	}
+	if _, ok := a.state.LookupUser(target); !ok {
+		a.renderSettings(w, r, u, "", fmt.Sprintf("User %q not found.", target))
+		return
+	}
+	temp, err := generateTempPassword()
+	if err != nil {
+		a.renderSettings(w, r, u, "", "Internal error.")
+		return
+	}
+	hash, err := HashPassword(temp)
+	if err != nil {
+		a.renderSettings(w, r, u, "", "Internal error.")
+		return
+	}
+	if err := a.state.UpdateUser(target, func(user *User) { user.PasswordHash = hash }); err != nil {
+		a.renderSettings(w, r, u, "", err.Error())
+		return
+	}
+	a.state.RecordAudit(u.Username, "user.password_reset", target, a.clientIP(r))
+	a.renderSettings(w, r, u, fmt.Sprintf("Temporary password for %q: %s — copy it now, it will not be shown again. The user should change it after signing in.", target, temp), "")
+}
+
+func (a *Admin) handleUserDelete(w http.ResponseWriter, r *http.Request) {
+	u := ctxGetUser(r)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	target := r.FormValue("username")
+	if err := a.state.DeleteUser(u.Username, target); err != nil {
+		a.renderSettings(w, r, u, "", err.Error())
+		return
+	}
+	a.state.RecordAudit(u.Username, "user.delete", target, a.clientIP(r))
+	a.renderSettings(w, r, u, fmt.Sprintf("User %q deleted.", target), "")
+}
+
 // statsRows converts stats.Stats rows to StatRow slices sorted by total tokens desc.
 // byModel=true returns per-model rows; false returns per-user rows.
 func statsRows(s *stats.Stats, byModel bool) []StatRow {

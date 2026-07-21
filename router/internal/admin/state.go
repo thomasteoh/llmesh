@@ -642,6 +642,51 @@ func (s *State) DemoteUser(actor, target string) error {
 	return nil
 }
 
+// DeleteUser permanently removes a disabled user and the credentials they own.
+// Deletion is restricted to disabled users so an active account cannot be
+// removed out from under a live session; the account must be disabled first.
+// The user's API keys and client tokens are deleted in the same transaction,
+// otherwise those secrets would keep authenticating after the owner is gone.
+// Historical usage rows and audit records are intentionally retained.
+func (s *State) DeleteUser(actor, target string) error {
+	if actor == target {
+		return fmt.Errorf("cannot delete yourself")
+	}
+	u, ok := s.LookupUser(target)
+	if !ok {
+		return fmt.Errorf("user not found: %s", target)
+	}
+	if !u.Disabled {
+		return fmt.Errorf("only disabled users can be deleted; disable %q first", target)
+	}
+	if u.Role == "admin" {
+		var admins int
+		s.db.QueryRow(`SELECT COUNT(*) FROM users WHERE role = 'admin'`).Scan(&admins)
+		if admins <= 1 {
+			return fmt.Errorf("cannot delete the last admin account")
+		}
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM api_keys WHERE owner = ?`, target); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM client_tokens WHERE owner = ?`, target); err != nil {
+		return err
+	}
+	res, err := tx.Exec(`DELETE FROM users WHERE username = ?`, target)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("user not found: %s", target)
+	}
+	return tx.Commit()
+}
+
 // --- API Keys ---
 
 // LookupAPIKey finds a key record by the plaintext key presented by a caller.

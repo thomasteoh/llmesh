@@ -57,9 +57,11 @@
                 <div class="flex gap-1 justify-end">
                   {{if .Disabled}}
                     {{template "action-button" dict "Action" "/portal/settings/users/enable" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Class" "btn-success" "Label" "Enable"}}
+                    {{template "action-button" dict "Action" "/portal/settings/users/delete" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Confirm" (printf "Delete %s permanently? Their API keys and client tokens will be revoked. This cannot be undone." .Username) "Class" "btn-danger" "Label" "Delete"}}
                   {{else}}
                     {{if eq .Role "admin"}}{{template "action-button" dict "Action" "/portal/settings/users/demote" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Confirm" (printf "Demote %s from admin to member?" .Username) "Class" "btn-secondary" "Label" "Demote"}}{{end}}
                     {{if eq .Role "member"}}{{template "action-button" dict "Action" "/portal/settings/users/promote" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Class" "btn-secondary" "Label" "Promote"}}{{end}}
+                    {{template "action-button" dict "Action" "/portal/settings/users/reset-password" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Confirm" (printf "Reset the password for %s? A temporary password will be shown once." .Username) "Class" "btn-secondary" "Label" "Reset password"}}
                     {{template "action-button" dict "Action" "/portal/settings/users/disable" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Confirm" (printf "Disable %s? They will not be able to sign in." .Username) "Class" "btn-danger" "Label" "Disable"}}
                   {{end}}
                 </div>

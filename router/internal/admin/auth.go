@@ -279,3 +279,14 @@ func HashPassword(password string) (string, error) {
 	b, err := bcrypt.GenerateFromPassword([]byte(password), bcryptCost)
 	return string(b), err
 }
+
+// generateTempPassword returns a random, high-entropy password suitable for an
+// admin-initiated reset. The plaintext is shown to the admin once (never stored)
+// so they can hand it to the user, who is expected to change it after signing in.
+func generateTempPassword() (string, error) {
+	b := make([]byte, 12) // 96 bits of entropy
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
