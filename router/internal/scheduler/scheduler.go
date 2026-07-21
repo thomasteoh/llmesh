@@ -30,6 +30,12 @@ type OptProvider interface {
 	RequestOpts() types.RequestOptimization
 }
 
+// IsolationProvider supplies per-user request-isolation flags (only users with a
+// flag set need appear). Satisfied by *admin.State.
+type IsolationProvider interface {
+	IsolationMap() map[string]types.UserIsolation
+}
+
 // prefixEntry records which client last served a given request prefix and when.
 type prefixEntry struct {
 	clientID string
@@ -65,6 +71,7 @@ type Scheduler struct {
 	hub      Dispatcher
 	aliases  AliasProvider
 	opts     OptProvider
+	iso      IsolationProvider
 	log      *slog.Logger
 	signal   chan struct{}
 	stopCh   chan struct{}
@@ -94,6 +101,28 @@ func New(q *queue.Queue, h Dispatcher, aliases AliasProvider, logger *slog.Logge
 // SetOptProvider registers the source of request-optimization toggles.
 // Must be called before Start. Safe to leave unset (prefix affinity disabled).
 func (s *Scheduler) SetOptProvider(p OptProvider) { s.opts = p }
+
+// SetIsolationProvider registers the source of per-user isolation flags.
+// Must be called before Start. Safe to leave unset (isolation disabled).
+func (s *Scheduler) SetIsolationProvider(p IsolationProvider) { s.iso = p }
+
+// isolationAllows reports whether a request from reqOwner may be dispatched to a
+// client owned by clientOwner under the current isolation flags. A same-owner
+// pairing is always allowed. Otherwise the pairing is blocked if the requester
+// is send-isolated (requests only to own clients) or the client's owner is
+// receive-isolated (clients only serve own requests).
+func isolationAllows(iso map[string]types.UserIsolation, reqOwner, clientOwner string) bool {
+	if reqOwner == clientOwner {
+		return true
+	}
+	if iso[reqOwner].SendIsolated {
+		return false
+	}
+	if iso[clientOwner].ReceiveIsolated {
+		return false
+	}
+	return true
+}
 
 // Wake signals the scheduler to attempt dispatch. Safe to call from any goroutine.
 func (s *Scheduler) Wake() {
@@ -138,6 +167,14 @@ func (s *Scheduler) drainQueue() {
 	var opts types.RequestOptimization
 	if s.opts != nil {
 		opts = s.opts.RequestOpts()
+	}
+
+	// Per-user isolation flags, read once per drain. Empty when no provider is
+	// wired or no user is isolated, in which case the eligibility filter is a
+	// no-op and scheduling behaves exactly as before.
+	var isoMap map[string]types.UserIsolation
+	if s.iso != nil {
+		isoMap = s.iso.IsolationMap()
 	}
 	// prefixKeyFor memoises the prefix key per request within this drain so we
 	// don't re-hash a request that is the best candidate for several clients.
@@ -201,7 +238,17 @@ func (s *Scheduler) drainQueue() {
 			if inFlight[c.ID] >= c.MaxConcurrent {
 				continue
 			}
-			req := s.queue.PeekBestForClient(c.Models, aliases, c.Owner)
+			// Isolation filter: never offer this client a request it may not serve
+			// under send/receive isolation. Applied during selection so a blocked
+			// request cannot shadow one the client may run.
+			var eligible func(reqOwner string) bool
+			if len(isoMap) > 0 {
+				clientOwner := c.Owner
+				eligible = func(reqOwner string) bool {
+					return isolationAllows(isoMap, reqOwner, clientOwner)
+				}
+			}
+			req := s.queue.PeekBestForClient(c.Models, aliases, c.Owner, eligible)
 			if req == nil {
 				continue
 			}

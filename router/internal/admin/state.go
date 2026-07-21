@@ -25,6 +25,11 @@ type User struct {
 	Role         string `json:"role"` // "admin" | "member"
 	Disabled     bool   `json:"disabled"`
 	CSRFToken    string `json:"csrf_token,omitempty"` // SHA-256 hash of current valid CSRF token
+	// SendIsolation restricts this user's requests to clients they own.
+	// ReceiveIsolation restricts this user's clients to serving only the user's
+	// own requests. Both default off; see types.UserIsolation.
+	SendIsolation    bool `json:"send_isolation,omitempty"`
+	ReceiveIsolation bool `json:"receive_isolation,omitempty"`
 }
 
 // APIKey is a stored API key. The key material itself is never persisted:
@@ -152,6 +157,11 @@ type State struct {
 	// hot path and per scheduler drain, so it is cached and invalidated (store
 	// nil) on any settings mutation rather than queried each call.
 	optCache atomic.Pointer[types.RequestOptimization]
+
+	// isoCache holds the per-user isolation flags (only users with a flag set).
+	// Read by the scheduler each drain and invalidated (store nil) on any user
+	// mutation, mirroring optCache.
+	isoCache atomic.Pointer[map[string]types.UserIsolation]
 }
 
 // dbPath converts a .json path to a .db path so that tests using .json paths
@@ -196,11 +206,13 @@ func LoadState(path string) (*State, error) {
 func createSchema(db *sql.DB) error {
 	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS users (
-			username      TEXT PRIMARY KEY,
-			password_hash TEXT NOT NULL DEFAULT '',
-			role          TEXT NOT NULL DEFAULT 'member',
-			disabled      INTEGER NOT NULL DEFAULT 0,
-			csrf_token    TEXT NOT NULL DEFAULT ''
+			username          TEXT PRIMARY KEY,
+			password_hash     TEXT NOT NULL DEFAULT '',
+			role              TEXT NOT NULL DEFAULT 'member',
+			disabled          INTEGER NOT NULL DEFAULT 0,
+			csrf_token        TEXT NOT NULL DEFAULT '',
+			send_isolation    INTEGER NOT NULL DEFAULT 0,
+			receive_isolation INTEGER NOT NULL DEFAULT 0
 		);
 		CREATE TABLE IF NOT EXISTS api_keys (
 			key_hash       TEXT PRIMARY KEY,
@@ -262,6 +274,9 @@ func createSchema(db *sql.DB) error {
 	// Non-destructive migration: add priority column for existing databases.
 	// SQLite returns an error if the column already exists; ignore it.
 	_, _ = db.Exec(`ALTER TABLE upstream_routers ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'`)
+	// Non-destructive migration: per-user request-isolation flags.
+	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN send_isolation INTEGER NOT NULL DEFAULT 0`)
+	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN receive_isolation INTEGER NOT NULL DEFAULT 0`)
 	return nil
 }
 
@@ -537,15 +552,17 @@ func (s *State) NeedsSetup() bool {
 
 func (s *State) LookupUser(username string) (User, bool) {
 	var u User
-	var disabled int
+	var disabled, sendIso, recvIso int
 	err := s.db.QueryRow(
-		`SELECT username, password_hash, role, disabled, csrf_token FROM users WHERE username = ?`,
+		`SELECT username, password_hash, role, disabled, csrf_token, send_isolation, receive_isolation FROM users WHERE username = ?`,
 		username,
-	).Scan(&u.Username, &u.PasswordHash, &u.Role, &disabled, &u.CSRFToken)
+	).Scan(&u.Username, &u.PasswordHash, &u.Role, &disabled, &u.CSRFToken, &sendIso, &recvIso)
 	if err != nil {
 		return User{}, false
 	}
 	u.Disabled = disabled != 0
+	u.SendIsolation = sendIso != 0
+	u.ReceiveIsolation = recvIso != 0
 	return u, true
 }
 
@@ -595,14 +612,17 @@ func (s *State) UpdateUser(username string, fn func(*User)) error {
 	}
 	fn(&u)
 	_, err := s.db.Exec(
-		`UPDATE users SET password_hash = ?, role = ?, disabled = ?, csrf_token = ? WHERE username = ?`,
-		u.PasswordHash, u.Role, boolInt(u.Disabled), u.CSRFToken, username,
+		`UPDATE users SET password_hash = ?, role = ?, disabled = ?, csrf_token = ?, send_isolation = ?, receive_isolation = ? WHERE username = ?`,
+		u.PasswordHash, u.Role, boolInt(u.Disabled), u.CSRFToken, boolInt(u.SendIsolation), boolInt(u.ReceiveIsolation), username,
 	)
+	if err == nil {
+		s.isoCache.Store(nil) // isolation flags may have changed; rebuild on next read
+	}
 	return err
 }
 
 func (s *State) Users() []User {
-	rows, err := s.db.Query(`SELECT username, password_hash, role, disabled, csrf_token FROM users ORDER BY username`)
+	rows, err := s.db.Query(`SELECT username, password_hash, role, disabled, csrf_token, send_isolation, receive_isolation FROM users ORDER BY username`)
 	if err != nil {
 		return nil
 	}
@@ -610,13 +630,48 @@ func (s *State) Users() []User {
 	var out []User
 	for rows.Next() {
 		var u User
-		var disabled int
-		if err := rows.Scan(&u.Username, &u.PasswordHash, &u.Role, &disabled, &u.CSRFToken); err == nil {
+		var disabled, sendIso, recvIso int
+		if err := rows.Scan(&u.Username, &u.PasswordHash, &u.Role, &disabled, &u.CSRFToken, &sendIso, &recvIso); err == nil {
 			u.Disabled = disabled != 0
+			u.SendIsolation = sendIso != 0
+			u.ReceiveIsolation = recvIso != 0
 			out = append(out, u)
 		}
 	}
 	return out
+}
+
+// SetUserIsolation sets a user's two request-isolation flags.
+func (s *State) SetUserIsolation(username string, send, receive bool) error {
+	return s.UpdateUser(username, func(u *User) {
+		u.SendIsolation = send
+		u.ReceiveIsolation = receive
+	})
+}
+
+// IsolationMap returns the isolation flags for every user that has at least one
+// flag set, keyed by username. Users with no isolation appear absent (the zero
+// UserIsolation is the correct default for them). The result is cached and
+// rebuilt only after a user mutation, since the scheduler reads it every drain.
+func (s *State) IsolationMap() map[string]types.UserIsolation {
+	if cached := s.isoCache.Load(); cached != nil {
+		return *cached
+	}
+	m := make(map[string]types.UserIsolation)
+	rows, err := s.db.Query(`SELECT username, send_isolation, receive_isolation FROM users WHERE send_isolation = 1 OR receive_isolation = 1`)
+	if err != nil {
+		return m
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		var send, recv int
+		if err := rows.Scan(&name, &send, &recv); err == nil {
+			m[name] = types.UserIsolation{SendIsolated: send != 0, ReceiveIsolated: recv != 0}
+		}
+	}
+	s.isoCache.Store(&m)
+	return m
 }
 
 func (s *State) ActiveAdminCount() int {

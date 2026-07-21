@@ -412,3 +412,49 @@ func TestMigrateSecretColumns(t *testing.T) {
 		t.Fatal("plaintext columns still present after migration")
 	}
 }
+
+func TestUserIsolation_SetGetAndMap(t *testing.T) {
+	s, _ := LoadState(filepath.Join(t.TempDir(), "state.json"))
+	s.AddUser(User{Username: "alice", Role: "member"})
+	s.AddUser(User{Username: "bob", Role: "member"})
+
+	// Default: no isolation, empty map.
+	if u, _ := s.LookupUser("alice"); u.SendIsolation || u.ReceiveIsolation {
+		t.Fatal("expected no isolation by default")
+	}
+	if m := s.IsolationMap(); len(m) != 0 {
+		t.Fatalf("expected empty isolation map, got %d", len(m))
+	}
+
+	// Set send-only isolation for alice; it must persist and appear in the map.
+	if err := s.SetUserIsolation("alice", true, false); err != nil {
+		t.Fatal(err)
+	}
+	u, _ := s.LookupUser("alice")
+	if !u.SendIsolation || u.ReceiveIsolation {
+		t.Fatalf("unexpected flags after set: %+v", u)
+	}
+	m := s.IsolationMap()
+	if !m["alice"].SendIsolated || m["alice"].ReceiveIsolated {
+		t.Fatalf("map entry wrong: %+v", m["alice"])
+	}
+	if _, ok := m["bob"]; ok {
+		t.Fatal("non-isolated user must not appear in the map")
+	}
+
+	// Toggling receive on for alice must not clobber send (cache invalidated).
+	if err := s.SetUserIsolation("alice", true, true); err != nil {
+		t.Fatal(err)
+	}
+	if m := s.IsolationMap(); !m["alice"].SendIsolated || !m["alice"].ReceiveIsolated {
+		t.Fatalf("expected both flags set, got %+v", m["alice"])
+	}
+
+	// Clearing reverts to an empty map.
+	if err := s.SetUserIsolation("alice", false, false); err != nil {
+		t.Fatal(err)
+	}
+	if m := s.IsolationMap(); len(m) != 0 {
+		t.Fatalf("expected empty map after clear, got %d", len(m))
+	}
+}

@@ -166,3 +166,26 @@ func TestPush_BypassesCap(t *testing.T) {
 		t.Fatalf("Push should bypass cap, got len=%d", q.Len())
 	}
 }
+
+func TestPeekBestForClient_EligibleFilter(t *testing.T) {
+	q := New()
+	models := map[string]bool{"m": true}
+	q.Push(types.InferenceRequest{ID: "a", Model: "m", Owner: "alice", EnqueuedAt: time.Now().Add(-time.Minute)})
+	q.Push(types.InferenceRequest{ID: "b", Model: "m", Owner: "bob", EnqueuedAt: time.Now()})
+
+	// A nil predicate returns the best overall (alice's is older → wins FIFO).
+	if got := q.PeekBestForClient(models, nil, "", nil); got == nil || got.ID != "a" {
+		t.Fatalf("nil predicate: expected a, got %v", got)
+	}
+	// An eligibility predicate that rejects alice returns bob, even though
+	// alice's request would otherwise rank higher — the ineligible request must
+	// not shadow the eligible one.
+	eligible := func(owner string) bool { return owner != "alice" }
+	if got := q.PeekBestForClient(models, nil, "", eligible); got == nil || got.ID != "b" {
+		t.Fatalf("filtered: expected b, got %v", got)
+	}
+	// Rejecting everyone yields nil.
+	if got := q.PeekBestForClient(models, nil, "", func(string) bool { return false }); got != nil {
+		t.Fatalf("all-rejected: expected nil, got %v", got)
+	}
+}

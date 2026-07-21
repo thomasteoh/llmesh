@@ -83,6 +83,13 @@ The router dispatches requests to available clients using **client-centric affin
 2. **Priority tier** — requests can be tagged `high`, `normal`, or `low`
 3. **FIFO** — within the same tier, oldest first
 
+Affinity is a soft preference: by default any client can serve any user's requests once its owner's queue is clear. **Request isolation** turns that into a hard boundary, per user, in two independent directions (set under **Settings → Users** in the portal):
+
+- **Send isolation** — the user's requests may only run on clients they own. Useful when a user must not have their prompts processed on anyone else's machine.
+- **Receive isolation** — the user's clients may only serve that user's own requests. Useful when a user contributes hardware but does not want to process other people's work.
+
+A request whose owner matches the client's owner is always allowed regardless of either flag. An isolated user with no clients of their own simply waits (and eventually times out) rather than spilling onto shared hardware — that is the intended trade-off.
+
 Model aliases allow multiple clients serving different implementations of the same model to be addressed by a single logical name (e.g., `gpt-4o` → `unsloth/qwen3-30b` or `llama3.1:70b`).
 
 ---

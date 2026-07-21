@@ -400,3 +400,135 @@ func TestDrainQueue_UnknownCapabilityNotExcluded(t *testing.T) {
 		t.Fatal("unknown-capability client must still receive the job (pass-through preserved)")
 	}
 }
+
+// mapIso is a test IsolationProvider backed by a static map.
+type mapIso map[string]types.UserIsolation
+
+func (m mapIso) IsolationMap() map[string]types.UserIsolation { return m }
+
+func TestDrainQueue_SendIsolation_BlocksOtherOwnersClient(t *testing.T) {
+	h := hub.New(slog.Default())
+	q := queue.New()
+	s := New(q, h, noAlias{}, slog.Default())
+	s.SetIsolationProvider(mapIso{"bob": {SendIsolated: true}})
+
+	// A fully shared client owned by alice would normally accept bob's job, but
+	// bob is send-isolated so his request may only run on his own clients.
+	conn := dialClient(t, h, "alice", "ct-alice-si", nil)
+	registerModels(t, conn, "llama3")
+
+	q.Push(types.InferenceRequest{ID: "req-bob-si", Model: "llama3", Owner: "bob", EnqueuedAt: time.Now()})
+	s.drainQueue()
+
+	if q.Len() == 0 {
+		t.Error("send-isolated request must not dispatch to another owner's client")
+	}
+	if job := readJob(t, conn, 100*time.Millisecond); job != nil {
+		t.Errorf("alice's client received send-isolated bob's job: %s", job.Request.ID)
+	}
+}
+
+func TestDrainQueue_SendIsolation_AllowsOwnClient(t *testing.T) {
+	h := hub.New(slog.Default())
+	q := queue.New()
+	s := New(q, h, noAlias{}, slog.Default())
+	s.SetIsolationProvider(mapIso{"bob": {SendIsolated: true}})
+
+	conn := dialClient(t, h, "bob", "ct-bob-si", nil)
+	registerModels(t, conn, "llama3")
+
+	q.Push(types.InferenceRequest{ID: "req-bob-own", Model: "llama3", Owner: "bob", EnqueuedAt: time.Now()})
+	s.drainQueue()
+
+	job := readJob(t, conn, 300*time.Millisecond)
+	if job == nil || job.Request.ID != "req-bob-own" {
+		t.Fatal("send-isolated request must still run on its own owner's client")
+	}
+}
+
+func TestDrainQueue_ReceiveIsolation_BlocksOtherOwnersRequest(t *testing.T) {
+	h := hub.New(slog.Default())
+	q := queue.New()
+	s := New(q, h, noAlias{}, slog.Default())
+	// alice's clients are receive-isolated: they serve only alice's requests.
+	s.SetIsolationProvider(mapIso{"alice": {ReceiveIsolated: true}})
+
+	conn := dialClient(t, h, "alice", "ct-alice-ri", nil)
+	registerModels(t, conn, "llama3")
+
+	// bob is not isolated, but alice's client still won't serve him.
+	q.Push(types.InferenceRequest{ID: "req-bob-ri", Model: "llama3", Owner: "bob", EnqueuedAt: time.Now()})
+	s.drainQueue()
+
+	if q.Len() == 0 {
+		t.Error("receive-isolated client must not serve another owner's request")
+	}
+	if job := readJob(t, conn, 100*time.Millisecond); job != nil {
+		t.Errorf("receive-isolated alice's client served bob's job: %s", job.Request.ID)
+	}
+}
+
+func TestDrainQueue_ReceiveIsolation_AllowsOwnRequest(t *testing.T) {
+	h := hub.New(slog.Default())
+	q := queue.New()
+	s := New(q, h, noAlias{}, slog.Default())
+	s.SetIsolationProvider(mapIso{"alice": {ReceiveIsolated: true}})
+
+	conn := dialClient(t, h, "alice", "ct-alice-ri2", nil)
+	registerModels(t, conn, "llama3")
+
+	q.Push(types.InferenceRequest{ID: "req-alice-own", Model: "llama3", Owner: "alice", EnqueuedAt: time.Now()})
+	s.drainQueue()
+
+	job := readJob(t, conn, 300*time.Millisecond)
+	if job == nil || job.Request.ID != "req-alice-own" {
+		t.Fatal("receive-isolated client must still serve its own owner's request")
+	}
+}
+
+// TestDrainQueue_Isolation_NoStarvation guards the selection-time filter: an
+// isolated request that a client may not serve must not prevent that client
+// from serving another request it is allowed to run.
+func TestDrainQueue_Isolation_NoStarvation(t *testing.T) {
+	h := hub.New(slog.Default())
+	q := queue.New()
+	s := New(q, h, noAlias{}, slog.Default())
+	s.SetIsolationProvider(mapIso{"bob": {SendIsolated: true}})
+
+	conn := dialClient(t, h, "alice", "ct-alice-ns", nil)
+	registerModels(t, conn, "llama3")
+
+	// bob's send-isolated request is higher priority (older); carol's is eligible.
+	q.Push(types.InferenceRequest{ID: "req-bob-block", Model: "llama3", Owner: "bob", EnqueuedAt: time.Now().Add(-time.Minute)})
+	q.Push(types.InferenceRequest{ID: "req-carol-ok", Model: "llama3", Owner: "carol", EnqueuedAt: time.Now()})
+	s.drainQueue()
+
+	job := readJob(t, conn, 300*time.Millisecond)
+	if job == nil || job.Request.ID != "req-carol-ok" {
+		t.Fatalf("blocked isolated request must not shadow an eligible one; got %v", job)
+	}
+}
+
+func TestIsolationAllows(t *testing.T) {
+	iso := map[string]types.UserIsolation{
+		"send": {SendIsolated: true},
+		"recv": {ReceiveIsolated: true},
+	}
+	cases := []struct {
+		req, client string
+		want        bool
+	}{
+		{"alice", "alice", true}, // same owner always allowed
+		{"send", "send", true},   // send-isolated to own client
+		{"send", "alice", false}, // send-isolated to other client blocked
+		{"alice", "recv", false}, // receive-isolated client blocks others
+		{"recv", "recv", true},   // receive-isolated client serves its owner
+		{"alice", "bob", true},   // neither isolated
+		{"", "recv", false},      // anonymous request blocked by receive isolation
+	}
+	for _, c := range cases {
+		if got := isolationAllows(iso, c.req, c.client); got != c.want {
+			t.Errorf("isolationAllows(%q,%q) = %v, want %v", c.req, c.client, got, c.want)
+		}
+	}
+}

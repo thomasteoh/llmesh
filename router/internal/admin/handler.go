@@ -259,6 +259,7 @@ func (a *Admin) registerRoutes() {
 	mux.HandleFunc("/portal/settings/users/enable", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleUserEnable)), 20))
 	mux.HandleFunc("/portal/settings/users/promote", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleUserPromote)), 20))
 	mux.HandleFunc("/portal/settings/users/demote", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleUserDemote)), 20))
+	mux.HandleFunc("/portal/settings/users/isolation", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleUserIsolation)), 20))
 	mux.HandleFunc("/portal/settings/upstream/add", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleUpstreamAdd)), 20))
 	mux.HandleFunc("/portal/settings/upstream/remove", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleUpstreamRemove)), 20))
 	mux.HandleFunc("/portal/settings/optimization", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleOptimizationUpdate)), 20))
