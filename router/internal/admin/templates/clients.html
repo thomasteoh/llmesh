@@ -30,6 +30,66 @@
 {{end}}
 {{end}}
 
+{{define "perf-subrow"}}
+{{/* Recent inference performance sub-row for a client token.
+     Expects a ClientTokenRow as '.'; renders nothing when .Perf is nil, which
+     means the machine served no requests inside the measurement window.
+     Pre-formatted strings come from ClientPerfRow; an empty one means the measure
+     was never captured for this machine (e.g. TTFT for batch-only traffic). */}}
+{{if .Perf}}
+{{$p := .Perf}}
+<tr>
+  <td colspan="4" style="padding:0;">
+    <div class="client-connections perf-block">
+      <div class="perf-head">
+        <span class="perf-title">Performance</span>
+        <span class="perf-window muted">last {{$p.WindowDesc}} &middot; {{$p.Requests}} request{{if ne $p.Requests 1}}s{{end}}</span>
+        {{if $p.Est}}<span class="badge muted-badge badge-sm" title="Some samples were timed by the router from the outside rather than reported by the backend, so prefill and generation speeds are approximate.">approx</span>{{end}}
+      </div>
+      <div class="perf-metrics">
+        <div class="perf-metric" title="Token generation speed: tokens generated divided by time spent generating them.">
+          <span class="perf-metric-value">{{if $p.GenTPS}}{{$p.GenTPS}}{{else}}&mdash;{{end}}</span>
+          <span class="perf-metric-label">generation</span>
+        </div>
+        <div class="perf-metric" title="Prompt processing speed: prompt tokens evaluated divided by time spent evaluating them. Excludes tokens served from cache.">
+          <span class="perf-metric-value">{{if $p.PromptTPS}}{{$p.PromptTPS}}{{else}}&mdash;{{end}}</span>
+          <span class="perf-metric-label">prompt eval</span>
+        </div>
+        <div class="perf-metric" title="Time to first token, measured from dispatch to this machine. Excludes time queued waiting for a slot. Streaming requests only.">
+          <span class="perf-metric-value">{{if $p.AvgTTFT}}{{$p.AvgTTFT}}{{else}}&mdash;{{end}}</span>
+          <span class="perf-metric-label">avg ttft{{if $p.MaxTTFT}} <span class="muted">(max {{$p.MaxTTFT}})</span>{{end}}</span>
+        </div>
+        <div class="perf-metric" title="End-to-end request duration, from acceptance to the final token — queue wait, prompt evaluation and generation combined.">
+          <span class="perf-metric-value">{{if $p.AvgTotal}}{{$p.AvgTotal}}{{else}}&mdash;{{end}}</span>
+          <span class="perf-metric-label">avg total{{if $p.MaxTotal}} <span class="muted">(max {{$p.MaxTotal}})</span>{{end}}</span>
+        </div>
+        <div class="perf-metric" title="Time requests spent waiting for a free slot on this machine.">
+          <span class="perf-metric-value">{{if $p.AvgQueue}}{{$p.AvgQueue}}{{else}}&mdash;{{end}}</span>
+          <span class="perf-metric-label">avg queue</span>
+        </div>
+      </div>
+      {{if $p.ByModel}}
+      <table class="perf-model-table">
+        <thead><tr><th>Model</th><th>Requests</th><th>Generation</th><th>Prompt eval</th><th>Avg TTFT</th></tr></thead>
+        <tbody>
+          {{range $p.ByModel}}
+          <tr>
+            <td>{{.Name}}</td>
+            <td class="muted">{{.Requests}}</td>
+            <td>{{if .GenTPS}}{{.GenTPS}}{{else}}&mdash;{{end}}</td>
+            <td>{{if .PromptTPS}}{{.PromptTPS}}{{else}}&mdash;{{end}}</td>
+            <td>{{if .AvgTTFT}}{{.AvgTTFT}}{{else}}&mdash;{{end}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+      {{end}}
+    </div>
+  </td>
+</tr>
+{{end}}
+{{end}}
+
 {{define "conn-subrow"}}
 {{/* Renders the connection detail sub-row for a connected token.
      Expects a ClientTokenRow as '.'; uses .CSRFToken for cancel forms. */}}
@@ -154,6 +214,7 @@
             </td>
           </tr>
           {{template "conn-subrow" .}}
+          {{template "perf-subrow" .}}
           {{template "owner-slots-section" .}}
           {{end}}
         </tbody>
@@ -194,6 +255,7 @@
         </td>
       </tr>
       {{template "conn-subrow" .}}
+      {{template "perf-subrow" .}}
       {{template "owner-slots-section" .}}
       {{else}}
       <tr class="empty-row"><td colspan="4">No client tokens yet.</td></tr>

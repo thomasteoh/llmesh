@@ -275,6 +275,43 @@ The shim authenticates with a **client token** (`ct-`) exactly like `llmesh-clie
 
 ---
 
+## Monitoring inference performance
+
+Every completed request is timed, so you can see how fast the mesh actually is and which machine is pulling its weight. Five measures are tracked:
+
+| Measure | What it means |
+|---------|---------------|
+| **Token generation speed** | Tokens generated per second — the number a user feels as "how fast is it typing" |
+| **Prompt processing speed** | Prompt tokens evaluated per second (prefill). Excludes tokens served from cache, which were never evaluated |
+| **Time to first token** | From dispatch to a worker to the first token. Excludes queue wait, which is reported separately, so the two sum to what the caller waited. Streaming requests only |
+| **Queue wait** | How long the request sat waiting for a free worker slot |
+| **End-to-end duration** | Acceptance to final token — queue wait, prompt evaluation, and generation combined |
+
+Where the numbers come from, in order of preference:
+
+1. **The backend's own timings.** The client asks llama.cpp for its `timings` object and forwards it. These exclude queueing and network transit, so they measure the model rather than the mesh, and they are the only source that works for non-streaming requests (a batch response arrives as a single chunk, so there is no first-token signal to observe from outside).
+2. **The router's observation.** Failing that, the router uses dispatch → first token as prompt evaluation and first token → done as generation. This works for any backend that does not report its own timings — every shim, and any llama.cpp too old to report them — but only while streaming.
+
+The portal marks a figure as approximate when some of its samples came from the second path.
+
+**In the portal.** The **Dashboard** carries a summary row (generation speed, prompt eval speed, average TTFT, average queue wait) and adds *Gen tok/s*, *Prompt tok/s*, and *TTFT* to the chart's metric selector, grouped by model, user, or key over 24h/7d/30d/90d. The **Clients** page breaks the last 24 hours down per machine and per model on that machine, which is how you spot a box that has thermally throttled or loaded the wrong quantisation. Members see only their own requests; admins see everything.
+
+Speeds are aggregated as total tokens ÷ total time rather than as a mean of per-request rates, so a three-token reply cannot weigh as heavily as a 4k-token one.
+
+**In Prometheus.** `GET /metrics` (unauthenticated, so scrapers need no credentials) exposes p50/p95/p99 over a rolling 10-minute window:
+
+```
+llmrouter_prompt_tokens_per_second{quantile="0.5",model="..."}
+llmrouter_generated_tokens_per_second{quantile="0.5",model="..."}
+llmrouter_ttft_seconds{quantile="0.5",model="..."}
+llmrouter_queue_wait_seconds{quantile="0.5",model="..."}
+llmrouter_job_duration_seconds{quantile="0.5",model="..."}
+```
+
+Hourly aggregates are kept in the state database for 90 days, matching token usage. They hold sums, counts, and maxima rather than individual samples, so the table stays a few rows per hour no matter the request volume — which is why exact percentiles live on `/metrics` and the portal reports averages alongside worst-case figures.
+
+---
+
 ## Build from source
 
 ```bash
@@ -463,6 +500,7 @@ Replace `[HOST]` and `[PORT]` with your router's address (port default: `53002`)
 | `GET /v1/models` | List available models (OpenAI-compatible) |
 | `GET /v1/models/slots` | llmesh-specific: models the key can currently get a slot on, with available slot counts |
 | `GET /health` | Health check |
+| `GET /metrics` | Prometheus metrics, including inference speed percentiles (no auth) |
 | `GET /portal` | Admin dashboard |
 
 All `/v1/*` endpoints require `Authorization: Bearer <api-key>`.

@@ -346,6 +346,242 @@ func (a *Admin) handleUsageJSON(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+// ─── Performance API ──────────────────────────────────────────────────────────
+
+// perfMetric describes one selectable performance series: how to pull a value out
+// of a bucket's counters, and how the portal should label it.
+type perfMetric struct {
+	Unit string
+	// value extracts the plotted number from one bucket's counters, returning
+	// false when that bucket holds no measurement for this metric. Distinguishing
+	// "no data" from zero matters for rates: plotting a gap as 0 tok/s would draw
+	// a dip that never happened.
+	value func(PerfStats) (float64, bool)
+}
+
+var perfMetrics = map[string]perfMetric{
+	"gen_tps": {
+		Unit: "tok/s",
+		value: func(p PerfStats) (float64, bool) {
+			v := p.GenTokensPerSec()
+			return v, v > 0
+		},
+	},
+	"prompt_tps": {
+		Unit: "tok/s",
+		value: func(p PerfStats) (float64, bool) {
+			v := p.PromptTokensPerSec()
+			return v, v > 0
+		},
+	},
+	"ttft": {
+		Unit: "ms",
+		value: func(p PerfStats) (float64, bool) {
+			return p.AvgTTFTMS(), p.TTFTSamples > 0
+		},
+	},
+	"queue": {
+		Unit: "ms",
+		value: func(p PerfStats) (float64, bool) {
+			return p.AvgQueueMS(), p.Samples > 0
+		},
+	},
+	"total": {
+		Unit: "ms",
+		value: func(p PerfStats) (float64, bool) {
+			return p.AvgTotalMS(), p.Samples > 0
+		},
+	},
+}
+
+type perfSeriesJSON struct {
+	Name string `json:"name"`
+	// Values is one entry per bucket, nil where that bucket has no measurement so
+	// the chart can break the line instead of drawing a false zero.
+	Values  []*float64 `json:"values"`
+	Average float64    `json:"average"`
+	Samples int64      `json:"samples"`
+}
+
+// perfTotalsJSON is the summary row shown as tiles above the chart. Averages are
+// weighted across every request in the window, not across buckets.
+type perfTotalsJSON struct {
+	Samples             int64   `json:"samples"`
+	AvgTTFTMS           float64 `json:"avg_ttft_ms"`
+	MaxTTFTMS           float64 `json:"max_ttft_ms"`
+	AvgQueueMS          float64 `json:"avg_queue_ms"`
+	MaxQueueMS          float64 `json:"max_queue_ms"`
+	AvgTotalMS          float64 `json:"avg_total_ms"`
+	MaxTotalMS          float64 `json:"max_total_ms"`
+	GenTokensPerSec     float64 `json:"gen_tokens_per_sec"`
+	PromptTokensPerSec  float64 `json:"prompt_tokens_per_sec"`
+	BackendMeasuredFrac float64 `json:"backend_measured_frac"`
+}
+
+type perfResponseJSON struct {
+	Range   string           `json:"range"`
+	Group   string           `json:"group"`
+	Metric  string           `json:"metric"`
+	Unit    string           `json:"unit"`
+	Buckets []string         `json:"buckets"`
+	Series  []perfSeriesJSON `json:"series"`
+	Totals  perfTotalsJSON   `json:"totals"`
+}
+
+// maxPerfSeries caps how many named series the chart receives. Unlike token
+// counts, rates cannot be meaningfully folded into an "other" bucket — averaging
+// unrelated models' speeds produces a number that describes nothing — so the
+// tail is dropped and the response says how many were left out.
+const maxPerfSeries = 8
+
+// handlePerfJSON returns time-series inference performance for the dashboard
+// chart. Members see only their own requests; admins see everything.
+func (a *Admin) handlePerfJSON(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	u := ctxGetUser(r)
+
+	rng := r.URL.Query().Get("range")
+	if rng == "" {
+		rng = "7d"
+	}
+	group := r.URL.Query().Get("group")
+	if group == "" {
+		group = "model"
+	}
+	metricName := r.URL.Query().Get("metric")
+	if metricName == "" {
+		metricName = "gen_tps"
+	}
+	metric, ok := perfMetrics[metricName]
+	if !ok {
+		http.Error(w, "invalid metric", http.StatusBadRequest)
+		return
+	}
+	// Grouping by client names other people's machines ("owner/name"). The owner
+	// filter below keeps a member's rows to their own requests, but those requests
+	// may have been served by anyone's hardware, so the series names would still
+	// disclose the fleet — which the Clients page deliberately does not show a
+	// member. Admin-only, matching that page's scoping.
+	if group == "client" && u.Role != "admin" {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	// The chart's grouping control is shared with the usage chart, which calls the
+	// owner dimension "user"; the perf table stores it as "owner".
+	groupBy := group
+	if group == "user" {
+		groupBy = "owner"
+	}
+	since, until, buckets, daily, ok := usageWindow(rng, time.Now())
+	if !ok {
+		http.Error(w, "invalid range", http.StatusBadRequest)
+		return
+	}
+	ownerFilter := ""
+	if u.Role != "admin" {
+		ownerFilter = u.Username
+	}
+	rows, err := a.state.QueryPerf(since, until, groupBy, daily, ownerFilter)
+	if err != nil {
+		a.log.Error("admin: perf query", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	totals, err := a.state.PerfTotals(since, until, ownerFilter)
+	if err != nil {
+		a.log.Error("admin: perf totals", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	bucketIdx := make(map[string]int, len(buckets))
+	for i, b := range buckets {
+		bucketIdx[b] = i
+	}
+	// Accumulate raw counters per (series, bucket) first. Rates have to be derived
+	// from summed tokens and summed time, so they cannot be averaged after the
+	// fact — a bucket's value is only correct once all its rows are folded in.
+	cells := make(map[string][]PerfStats)
+	agg := make(map[string]*PerfStats)
+	var order []string
+	for _, row := range rows {
+		i, ok := bucketIdx[row.Bucket]
+		if !ok {
+			continue
+		}
+		if _, seen := cells[row.Name]; !seen {
+			cells[row.Name] = make([]PerfStats, len(buckets))
+			agg[row.Name] = &PerfStats{}
+			order = append(order, row.Name)
+		}
+		cells[row.Name][i].Add(row.PerfStats)
+		agg[row.Name].Add(row.PerfStats)
+	}
+
+	all := make([]perfSeriesJSON, 0, len(order))
+	for _, name := range order {
+		s := perfSeriesJSON{
+			Name:    name,
+			Values:  make([]*float64, len(buckets)),
+			Samples: agg[name].Samples,
+		}
+		for i, c := range cells[name] {
+			if v, ok := metric.value(c); ok {
+				s.Values[i] = &v
+			}
+		}
+		if v, ok := metric.value(*agg[name]); ok {
+			s.Average = v
+		}
+		all = append(all, s)
+	}
+	// Busiest series first, so truncation drops the least-used ones. Ties break on
+	// name: the chart assigns colours by position, so a non-deterministic order
+	// would reshuffle the legend between polls.
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].Samples != all[j].Samples {
+			return all[i].Samples > all[j].Samples
+		}
+		return all[i].Name < all[j].Name
+	})
+	if len(all) > maxPerfSeries {
+		a.log.Debug("admin: perf series truncated",
+			"shown", maxPerfSeries, "dropped", len(all)-maxPerfSeries, "group", group)
+		all = all[:maxPerfSeries]
+	}
+
+	resp := perfResponseJSON{
+		Range:   rng,
+		Group:   group,
+		Metric:  metricName,
+		Unit:    metric.Unit,
+		Buckets: buckets,
+		Series:  all,
+		Totals: perfTotalsJSON{
+			Samples:             totals.Samples,
+			AvgTTFTMS:           totals.AvgTTFTMS(),
+			MaxTTFTMS:           totals.TTFTMSMax,
+			AvgQueueMS:          totals.AvgQueueMS(),
+			MaxQueueMS:          totals.QueueMSMax,
+			AvgTotalMS:          totals.AvgTotalMS(),
+			MaxTotalMS:          totals.TotalMSMax,
+			GenTokensPerSec:     totals.GenTokensPerSec(),
+			PromptTokensPerSec:  totals.PromptTokensPerSec(),
+			BackendMeasuredFrac: totals.BackendMeasuredFrac(),
+		},
+	}
+	if resp.Series == nil {
+		resp.Series = []perfSeriesJSON{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	json.NewEncoder(w).Encode(resp)
+}
+
 func (a *Admin) handleAuditLogJSON(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

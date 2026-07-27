@@ -77,6 +77,11 @@ type inferRequest struct {
 	ChatTemplate  string          `json:"chat_template,omitempty"`
 	StreamOptions *streamOptions  `json:"stream_options,omitempty"`
 	CachePrompt   bool            `json:"cache_prompt"`
+	// TimingsPerToken asks llama.cpp to include its `timings` object in the
+	// response so the router can report true prefill/decode throughput instead
+	// of inferring it from the outside. A llama.cpp extension, like CachePrompt
+	// above; OpenAI-compatible servers that don't know it ignore it.
+	TimingsPerToken bool `json:"timings_per_token"`
 }
 
 type inferUsage struct {
@@ -89,6 +94,34 @@ type inferUsage struct {
 		// ds4 and other prefix-caching backends report it here too.
 		CachedTokens int `json:"cached_tokens"`
 	} `json:"prompt_tokens_details"`
+}
+
+// inferTimings is llama.cpp's `timings` object. It sits beside `usage` (or, when
+// streaming, on a late chunk) rather than inside it, so it is decoded separately
+// and merged in by the caller. Only the four fields the router needs are read.
+type inferTimings struct {
+	PromptN     int     `json:"prompt_n"`
+	PromptMS    float64 `json:"prompt_ms"`
+	PredictedN  int     `json:"predicted_n"`
+	PredictedMS float64 `json:"predicted_ms"`
+}
+
+// toTimings maps the backend timings object onto the internal type, returning nil
+// when absent or all-zero so downstream code can treat nil as "not reported".
+func (t *inferTimings) toTimings() *types.Timings {
+	if t == nil {
+		return nil
+	}
+	out := &types.Timings{
+		PromptN:     t.PromptN,
+		PromptMS:    t.PromptMS,
+		PredictedN:  t.PredictedN,
+		PredictedMS: t.PredictedMS,
+	}
+	if !out.Usable() {
+		return nil
+	}
+	return out
 }
 
 // toUsageInfo maps a backend usage object onto the internal UsageInfo, carrying
@@ -106,6 +139,24 @@ func (u *inferUsage) toUsageInfo() *types.UsageInfo {
 	}
 }
 
+// attachTimings hangs timings off usage so both reach the router on the final
+// chunk.
+//
+// A nil usage is returned untouched, dropping the timings. Downstream, nil usage
+// is the signal that the backend reported no token counts: the translate layer
+// omits the usage object entirely, and the router skips usage accounting. A bare
+// UsageInfo synthesised just to carry timings would defeat both — publishing
+// `"usage":{"prompt_tokens":0,...}` to callers and booking a zero-token request
+// into the usage table. Timings alone are not worth that, and a backend that
+// reports them without usage is a truncated stream rather than a normal reply.
+func attachTimings(usage *types.UsageInfo, t *types.Timings) *types.UsageInfo {
+	if usage == nil || t == nil {
+		return usage
+	}
+	usage.Timings = t
+	return usage
+}
+
 type inferChunkDelta struct {
 	Content   string          `json:"content"`
 	ToolCalls json.RawMessage `json:"tool_calls"`
@@ -116,7 +167,8 @@ type inferChunk struct {
 		Delta        inferChunkDelta `json:"delta"`
 		FinishReason *string         `json:"finish_reason"`
 	} `json:"choices"`
-	Usage *inferUsage `json:"usage"`
+	Usage   *inferUsage   `json:"usage"`
+	Timings *inferTimings `json:"timings"`
 }
 
 // Props holds capability information returned by the llama.cpp /props endpoint.
@@ -220,17 +272,18 @@ func (c *Client) ProbeProps(ctx context.Context) Props {
 // chatTemplate overrides the model's built-in Jinja chat template; pass "" to use the default.
 func (c *Client) Infer(ctx context.Context, req types.InferenceRequest, chatTemplate string, cb ChunkCallback) error {
 	body := inferRequest{
-		Model:        req.Model,
-		Messages:     req.Messages,
-		MaxTokens:    req.MaxTokens,
-		Temperature:  req.Temperature,
-		TopP:         req.TopP,
-		Stop:         req.Stop,
-		Stream:       req.Stream,
-		Tools:        req.Tools,
-		ToolChoice:   req.ToolChoice,
-		ChatTemplate: chatTemplate,
-		CachePrompt:  true,
+		Model:           req.Model,
+		Messages:        req.Messages,
+		MaxTokens:       req.MaxTokens,
+		Temperature:     req.Temperature,
+		TopP:            req.TopP,
+		Stop:            req.Stop,
+		Stream:          req.Stream,
+		Tools:           req.Tools,
+		ToolChoice:      req.ToolChoice,
+		ChatTemplate:    chatTemplate,
+		CachePrompt:     true,
+		TimingsPerToken: true,
 	}
 	if req.Stream {
 		body.StreamOptions = &streamOptions{IncludeUsage: true}
@@ -347,6 +400,10 @@ func (c *Client) readStream(ctx context.Context, cancel context.CancelFunc, resp
 	// finish_reason chunk, then [DONE]. We must not fire done=true until [DONE]
 	// so we can collect the usage first.
 	var pendingUsage *types.UsageInfo
+	// pendingTimings tracks the most recent `timings` object seen. With
+	// timings_per_token, llama.cpp repeats it on every chunk with running totals,
+	// so the last one observed is the complete picture for the request.
+	var pendingTimings *types.Timings
 	var finishReason string
 	firstContent := false
 
@@ -370,7 +427,7 @@ func (c *Client) readStream(ctx context.Context, cancel context.CancelFunc, resp
 				if finishReason == "" {
 					return fmt.Errorf("llama.cpp stream ended before completion")
 				}
-				cb("", nil, true, finishReason, pendingUsage)
+				cb("", nil, true, finishReason, attachTimings(pendingUsage, pendingTimings))
 				return nil
 			}
 			if result.err != nil {
@@ -395,7 +452,7 @@ func (c *Client) readStream(ctx context.Context, cancel context.CancelFunc, resp
 			}
 			payload := strings.TrimPrefix(line, "data: ")
 			if payload == "[DONE]" {
-				cb("", nil, true, finishReason, pendingUsage)
+				cb("", nil, true, finishReason, attachTimings(pendingUsage, pendingTimings))
 				// Drain remaining lines so the scanner goroutine can exit.
 				for range lines {
 				}
@@ -408,6 +465,11 @@ func (c *Client) readStream(ctx context.Context, cancel context.CancelFunc, resp
 			// Stash usage from any chunk that carries it (usage-only chunk has no choices).
 			if chunk.Usage != nil {
 				pendingUsage = chunk.Usage.toUsageInfo()
+			}
+			// Likewise for timings, which arrive on their own cadence — keep the
+			// latest usable set rather than letting a later partial one clear it.
+			if t := chunk.Timings.toTimings(); t != nil {
+				pendingTimings = t
 			}
 			if len(chunk.Choices) == 0 {
 				continue
@@ -446,7 +508,8 @@ func (c *Client) readBatch(resp *http.Response, cb ChunkCallback) error {
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
-		Usage *inferUsage `json:"usage"`
+		Usage   *inferUsage   `json:"usage"`
+		Timings *inferTimings `json:"timings"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return fmt.Errorf("decode batch: %w", err)
@@ -458,6 +521,9 @@ func (c *Client) readBatch(resp *http.Response, cb ChunkCallback) error {
 		return fmt.Errorf("llama.cpp batch response had no choices")
 	}
 	choice := result.Choices[0]
-	cb(choice.Message.Content, choice.Message.ToolCalls, true, choice.FinishReason, result.Usage.toUsageInfo())
+	// Non-streaming is where backend timings matter most: the router sees a single
+	// chunk at the end, so without these it cannot separate prefill from decode.
+	usage := attachTimings(result.Usage.toUsageInfo(), result.Timings.toTimings())
+	cb(choice.Message.Content, choice.Message.ToolCalls, true, choice.FinishReason, usage)
 	return nil
 }

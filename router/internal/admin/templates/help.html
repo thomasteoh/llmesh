@@ -58,6 +58,7 @@
       <a class="docs-link" onclick="showDoc('model-aliases',this)">Model aliases</a>
       <a class="docs-link" onclick="showDoc('tool-calling',this)">Tool calling</a>
       <a class="docs-link" onclick="showDoc('chat-templates',this)">Chat templates</a>
+      <a class="docs-link" onclick="showDoc('performance',this)">Performance metrics</a>
       <div class="docs-nav-section">Internals</div>
       <a class="docs-link" onclick="showDoc('message-flow',this)">Message flow</a>
     </div>
@@ -472,6 +473,43 @@ flowchart LR
     chat_template: "qwen2.5"  # use llama.cpp built-in template by name</div>
       <p class="docs-p">The value is passed to llama.cpp as the <mono>chat_template</mono> field in the request body. llama.cpp accepts either a built-in template name (e.g. <mono>llama3</mono>, <mono>qwen2.5</mono>, <mono>mistral</mono>) or a raw Jinja2 template string.</p>
       <p class="docs-p">This is a client-side setting &mdash; different clients can use different templates for the same model name. Callers do not need to know or specify the template.</p>
+    </div>
+
+    {{/* ── Performance metrics ────────────────────────────────── */}}
+    <div class="docs-section" id="performance">
+      <div class="docs-title">Performance metrics</div>
+      <div class="docs-subtitle">How fast the mesh is, and which machine is pulling its weight</div>
+      <p class="docs-p">Every completed request is timed. The <strong>Dashboard</strong> shows the summary and lets you chart speed over time; the <strong>Clients</strong> page breaks the last 24 hours down per machine and per model on that machine. You see your own requests; admins see everyone&rsquo;s.</p>
+
+      <div class="docs-label">What is measured</div>
+      <div class="table-scroll mb-4">
+        <table class="data-table">
+          <thead><tr><th>Measure</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Generation speed</strong></td><td>Tokens generated per second &mdash; what a user feels as how fast it is typing.</td></tr>
+            <tr><td><strong>Prompt eval speed</strong></td><td>Prompt tokens evaluated per second. Tokens served from cache are excluded, because they were never evaluated &mdash; counting them would report an impossible number on a warm cache hit.</td></tr>
+            <tr><td><strong>TTFT</strong></td><td>Time to first token, measured from dispatch to a worker. Queue wait is excluded and reported separately, so the two add up to the delay the caller saw. Streaming requests only.</td></tr>
+            <tr><td><strong>Queue wait</strong></td><td>How long the request sat waiting for a free worker slot. A rising figure here means you need more capacity, not a faster model.</td></tr>
+            <tr><td><strong>Total</strong></td><td>End-to-end duration: queue wait, prompt evaluation, and generation combined.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="docs-label">Where the numbers come from</div>
+      <p class="docs-p">When the backend reports its own timings, those are used: they exclude queueing and network transit, so they measure the model rather than the mesh. llama.cpp does this, and it is the only source that works for non-streaming requests &mdash; a batch response arrives as one chunk at the end, so there is no first-token moment to observe from outside.</p>
+      <p class="docs-p">Otherwise the router falls back to what it saw: dispatch to first token as prompt evaluation, first token to done as generation. That works for any backend that does not report its own timings &mdash; every shim, and any llama.cpp too old to report them &mdash; but only while streaming. Where some samples came from this path, the portal labels the figure <mono>approx</mono>.</p>
+
+      <div class="docs-label">Reading the numbers</div>
+      <p class="docs-p">Speeds are totalled as all tokens divided by all time, not averaged across requests, so a three-token reply cannot count as heavily as a 4,000-token one. Averages are shown next to the worst case in the window, because a good average hides a slow tail.</p>
+      <p class="docs-p">A machine whose generation speed has dropped against its own history has usually thermally throttled, loaded a different quantisation, or picked up competing local load. Comparing the per-model rows on the <strong>Clients</strong> page separates a slow machine from a heavy model.</p>
+
+      <div class="docs-label">Prometheus</div>
+      <p class="docs-p">For exact percentiles, scrape <mono>/metrics</mono> &mdash; it reports p50/p95/p99 per model over a rolling 10-minute window. The portal's stored history keeps hourly sums and maxima for 90 days instead of individual samples, which is why it charts averages rather than percentiles.</p>
+      <div class="docs-code">llmrouter_generated_tokens_per_second{quantile="0.5",model="..."}
+llmrouter_prompt_tokens_per_second{quantile="0.5",model="..."}
+llmrouter_ttft_seconds{quantile="0.5",model="..."}
+llmrouter_queue_wait_seconds{quantile="0.5",model="..."}
+llmrouter_job_duration_seconds{quantile="0.5",model="..."}</div>
     </div>
 
     {{/* ── Message flow ───────────────────────────────────────── */}}
