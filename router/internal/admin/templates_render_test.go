@@ -122,6 +122,16 @@ func TestTemplatesRender(t *testing.T) {
 		d["TokenCount"] = 3
 		d["ActiveModels"] = []any{"llama3"}
 		d["ModelAliases"] = map[string]any{"llama3": []any{"small"}}
+		// A chain covering every decorated state: a tied pair (shared tier, one
+		// reachable and one not) plus a lone fallback at the end.
+		d["AliasChains"] = []any{map[string]any{
+			"Alias": "chat",
+			"Targets": []any{
+				map[string]any{"Model": "llama3", "Tier": 0, "Live": true, "Shared": true, "CanUp": false, "CanDown": true},
+				map[string]any{"Model": "mistral", "Tier": 0, "Live": false, "Shared": true, "CanUp": true, "CanDown": true},
+				map[string]any{"Model": "gpt-4o", "Tier": 1, "Live": true, "Shared": false, "CanUp": true, "CanDown": false},
+			},
+		}}
 		d["StatsByModel"] = []any{map[string]any{"Name": "llama3", "Requests": 5, "PromptTokens": 100, "CompletionTokens": 50}}
 		d["StatsByUser"] = []any{map[string]any{"Name": "alice", "Requests": 5, "PromptTokens": 100, "CompletionTokens": 50}}
 		d["Clients"] = []any{map[string]any{

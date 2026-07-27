@@ -258,8 +258,7 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token
 			continue // lease reaper or a stale message already handled this job
 		}
 		client.DecrInFlight()
-		req := rec.Req
-		req.Attempts++
+		req := retryRequest(rec.Req)
 		// Only retry when no output was delivered; retrying a partially-streamed
 		// request would concatenate the retry onto the partial response.
 		if req.Attempts < MaxAttempts && rec.FirstChunkAt() == nil && h.OnRelease != nil {
@@ -439,8 +438,7 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 		if h.OnAvailable != nil {
 			h.OnAvailable()
 		}
-		req := rec.Req
-		req.Attempts++
+		req := retryRequest(rec.Req)
 		// Only retry if no output has been delivered yet. Retrying after the
 		// caller has already received partial tokens would concatenate the new
 		// attempt's full response onto the partial one.
@@ -471,8 +469,7 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 			"client_id", client.ID,
 			"reason", in.Reason,
 		)
-		req := rec.Req
-		req.Attempts++
+		req := retryRequest(rec.Req)
 		// Re-dispatch on release (e.g. graceful shutdown), but only while
 		// attempts remain and no output was delivered — otherwise a client that
 		// deterministically releases a job would bounce it between queue and
@@ -490,6 +487,23 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 			h.OnAvailable()
 		}
 	}
+}
+
+// retryRequest prepares an in-flight request to go back on the queue after a
+// failed attempt: it counts the attempt and restores the model name the caller
+// originally asked for.
+//
+// Restoring the name matters because the scheduler rewrites Model to a concrete
+// model at dispatch. Without this, a request that came in under an alias would be
+// pinned to whichever target failed, spend every remaining attempt on that same
+// model, and never reach a lower-preference fallback tier. Requests predating
+// this field (no RequestedModel) keep their concrete model, as before.
+func retryRequest(req types.InferenceRequest) types.InferenceRequest {
+	req.Attempts++
+	if req.RequestedModel != "" {
+		req.Model = req.RequestedModel
+	}
+	return req
 }
 
 // SendToClient sends a JSON-encodable message to the client with the given ID.
