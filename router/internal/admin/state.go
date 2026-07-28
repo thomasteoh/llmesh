@@ -236,6 +236,13 @@ func createSchema(db *sql.DB) error {
 			key   TEXT PRIMARY KEY,
 			value TEXT NOT NULL DEFAULT ''
 		);
+		CREATE TABLE IF NOT EXISTS model_pricing (
+			model      TEXT PRIMARY KEY,
+			input_ppm  INTEGER NOT NULL DEFAULT 0,
+			output_ppm INTEGER NOT NULL DEFAULT 0,
+			basis      TEXT NOT NULL DEFAULT 'estimated',
+			updated_at TEXT NOT NULL DEFAULT ''
+		);
 		CREATE TABLE IF NOT EXISTS usage_hourly (
 			bucket            TEXT NOT NULL,
 			owner             TEXT NOT NULL DEFAULT '',

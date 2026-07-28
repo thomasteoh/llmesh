@@ -163,8 +163,29 @@ Navigate to `http://[HOST]:[PORT]/portal`. On first run you are redirected to th
 From the admin dashboard you can:
 - **Clients** → Create client tokens (needed to configure each `llmesh-client` or `llmesh-shim`); also shows your worker connection URL and manages model aliases
 - **API Keys** → Create API keys (needed by callers to authenticate requests); shows your API endpoint URL
-- **Settings** → Manage users and configure upstream routers
+- **Settings** → Manage users, configure upstream routers, and set per-model token pricing
 - **Help** → Full API reference and setup guide
+
+---
+
+## Cost tracking
+
+llmesh records prompt and completion tokens per hour, keyed by user, API key, and model. Set a token rate for a model under **Settings → Pricing** and the Dashboard's usage chart gains a **Cost** view, broken down by model, user, or key like every other metric.
+
+Rates are entered per million tokens, input and output separately, and are applied **at read time**. Setting a rate therefore prices that model's whole history, not just its future requests — so you can put a figure on traffic that ran long before anyone thought about billing. The trade-off is that editing a rate moves historical totals; there is no frozen ledger.
+
+Each rate is tagged with a **basis**, and this is the part that matters:
+
+| Basis | Meaning |
+|---|---|
+| `charged` | A provider actually bills you this. Real money. |
+| `estimated` | A figure you modelled yourself — the usual case for local models, whose true cost is electricity and amortised hardware. |
+
+The two are **never added together**. Totals always report them side by side, because a modelled number summed into a real invoice produces something that is neither. New rates default to `estimated`, so llmesh never claims a charge it cannot substantiate.
+
+Requests on a model with no rate contribute nothing to cost, and are counted separately and shown as *N requests unpriced* beside the totals — an incomplete figure should look incomplete. Models appear in the pricing table if they are configured, currently served, **or** merely present in usage history, so a model you have since retired can still be priced.
+
+Currency is a display label only (default `USD`). llmesh applies no conversion, so use one currency across every rate or the totals will silently add unlike amounts.
 
 ---
 
