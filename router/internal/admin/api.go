@@ -176,8 +176,13 @@ func (a *Admin) handleJobsJSON(w http.ResponseWriter, r *http.Request) {
 		}
 		if fc := rec.FirstChunkAt(); fc != nil {
 			stat.Phase = "generating"
-			stat.TTFTMs = fc.Sub(rec.DispatchedAt).Milliseconds()
 			stat.FirstChunkAtISO = fc.UTC().Format("2006-01-02T15:04:05Z07:00")
+		}
+		// Output means generating either way, but only a streaming request has a
+		// first-token moment distinct from its completion, so only it has a TTFT to
+		// show — the same rule the histograms and hourly buckets follow.
+		if ft := rec.FirstTokenAt(); ft != nil {
+			stat.TTFTMs = ft.Sub(rec.DispatchedAt).Milliseconds()
 		}
 		out = append(out, stat)
 	}

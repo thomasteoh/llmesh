@@ -156,11 +156,32 @@ func (r InFlightRecord) ClientLabel() string {
 }
 
 // FirstChunkAt returns when the first non-empty delta arrived, or nil if not yet.
+// Counts the single chunk of a batch response too, which is what the retry paths
+// need: once any output exists the request cannot be safely re-dispatched, because
+// a second attempt's body would be appended to the first's. For measuring latency
+// use FirstTokenAt instead.
 func (r InFlightRecord) FirstChunkAt() *time.Time {
 	if r.live == nil {
 		return nil
 	}
 	return r.live.firstChunkAt.Load()
+}
+
+// FirstTokenAt returns when the first token arrived for a request whose first
+// token is a distinct event from its completion, and nil otherwise. It is the
+// only source anything measuring TTFT should ask.
+//
+// Both worker types answer a non-streaming request with exactly one chunk
+// carrying the whole body, so a batch response's first delta timestamp is really
+// its completion time. Reporting it as TTFT would state the entire inference
+// duration as the model's time to start responding, inflating it by the whole
+// decode phase. Streaming requests are the only ones that observe the two
+// moments separately, so they are the only ones with a TTFT to report.
+func (r InFlightRecord) FirstTokenAt() *time.Time {
+	if !r.Req.Stream {
+		return nil
+	}
+	return r.FirstChunkAt()
 }
 
 // DeltaCount returns the number of non-empty deltas received (≈ tokens generated).
@@ -442,9 +463,13 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 				if rec.live.firstChunkAt.Load() == nil {
 					now := time.Now()
 					if rec.live.firstChunkAt.CompareAndSwap(nil, &now) {
-						// First non-empty token — record TTFT.
-						if h.Latency != nil {
-							h.Latency.RecordTTFT(rec.Req.Model, now.Sub(rec.DispatchedAt))
+						// First non-empty token. The swap above just published it, so
+						// FirstTokenAt decides whether it is a measurable one — the
+						// hourly perf buckets ask the same way, and a histogram that
+						// disagreed with them would report a different TTFT for the
+						// same request.
+						if first := rec.FirstTokenAt(); first != nil && h.Latency != nil {
+							h.Latency.RecordTTFT(rec.Req.Model, first.Sub(rec.DispatchedAt))
 						}
 					}
 				}
@@ -965,12 +990,11 @@ func (h *Hub) recordPerf(rec InFlightRecord, usage *types.UsageInfo, doneAt time
 	// Queue wait is reported separately, so the two add up to what the caller
 	// waited rather than double-counting it.
 	//
-	// Streaming only. A batch response arrives as one chunk carrying the whole
-	// body, so its "first token" timestamp is really the completion time —
-	// recording that would report a TTFT equal to the total duration.
-	firstChunk := rec.FirstChunkAt()
-	if rec.Req.Stream && firstChunk != nil {
-		s.TTFTMS = millis(firstChunk.Sub(rec.DispatchedAt))
+	// Streaming only, which is FirstTokenAt's whole job — see there for why a
+	// batch response has no first-token signal to measure.
+	firstToken := rec.FirstTokenAt()
+	if firstToken != nil {
+		s.TTFTMS = millis(firstToken.Sub(rec.DispatchedAt))
 	}
 
 	if usage != nil && usage.Timings.Usable() {
@@ -982,16 +1006,16 @@ func (h *Hub) recordPerf(rec InFlightRecord, usage *types.UsageInfo, doneAt time
 		if t.PredictedN > 0 && t.PredictedMS > 0 {
 			s.DecodeMS, s.DecodeTokens = t.PredictedMS, t.PredictedN
 		}
-	} else if rec.Req.Stream && firstChunk != nil && usage != nil {
+	} else if firstToken != nil && usage != nil {
 		// Prompt tokens served from cache were never evaluated, so charging them
 		// to the prefill window would overstate throughput — sometimes wildly, on
 		// a full cache hit. Subtracting them matches what a backend's own prompt_n
 		// counts, keeping the two sources comparable.
 		if evaluated := usage.PromptTokens - usage.CacheReadTokens; evaluated > 0 {
-			s.PrefillMS, s.PrefillTokens = millis(firstChunk.Sub(rec.DispatchedAt)), evaluated
+			s.PrefillMS, s.PrefillTokens = millis(firstToken.Sub(rec.DispatchedAt)), evaluated
 		}
 		if usage.CompletionTokens > 0 {
-			s.DecodeMS, s.DecodeTokens = millis(doneAt.Sub(*firstChunk)), usage.CompletionTokens
+			s.DecodeMS, s.DecodeTokens = millis(doneAt.Sub(*firstToken)), usage.CompletionTokens
 		}
 	}
 

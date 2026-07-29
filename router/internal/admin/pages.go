@@ -661,8 +661,12 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, r *http.Request, u Use
 					var ttftMs int
 					if fc := rec.FirstChunkAt(); fc != nil {
 						phase = "generating"
-						ttftMs = int(fc.Sub(rec.DispatchedAt).Milliseconds())
 						firstChunkAtISO = fc.UTC().Format(time.RFC3339)
+					}
+					// Output means generating either way, but only a streaming request
+					// has a TTFT to show; see hub.InFlightRecord.FirstTokenAt.
+					if ft := rec.FirstTokenAt(); ft != nil {
+						ttftMs = int(ft.Sub(rec.DispatchedAt).Milliseconds())
 					}
 					var statParts []string
 					if ttftMs > 0 {
