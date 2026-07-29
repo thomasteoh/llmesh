@@ -289,6 +289,40 @@ func mockClientSimulator(t *testing.T, routerURL, token string, models []types.M
 	return conn
 }
 
+// waitForModel blocks until the router will accept requests for model. Client
+// registration is asynchronous: connectMockClient returns as soon as the register
+// frame is written, well before the hub has read it, so posting immediately after
+// connecting can be rejected with "model not found". Polling the router's own model
+// list removes the guess a fixed sleep makes, which is what makes the difference on
+// a loaded machine where the read loop is not scheduled promptly.
+func waitForModel(t *testing.T, url, apiKey, model string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		req, _ := http.NewRequest("GET", url+"/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			var list struct {
+				Data []struct{ ID string } `json:"data"`
+			}
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if json.Unmarshal(body, &list) == nil {
+				for _, m := range list.Data {
+					if m.ID == model {
+						return
+					}
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("model %q never became available", model)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // apiPost issues an authenticated POST request.
 func apiPost(url, apiKey string, body []byte) (*http.Response, error) {
 	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(body))

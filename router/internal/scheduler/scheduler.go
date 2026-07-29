@@ -62,6 +62,7 @@ type Dispatcher interface {
 	IncrInFlight(clientID string)
 	DecrInFlight(clientID string)
 	TrackJob(clientID string, req types.InferenceRequest) bool
+	UntrackJob(clientID, requestID string)
 	NonOwnerInFlight(clientID, owner, model string) int
 }
 
@@ -361,21 +362,29 @@ func (s *Scheduler) drainQueue() {
 			}
 		}
 
+		// Count the slot first, then track, then send. A client can answer faster
+		// than this goroutine reaches the next line — a cache hit, or a shim fronting
+		// an API that already has the response — so every step the completion path
+		// undoes must already be in place before the job goes on the wire. Tracking
+		// after sending leaves a window where the completion finds no job to untrack,
+		// and its slot is never released nor its tokens and timings recorded;
+		// incrementing after tracking leaves one where the reply's DecrInFlight
+		// lands before this IncrInFlight and the count leaks the other way.
 		s.hub.IncrInFlight(best.client.ID)
-		job := types.JobMsg{Type: "job", Request: *req}
-		if !s.hub.SendToClient(best.client.ID, job) {
-			s.hub.DecrInFlight(best.client.ID)
-			s.queue.Push(*req)
-			s.log.Warn("scheduler: client unavailable, re-queued", "client_id", best.client.ID, "request_id", req.ID)
-			return
-		}
-		// Track after sending. If the connection dropped concurrently, TrackJob
-		// returns false and we requeue so the job is never stranded on a dead
-		// client (the disconnect handler only fails jobs it can see tracked).
 		if !s.hub.TrackJob(best.client.ID, *req) {
 			s.hub.DecrInFlight(best.client.ID)
 			s.queue.Push(*req)
 			s.log.Warn("scheduler: client disconnected during dispatch, re-queued", "client_id", best.client.ID, "request_id", req.ID)
+			return
+		}
+		job := types.JobMsg{Type: "job", Request: *req}
+		if !s.hub.SendToClient(best.client.ID, job) {
+			// The job never reached the client, so undo the tracking as well —
+			// otherwise it lingers as a phantom in-flight job until its lease expires.
+			s.hub.UntrackJob(best.client.ID, req.ID)
+			s.hub.DecrInFlight(best.client.ID)
+			s.queue.Push(*req)
+			s.log.Warn("scheduler: client unavailable, re-queued", "client_id", best.client.ID, "request_id", req.ID)
 			return
 		}
 

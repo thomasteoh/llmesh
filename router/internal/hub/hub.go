@@ -846,9 +846,12 @@ func (h *Hub) DecrInFlight(clientID string) {
 }
 
 // TrackJob registers an in-flight job for the given client. Called by the
-// scheduler after dispatch. Returns false if the client is no longer connected
-// — in that case the job is not tracked and the caller must requeue it, so a
-// job dispatched into a connection that drops concurrently is never lost.
+// scheduler immediately before the job is put on the wire, because a client can
+// reply faster than the dispatching goroutine returns: tracking afterwards leaves
+// a window in which the completion arrives for a job the hub cannot see, so its
+// slot is never released and its performance is never recorded. Returns false if
+// the client is no longer connected — in that case the job is not tracked and the
+// caller must requeue it, so a job aimed at a dead connection is never lost.
 func (h *Hub) TrackJob(clientID string, req types.InferenceRequest) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -901,6 +904,14 @@ func (h *Hub) untrackJob(requestID, clientID string) (InFlightRecord, bool) {
 		h.Latency.RecordDuration(rec.Req.Model, time.Since(rec.DispatchedAt))
 	}
 	return rec, true
+}
+
+// UntrackJob removes a job record the caller had tracked but could not hand to
+// the client, so a failed send does not leave a phantom in-flight job that only
+// the lease reaper would clear. Silently does nothing if the record is gone or
+// belongs to another client.
+func (h *Hub) UntrackJob(clientID, requestID string) {
+	h.untrackJob(requestID, clientID)
 }
 
 // millis converts a duration to fractional milliseconds, clamping negatives to

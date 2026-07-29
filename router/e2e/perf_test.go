@@ -76,6 +76,7 @@ func TestE2E_Perf_StreamingRequestRecordsBackendTimings(t *testing.T) {
 			})
 		})
 	defer conn.Close()
+	waitForModel(t, s.URL, s.APIKey, "test-model")
 
 	body, _ := json.Marshal(map[string]any{
 		"model":    "test-model",
@@ -119,6 +120,7 @@ func TestE2E_Perf_AttributesToCallerAndClient(t *testing.T) {
 		[]types.ModelInfo{{Name: "test-model"}},
 		func(reqID string) []types.ChunkMsg { return streamChunks(reqID, nil) })
 	defer conn.Close()
+	waitForModel(t, s.URL, s.APIKey, "test-model")
 
 	body, _ := json.Marshal(map[string]any{
 		"model":    "test-model",
@@ -182,6 +184,7 @@ func TestE2E_Perf_StreamingFallbackWithoutBackendTimings(t *testing.T) {
 		[]types.ModelInfo{{Name: "test-model"}},
 		func(reqID string) []types.ChunkMsg { return streamChunks(reqID, nil) })
 	defer conn.Close()
+	waitForModel(t, s.URL, s.APIKey, "test-model")
 
 	body, _ := json.Marshal(map[string]any{
 		"model":    "test-model",
@@ -232,6 +235,7 @@ func TestE2E_Perf_BatchRequestRecordsNoTTFTButKeepsThroughput(t *testing.T) {
 			}}
 		})
 	defer conn.Close()
+	waitForModel(t, s.URL, s.APIKey, "test-model")
 
 	body, _ := json.Marshal(map[string]any{
 		"model":    "test-model",
@@ -242,6 +246,12 @@ func TestE2E_Perf_BatchRequestRecordsNoTTFTButKeepsThroughput(t *testing.T) {
 		t.Fatalf("post: %v", err)
 	}
 	defer resp.Body.Close()
+	// Assert the status before the counters. A rejected request records nothing, so
+	// without this the failure reads as "no samples" and points at the recorder
+	// rather than at the request never having been served.
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
 	io.ReadAll(resp.Body)
 
 	got := perfStatsAfter(t, s)
@@ -264,6 +274,7 @@ func TestE2E_Perf_FailedRequestIsNotRecorded(t *testing.T) {
 
 	conn := connectMockClient(t, s.URL, s.ClientToken, []types.ModelInfo{{Name: "test-model"}})
 	defer conn.Close()
+	waitForModel(t, s.URL, s.APIKey, "test-model")
 
 	// Answer the job with an error rather than a completion.
 	go func() {
