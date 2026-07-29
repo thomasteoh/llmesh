@@ -89,12 +89,31 @@ func TestTemplatesRender(t *testing.T) {
 			"Name": "gpu-box", "Version": "v1.2.3", "IsRouter": false,
 			"Models": "llama3", "InFlight": 1, "MaxConcurrent": 4, "Jobs": []any{job},
 		}
+		// Performance carries pre-formatted strings; an empty one must render as an
+		// em-dash rather than a blank cell, so leave PromptTPS and MaxTotal unset.
+		perf := &ClientPerfRow{
+			Requests: 42, GenTPS: "38.4 tok/s", PromptTPS: "",
+			AvgTTFT: "412 ms", MaxTTFT: "9.1 s", AvgTotal: "8.3 s", MaxTotal: "",
+			AvgQueue: "18 ms", Est: true, WindowDesc: "24h",
+			ByModel: []ModelPerfRow{
+				{Name: "llama3", Requests: 40, GenTPS: "38.5 tok/s", PromptTPS: "1.2k tok/s", AvgTTFT: "410 ms"},
+				{Name: "qwen", Requests: 2, GenTPS: "", PromptTPS: "", AvgTTFT: ""},
+			},
+		}
 		row := map[string]any{
 			"Name": "macbook", "TokenHash": "aabbcc", "TokenPrefix": "ct-alice-1a2b…", "StatusClass": "connected",
 			"StatusLabel": "● connected", "LastSeen": "", "IsRouter": false,
 			"CSRFToken":   "csrf",
 			"Connections": []any{conn},
 			"ModelSlots":  []any{map[string]any{"Name": "llama3", "OwnerSlots": 2}},
+			"Perf":        perf,
+		}
+		// A single-request machine exercises the plural-suffix branch, and a machine
+		// with no traffic exercises the nil-Perf path (routerRow, below).
+		singleRow := map[string]any{
+			"Name": "mini", "TokenHash": "112233", "TokenPrefix": "ct-alice-9z8y…",
+			"StatusClass": "connected", "StatusLabel": "● connected", "CSRFToken": "csrf",
+			"Perf": &ClientPerfRow{Requests: 1, GenTPS: "12.0 tok/s", WindowDesc: "24h"},
 		}
 		routerRow := map[string]any{
 			"Name": "downstream", "TokenHash": "ddeeff", "TokenPrefix": "ct-alice-3c4d…", "StatusClass": "connected",
@@ -104,12 +123,12 @@ func TestTemplatesRender(t *testing.T) {
 		d["NewToken"] = "ct-alice-xyz"
 		d["Users"] = []any{"alice"}
 		d["Groups"] = []any{map[string]any{
-			"Username": "alice", "HasLive": true, "Tokens": []any{row, routerRow},
+			"Username": "alice", "HasLive": true, "Tokens": []any{row, singleRow, routerRow},
 		}}
 		// also exercise the non-admin flat view
 		dFlat := base("clients")
 		dFlat["IsAdmin"] = false
-		dFlat["Tokens"] = []any{row, routerRow}
+		dFlat["Tokens"] = []any{row, singleRow, routerRow}
 		renderPage(t, "clients", d)
 		renderPage(t, "clients", dFlat)
 	})

@@ -21,6 +21,7 @@ import (
 	"llmesh/router/internal/api"
 	"llmesh/router/internal/correlation"
 	"llmesh/router/internal/hub"
+	"llmesh/router/internal/latency"
 	"llmesh/router/internal/logring"
 	"llmesh/router/internal/queue"
 	"llmesh/router/internal/scheduler"
@@ -44,25 +45,76 @@ func genRandomKey(n int) string {
 // returns the httptest.Server URL, the generated API key, the generated client token,
 // and a cleanup function.
 func setupTestRouter(t *testing.T) (routerURL, apiKey, clientToken string, cleanup func()) {
-	routerURL, apiKey, clientToken, _, cleanup = setupTestRouterState(t)
-	return
+	s := setupTestStack(t)
+	return s.URL, s.APIKey, s.ClientToken, s.Cleanup
 }
 
 // setupTestRouterState is setupTestRouter that also returns the admin State, for
 // tests that need to seed aliases, extra keys, or owner-slot reservations.
 func setupTestRouterState(t *testing.T) (routerURL, apiKey, clientToken string, st *admin.State, cleanup func()) {
+	s := setupTestStack(t)
+	return s.URL, s.APIKey, s.ClientToken, s.State, s.Cleanup
+}
+
+// testStack holds the wired components of an in-memory router. Tests that only
+// need the HTTP surface should use the two helpers above; this is for tests that
+// have to reach past it, e.g. to flush a buffered recorder and inspect what it wrote.
+type testStack struct {
+	URL         string
+	APIKey      string
+	ClientToken string
+	State       *admin.State
+	Perf        *admin.PerfRecorder
+	Cleanup     func()
+}
+
+// setupTestStack builds the full router stack in-memory, mirroring main.go.
+func setupTestStack(t *testing.T) *testStack {
 	t.Helper()
+	var routerURL, apiKey, clientToken string
 	dir := t.TempDir()
 	statePath := dir + "/state.json"
 
-	// Create admin state with test user, API key, and client token
-	var err error
-	st, err = admin.LoadState(statePath)
-	if err != nil {
-		t.Fatalf("load state: %v", err)
+	// Wire components (same as main.go)
+	q := queue.New()
+	testSink := logring.New(logring.DefaultCap)
+	store := correlation.New(slog.Default())
+	h := hub.New(slog.Default())
+	h.Latency = latency.New()
+	reqStats := stats.New()
+
+	h.OnChunk = func(msg types.ChunkMsg) {
+		if store.Send(msg) == correlation.SendNotFound && !msg.Done {
+			t.Logf("chunk lost in test harness: request_id=%s", msg.RequestID)
+		}
+	}
+	h.OnError = func(msg types.ErrorMsg) {
+		store.Send(types.ChunkMsg{
+			Type:         "chunk",
+			RequestID:    msg.RequestID,
+			Done:         true,
+			FinishReason: "error",
+		})
 	}
 
-	// Create admin user
+	var apiHandler *api.Handler
+
+	adminHandler, err := admin.New(statePath, h, q, func() int64 {
+		if apiHandler == nil {
+			return 0
+		}
+		return apiHandler.Count()
+	}, reqStats, "e2e", "llmesh", "localhost", testSink)
+	if err != nil {
+		t.Fatalf("admin new: %v", err)
+	}
+
+	// Seed through the admin handler's own State rather than opening the database a
+	// second time. Two *sql.DB handles on one file are two independent writers, and
+	// SQLite permits only one at a time — with a background recorder now writing on
+	// its own schedule, a second handle intermittently loses the lock (SQLITE_BUSY).
+	st := adminHandler.State()
+
 	pwHash := "test-hash" // not validated in unit context
 	st.AddUser(admin.User{
 		Username:     "admin",
@@ -96,38 +148,9 @@ func setupTestRouterState(t *testing.T) (routerURL, apiKey, clientToken string, 
 		TokenPrefix: admin.SecretPrefix(clientToken),
 	})
 
-	// Wire components (same as main.go)
-	q := queue.New()
-	testSink := logring.New(logring.DefaultCap)
-	store := correlation.New(slog.Default())
-	h := hub.New(slog.Default())
-	reqStats := stats.New()
-
-	h.OnChunk = func(msg types.ChunkMsg) {
-		if store.Send(msg) == correlation.SendNotFound && !msg.Done {
-			t.Logf("chunk lost in test harness: request_id=%s", msg.RequestID)
-		}
-	}
-	h.OnError = func(msg types.ErrorMsg) {
-		store.Send(types.ChunkMsg{
-			Type:         "chunk",
-			RequestID:    msg.RequestID,
-			Done:         true,
-			FinishReason: "error",
-		})
-	}
-
-	var apiHandler *api.Handler
-
-	adminHandler, err := admin.New(statePath, h, q, func() int64 {
-		if apiHandler == nil {
-			return 0
-		}
-		return apiHandler.Count()
-	}, reqStats, "e2e", "llmesh", "localhost", testSink)
-	if err != nil {
-		t.Fatalf("admin new: %v", err)
-	}
+	perfRec := admin.NewPerfRecorder(st, slog.Default())
+	h.Perf = perfBridge{perfRec}
+	t.Cleanup(perfRec.Close)
 
 	sched := scheduler.New(q, h, adminHandler.State(), slog.Default())
 	sched.Start()
@@ -172,8 +195,27 @@ func setupTestRouterState(t *testing.T) (routerURL, apiKey, clientToken string, 
 	t.Cleanup(ts.Close)
 
 	routerURL = ts.URL
-	cleanup = func() { sched.Stop() }
-	return
+	return &testStack{
+		URL:         routerURL,
+		APIKey:      apiKey,
+		ClientToken: clientToken,
+		State:       st,
+		Perf:        perfRec,
+		Cleanup:     func() { sched.Stop() },
+	}
+}
+
+// perfBridge adapts the admin recorder to the hub's interface, as main.go does.
+type perfBridge struct{ rec *admin.PerfRecorder }
+
+func (b perfBridge) RecordPerf(s hub.PerfSample) {
+	b.rec.RecordPerf(admin.PerfSample{
+		Owner: s.Owner, KeyLabel: s.KeyLabel, Model: s.Model, Client: s.Client,
+		QueueMS: s.QueueMS, TotalMS: s.TotalMS, TTFTMS: s.TTFTMS,
+		PrefillMS: s.PrefillMS, PrefillTokens: s.PrefillTokens,
+		DecodeMS: s.DecodeMS, DecodeTokens: s.DecodeTokens,
+		FromBackend: s.FromBackend,
+	})
 }
 
 // connectMockClient dials the WS endpoint, authenticates, and registers the client.
@@ -245,6 +287,40 @@ func mockClientSimulator(t *testing.T, routerURL, token string, models []types.M
 	}()
 
 	return conn
+}
+
+// waitForModel blocks until the router will accept requests for model. Client
+// registration is asynchronous: connectMockClient returns as soon as the register
+// frame is written, well before the hub has read it, so posting immediately after
+// connecting can be rejected with "model not found". Polling the router's own model
+// list removes the guess a fixed sleep makes, which is what makes the difference on
+// a loaded machine where the read loop is not scheduled promptly.
+func waitForModel(t *testing.T, url, apiKey, model string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		req, _ := http.NewRequest("GET", url+"/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			var list struct {
+				Data []struct{ ID string } `json:"data"`
+			}
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if json.Unmarshal(body, &list) == nil {
+				for _, m := range list.Data {
+					if m.ID == model {
+						return
+					}
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("model %q never became available", model)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 // apiPost issues an authenticated POST request.

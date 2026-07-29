@@ -185,6 +185,103 @@ type ClientTokenRow struct {
 	ModelSlots  []ModelSlotRow // per-model owner-slot configuration
 	Connections []ConnectedClientRow
 	CSRFToken   string // for use in named sub-templates
+	// Perf is this machine's recent inference performance, or nil when it has
+	// served no requests in the window.
+	Perf *ClientPerfRow
+}
+
+// clientPerfWindow is how far back the Clients page summarises each machine's
+// performance. Short enough to reflect the machine's current state (model loaded,
+// thermal state, competing load) rather than its history.
+const clientPerfWindow = 24 * time.Hour
+
+// ClientPerfRow is a client machine's recent inference performance, pre-formatted
+// for display. Empty strings render as an em-dash rather than a misleading zero.
+type ClientPerfRow struct {
+	Requests   int64
+	GenTPS     string // token generation speed, e.g. "38.4 tok/s"
+	PromptTPS  string // prompt evaluation speed
+	AvgTTFT    string // mean time to first token
+	MaxTTFT    string // worst time to first token
+	AvgTotal   string // mean end-to-end duration
+	MaxTotal   string // worst end-to-end duration
+	AvgQueue   string // mean wait for a free slot on this machine
+	ByModel    []ModelPerfRow
+	Est        bool   // true when some samples were router-observed, not backend-reported
+	WindowDesc string // human label for the measurement window, e.g. "24h"
+}
+
+// ModelPerfRow is one model's performance on a particular client machine.
+type ModelPerfRow struct {
+	Name      string
+	Requests  int64
+	GenTPS    string
+	PromptTPS string
+	AvgTTFT   string
+}
+
+// formatTPS renders a tokens-per-second figure, or "" when unmeasured. Prompt
+// evaluation routinely runs into the thousands, so large values are abbreviated.
+func formatTPS(v float64) string {
+	switch {
+	case v <= 0:
+		return ""
+	case v >= 1000:
+		return fmt.Sprintf("%.1fk tok/s", v/1000)
+	case v >= 100:
+		return fmt.Sprintf("%.0f tok/s", v)
+	default:
+		return fmt.Sprintf("%.1f tok/s", v)
+	}
+}
+
+// formatMS renders a millisecond duration at a sensible precision, or "" when
+// unmeasured. Sub-second values stay in ms; longer ones read better as seconds.
+func formatMS(v float64) string {
+	switch {
+	case v <= 0:
+		return ""
+	case v < 1000:
+		return fmt.Sprintf("%.0f ms", v)
+	case v < 60000:
+		return fmt.Sprintf("%.1f s", v/1000)
+	default:
+		return fmt.Sprintf("%.1f min", v/60000)
+	}
+}
+
+// newClientPerfRow formats a client's counters for display, returning nil when the
+// machine served nothing in the window.
+func newClientPerfRow(p PerfStats, byModel map[string]PerfStats) *ClientPerfRow {
+	if p.Samples == 0 {
+		return nil
+	}
+	row := &ClientPerfRow{
+		Requests:   p.Samples,
+		GenTPS:     formatTPS(p.GenTokensPerSec()),
+		PromptTPS:  formatTPS(p.PromptTokensPerSec()),
+		AvgTTFT:    formatMS(p.AvgTTFTMS()),
+		MaxTTFT:    formatMS(p.TTFTMSMax),
+		AvgTotal:   formatMS(p.AvgTotalMS()),
+		MaxTotal:   formatMS(p.TotalMSMax),
+		AvgQueue:   formatMS(p.AvgQueueMS()),
+		Est:        p.BackendSamples < p.Samples,
+		WindowDesc: "24h",
+	}
+	for name, mp := range byModel {
+		if mp.Samples == 0 {
+			continue
+		}
+		row.ByModel = append(row.ByModel, ModelPerfRow{
+			Name:      name,
+			Requests:  mp.Samples,
+			GenTPS:    formatTPS(mp.GenTokensPerSec()),
+			PromptTPS: formatTPS(mp.PromptTokensPerSec()),
+			AvgTTFT:   formatMS(mp.AvgTTFTMS()),
+		})
+	}
+	sort.Slice(row.ByModel, func(i, j int) bool { return row.ByModel[i].Name < row.ByModel[j].Name })
+	return row
 }
 
 type ModelWithAliases struct {
@@ -517,9 +614,32 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, r *http.Request, u Use
 
 	modelAliases := invertAliasMap(a.state.AliasMap())
 
+	// Recent performance per machine, fetched once for the whole page rather than
+	// per row. Members see only the speed of their own requests; admins see the
+	// machine's aggregate across every caller. A query failure degrades to a page
+	// without the perf columns instead of a page that won't render.
+	perfOwner := ""
+	if u.Role != "admin" {
+		perfOwner = u.Username
+	}
+	perfUntil := time.Now()
+	perfSince := perfUntil.Add(-clientPerfWindow)
+	perfByClient, err := a.state.PerfByClient(perfSince, perfUntil, perfOwner)
+	if err != nil {
+		a.log.Error("admin: client perf query", "error", err)
+	}
+	perfByClientModel, err := a.state.PerfByClientModel(perfSince, perfUntil, perfOwner)
+	if err != nil {
+		a.log.Error("admin: client model perf query", "error", err)
+	}
+
 	rows := make([]ClientTokenRow, 0, len(rawTokens))
 	for _, t := range rawTokens {
 		row := ClientTokenRow{ClientToken: t, CSRFToken: bp.CSRFToken}
+		// Performance is keyed by the client's "owner/name", the same identity the
+		// hub stamps onto each sample it records.
+		clientLabel := t.Owner + "/" + t.Name
+		row.Perf = newClientPerfRow(perfByClient[clientLabel], perfByClientModel[clientLabel])
 		connInfos := a.hub.ConnectedClientsByToken(t.TokenHash)
 		if len(connInfos) > 0 {
 			row.Status, row.StatusClass, row.StatusLabel = clientStatusBadge(len(connInfos), false)

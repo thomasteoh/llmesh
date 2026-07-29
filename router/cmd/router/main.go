@@ -304,6 +304,10 @@ func main() {
 	// Persistent time-series usage tracking, flushed to the state DB.
 	usageRec := admin.NewUsageRecorder(adminHandler.State(), logring.NewLogger(sink, "admin", slog.LevelInfo))
 
+	// Persistent inference-performance tracking, likewise flushed to the state DB.
+	perfRec := admin.NewPerfRecorder(adminHandler.State(), logring.NewLogger(sink, "admin", slog.LevelInfo))
+	h.Perf = perfBridge{perfRec}
+
 	apiHandler = &api.Handler{
 		Keys:              adminHandler.State(),
 		Models:            h,
@@ -495,14 +499,38 @@ func main() {
 			log.Error("shutdown error", "error", err)
 		}
 
-		// Flush buffered usage counters after in-flight requests have settled.
+		// Flush buffered counters after in-flight requests have settled.
 		usageRec.Close()
+		perfRec.Close()
 	}()
 
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 		log.Error("server", "error", err)
 		os.Exit(1)
 	}
+}
+
+// perfBridge lets the hub hand performance samples to the admin recorder without
+// either package importing the other, following the same decoupling the api
+// handler uses for its stores. The two sample types are structurally identical;
+// this is the one place that has to know it.
+type perfBridge struct{ rec *admin.PerfRecorder }
+
+func (b perfBridge) RecordPerf(s hub.PerfSample) {
+	b.rec.RecordPerf(admin.PerfSample{
+		Owner:         s.Owner,
+		KeyLabel:      s.KeyLabel,
+		Model:         s.Model,
+		Client:        s.Client,
+		QueueMS:       s.QueueMS,
+		TotalMS:       s.TotalMS,
+		TTFTMS:        s.TTFTMS,
+		PrefillMS:     s.PrefillMS,
+		PrefillTokens: s.PrefillTokens,
+		DecodeMS:      s.DecodeMS,
+		DecodeTokens:  s.DecodeTokens,
+		FromBackend:   s.FromBackend,
+	})
 }
 
 func secureHeaders(next http.Handler) http.Handler {

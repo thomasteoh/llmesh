@@ -184,7 +184,12 @@ func dbPath(path string) string {
 // On first open, if a legacy state.json exists at the original path, its data is imported.
 func LoadState(path string) (*State, error) {
 	dbfile := dbPath(path)
-	db, err := sql.Open("sqlite", dbfile)
+	// busy_timeout makes a writer wait for the lock instead of failing instantly
+	// with SQLITE_BUSY. SetMaxOpenConns(1) below already serialises this process's
+	// own writes, so this only matters when something else holds a handle on the
+	// same file — a second State in-process, or another router pointed at it. The
+	// pragma is applied per connection at open time, so it survives pool recycling.
+	db, err := sql.Open("sqlite", dbfile+"?_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, fmt.Errorf("open state db: %w", err)
 	}
@@ -273,6 +278,31 @@ func createSchema(db *sql.DB) error {
 			PRIMARY KEY (bucket, owner, key_label, model)
 		);
 		CREATE INDEX IF NOT EXISTS idx_usage_hourly_owner ON usage_hourly(owner, bucket);
+		CREATE TABLE IF NOT EXISTS perf_hourly (
+			bucket          TEXT NOT NULL,
+			owner           TEXT NOT NULL DEFAULT '',
+			key_label       TEXT NOT NULL DEFAULT '',
+			model           TEXT NOT NULL DEFAULT '',
+			client          TEXT NOT NULL DEFAULT '',
+			samples         INTEGER NOT NULL DEFAULT 0,
+			queue_ms_sum    REAL NOT NULL DEFAULT 0,
+			queue_ms_max    REAL NOT NULL DEFAULT 0,
+			total_ms_sum    REAL NOT NULL DEFAULT 0,
+			total_ms_max    REAL NOT NULL DEFAULT 0,
+			ttft_samples    INTEGER NOT NULL DEFAULT 0,
+			ttft_ms_sum     REAL NOT NULL DEFAULT 0,
+			ttft_ms_max     REAL NOT NULL DEFAULT 0,
+			prefill_samples INTEGER NOT NULL DEFAULT 0,
+			prefill_ms_sum  REAL NOT NULL DEFAULT 0,
+			prefill_tokens  INTEGER NOT NULL DEFAULT 0,
+			decode_samples  INTEGER NOT NULL DEFAULT 0,
+			decode_ms_sum   REAL NOT NULL DEFAULT 0,
+			decode_tokens   INTEGER NOT NULL DEFAULT 0,
+			backend_samples INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (bucket, owner, key_label, model, client)
+		);
+		CREATE INDEX IF NOT EXISTS idx_perf_hourly_owner ON perf_hourly(owner, bucket);
+		CREATE INDEX IF NOT EXISTS idx_perf_hourly_client ON perf_hourly(client, bucket);
 		CREATE TABLE IF NOT EXISTS audit_log (
 			id        INTEGER PRIMARY KEY AUTOINCREMENT,
 			at        TEXT NOT NULL,

@@ -29,6 +29,9 @@
       <button class="seg-btn active" data-usage-metric="tokens">Tokens</button>
       <button class="seg-btn" data-usage-metric="requests">Requests</button>
       <button class="seg-btn" data-usage-metric="cost" title="Cost from per-model rates set under Settings → Pricing">Cost</button>
+      <button class="seg-btn" data-usage-metric="gen_tps" title="Token generation speed">Gen tok/s</button>
+      <button class="seg-btn" data-usage-metric="prompt_tps" title="Prompt evaluation speed">Prompt tok/s</button>
+      <button class="seg-btn" data-usage-metric="ttft" title="Time to first token">TTFT</button>
     </div>
   </div>
   <div class="usage-chart-wrap">
@@ -39,6 +42,32 @@
   <div class="usage-totals" id="usage-totals"></div>
 </div>
 <div class="usage-tip" id="usage-tip"></div>
+
+<div class="card" id="perf-card">
+  <div class="card-title">
+    Inference performance
+    <span class="muted text-xs" id="perf-window-label"></span>
+  </div>
+  <div class="stat-grid perf-stat-grid" id="perf-tiles">
+    <div class="stat-card">
+      <div class="stat-value" id="perf-gen-tps">&mdash;</div>
+      <div class="stat-label" title="Tokens generated divided by time spent generating them, across every request in the selected range.">Generation speed</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="perf-prompt-tps">&mdash;</div>
+      <div class="stat-label" title="Prompt tokens evaluated divided by time spent evaluating them. Tokens served from cache are excluded, since they were never evaluated.">Prompt eval speed</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="perf-ttft">&mdash;</div>
+      <div class="stat-label" title="Mean time from dispatching the request to a worker to the first token, over streaming requests. Excludes queue wait, shown separately. Batch requests produce no first-token signal.">Avg TTFT</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="perf-queue">&mdash;</div>
+      <div class="stat-label" title="Mean time a request waited for a free worker slot.">Avg queue wait</div>
+    </div>
+  </div>
+  <div class="muted text-xs mt-2" id="perf-note"></div>
+</div>
 
 {{if .ActiveModels}}
 <div class="card">

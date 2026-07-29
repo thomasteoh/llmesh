@@ -138,10 +138,21 @@ type InFlightRecord struct {
 	ClientID     string
 	ClientToken  string
 	ClientOwner  string // owner of the client that holds this job
+	ClientName   string // name of the client connection that holds this job
 	Req          types.InferenceRequest
 	DispatchedAt time.Time // when the job was dispatched to this client
 	LeaseExpiry  time.Time // DispatchedAt + LeaseDuration; slot reclaimed after this
 	live         *jobLiveStats
+}
+
+// ClientLabel returns the "owner/name" identity of the client holding this job,
+// matching how clients are labelled elsewhere in the portal. Returns "" when
+// either part is unknown, so callers can treat it as unattributed.
+func (r InFlightRecord) ClientLabel() string {
+	if r.ClientOwner == "" || r.ClientName == "" {
+		return ""
+	}
+	return r.ClientOwner + "/" + r.ClientName
 }
 
 // FirstChunkAt returns when the first non-empty delta arrived, or nil if not yet.
@@ -182,6 +193,37 @@ type Hub struct {
 	// Latency records per-model queue wait, TTFT, and job duration observations.
 	// Optional; nil disables latency tracking.
 	Latency *latency.Recorder
+
+	// Perf persists per-request inference performance for the portal's charts.
+	// Optional; nil disables performance tracking.
+	Perf PerfRecorder
+}
+
+// PerfRecorder persists one completed request's inference performance.
+// Satisfied by *admin.PerfRecorder (duck typing — no import needed).
+type PerfRecorder interface {
+	RecordPerf(PerfSample)
+}
+
+// PerfSample is one completed request's timing and throughput measurements.
+// Mirrors admin.PerfSample; declared here so the hub needs no admin import.
+// Durations are milliseconds, and 0 means "not measured for this request".
+type PerfSample struct {
+	Owner    string
+	KeyLabel string
+	Model    string
+	Client   string
+
+	QueueMS float64 // enqueue → dispatch
+	TotalMS float64 // enqueue → done (end-to-end)
+	TTFTMS  float64 // dispatch → first token; 0 for non-streaming
+
+	PrefillMS     float64
+	PrefillTokens int
+	DecodeMS      float64
+	DecodeTokens  int
+
+	FromBackend bool
 }
 
 // New creates and returns a new Hub.
@@ -409,7 +451,8 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 			}
 		}
 		if msg.Done {
-			if _, ok := h.untrackJob(msg.RequestID, client.ID); ok {
+			if rec, ok := h.untrackJob(msg.RequestID, client.ID); ok {
+				h.recordPerf(rec, msg.Usage, time.Now())
 				client.DecrInFlight()
 				if h.OnAvailable != nil {
 					h.OnAvailable()
@@ -817,9 +860,12 @@ func (h *Hub) DecrInFlight(clientID string) {
 }
 
 // TrackJob registers an in-flight job for the given client. Called by the
-// scheduler after dispatch. Returns false if the client is no longer connected
-// — in that case the job is not tracked and the caller must requeue it, so a
-// job dispatched into a connection that drops concurrently is never lost.
+// scheduler immediately before the job is put on the wire, because a client can
+// reply faster than the dispatching goroutine returns: tracking afterwards leaves
+// a window in which the completion arrives for a job the hub cannot see, so its
+// slot is never released and its performance is never recorded. Returns false if
+// the client is no longer connected — in that case the job is not tracked and the
+// caller must requeue it, so a job aimed at a dead connection is never lost.
 func (h *Hub) TrackJob(clientID string, req types.InferenceRequest) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -834,6 +880,7 @@ func (h *Hub) TrackJob(clientID string, req types.InferenceRequest) bool {
 		ClientID:     clientID,
 		ClientToken:  token,
 		ClientOwner:  clientOwner,
+		ClientName:   c.Name,
 		Req:          req,
 		DispatchedAt: now,
 		LeaseExpiry:  now.Add(LeaseDuration),
@@ -871,6 +918,96 @@ func (h *Hub) untrackJob(requestID, clientID string) (InFlightRecord, bool) {
 		h.Latency.RecordDuration(rec.Req.Model, time.Since(rec.DispatchedAt))
 	}
 	return rec, true
+}
+
+// UntrackJob removes a job record the caller had tracked but could not hand to
+// the client, so a failed send does not leave a phantom in-flight job that only
+// the lease reaper would clear. Silently does nothing if the record is gone or
+// belongs to another client.
+func (h *Hub) UntrackJob(clientID, requestID string) {
+	h.untrackJob(requestID, clientID)
+}
+
+// millis converts a duration to fractional milliseconds, clamping negatives to
+// zero so a nonsensical interval never pollutes an average.
+func millis(d time.Duration) float64 {
+	if d <= 0 {
+		return 0
+	}
+	return float64(d) / float64(time.Millisecond)
+}
+
+// recordPerf derives one performance sample from a completed job and hands it to
+// the recorder. Called once per successfully finished request, after untracking.
+//
+// Prompt-evaluation and generation speed come from the backend's own timings when
+// it reported them, because those exclude queueing and network transit and are the
+// only source that works for non-streaming requests. Failing that, the router
+// falls back to what it observed from the outside — dispatch to first token as
+// prefill, first token to done as decode — which is meaningful only while
+// streaming, since a batch response arrives as a single chunk at the end.
+func (h *Hub) recordPerf(rec InFlightRecord, usage *types.UsageInfo, doneAt time.Time) {
+	if h.Perf == nil && h.Latency == nil {
+		return
+	}
+	s := PerfSample{
+		Owner:    rec.Req.Owner,
+		KeyLabel: rec.Req.APIKeyLabel,
+		Model:    rec.Req.Model,
+		Client:   rec.ClientLabel(),
+		QueueMS:  millis(rec.DispatchedAt.Sub(rec.Req.EnqueuedAt)),
+		TotalMS:  millis(doneAt.Sub(rec.Req.EnqueuedAt)),
+	}
+
+	// TTFT is measured from dispatch, not from enqueue, matching the /metrics
+	// histogram, the in-flight jobs view, and what the term normally means in
+	// serving: the model's time to first token, with scheduler backlog excluded.
+	// Queue wait is reported separately, so the two add up to what the caller
+	// waited rather than double-counting it.
+	//
+	// Streaming only. A batch response arrives as one chunk carrying the whole
+	// body, so its "first token" timestamp is really the completion time —
+	// recording that would report a TTFT equal to the total duration.
+	firstChunk := rec.FirstChunkAt()
+	if rec.Req.Stream && firstChunk != nil {
+		s.TTFTMS = millis(firstChunk.Sub(rec.DispatchedAt))
+	}
+
+	if usage != nil && usage.Timings.Usable() {
+		t := usage.Timings
+		s.FromBackend = true
+		if t.PromptN > 0 && t.PromptMS > 0 {
+			s.PrefillMS, s.PrefillTokens = t.PromptMS, t.PromptN
+		}
+		if t.PredictedN > 0 && t.PredictedMS > 0 {
+			s.DecodeMS, s.DecodeTokens = t.PredictedMS, t.PredictedN
+		}
+	} else if rec.Req.Stream && firstChunk != nil && usage != nil {
+		// Prompt tokens served from cache were never evaluated, so charging them
+		// to the prefill window would overstate throughput — sometimes wildly, on
+		// a full cache hit. Subtracting them matches what a backend's own prompt_n
+		// counts, keeping the two sources comparable.
+		if evaluated := usage.PromptTokens - usage.CacheReadTokens; evaluated > 0 {
+			s.PrefillMS, s.PrefillTokens = millis(firstChunk.Sub(rec.DispatchedAt)), evaluated
+		}
+		if usage.CompletionTokens > 0 {
+			s.DecodeMS, s.DecodeTokens = millis(doneAt.Sub(*firstChunk)), usage.CompletionTokens
+		}
+	}
+
+	// The same two throughput figures also feed the /metrics histograms, which
+	// give percentiles over a short window that the hourly buckets cannot.
+	if h.Latency != nil {
+		if s.PrefillMS > 0 && s.PrefillTokens > 0 {
+			h.Latency.RecordPromptThroughput(rec.Req.Model, float64(s.PrefillTokens)/(s.PrefillMS/1000))
+		}
+		if s.DecodeMS > 0 && s.DecodeTokens > 0 {
+			h.Latency.RecordGenThroughput(rec.Req.Model, float64(s.DecodeTokens)/(s.DecodeMS/1000))
+		}
+	}
+	if h.Perf != nil {
+		h.Perf.RecordPerf(s)
+	}
 }
 
 // LookupInFlightJob returns the in-flight record for requestID, if any.

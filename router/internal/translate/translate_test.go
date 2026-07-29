@@ -421,3 +421,41 @@ func TestUsageCacheSurfacing(t *testing.T) {
 		}
 	})
 }
+
+func TestUsageRendering_DoesNotLeakBackendTimings(t *testing.T) {
+	// Timings ride on UsageInfo for the trip from worker to router, but they are
+	// internal telemetry and must never surface in a caller's response — no API
+	// this router speaks has a `timings` field, and inventing one would break
+	// strict clients.
+	usage := &types.UsageInfo{
+		PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15,
+		Timings: &types.Timings{PromptN: 10, PromptMS: 50, PredictedN: 5, PredictedMS: 100},
+	}
+
+	responses := map[string]any{
+		"openai":           OpenAIFullResponse("id", "m", "hi", "stop", nil, usage),
+		"anthropic":        AnthropicFullResponse("id", "m", "hi", "stop", nil, usage),
+		"openai-responses": OpenAIResponsesFullResponse("id", "m", "hi", usage),
+	}
+	for name, resp := range responses {
+		b, err := json.Marshal(resp)
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", name, err)
+		}
+		for _, leak := range []string{"timings", "prompt_ms", "predicted_ms", "predicted_n"} {
+			if strings.Contains(string(b), leak) {
+				t.Errorf("%s response leaks %q:\n%s", name, leak, b)
+			}
+		}
+	}
+
+	// The streaming paths too.
+	chunk := types.ChunkMsg{Done: true, FinishReason: "stop", Usage: usage}
+	streamed := []string{OpenAISSEChunk("id", "m", chunk)}
+	streamed = append(streamed, NewAnthropicStreamer("id", "m").Done("stop", usage)...)
+	for _, line := range streamed {
+		if strings.Contains(line, "timings") || strings.Contains(line, "predicted_ms") {
+			t.Errorf("stream event leaks timings: %s", line)
+		}
+	}
+}

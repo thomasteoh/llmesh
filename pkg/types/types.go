@@ -212,6 +212,44 @@ type UsageInfo struct {
 	// this request (Anthropic usage.cache_creation_input_tokens). Backends that
 	// only do automatic caching (llama.cpp, ds4) do not report this.
 	CacheCreationTokens int `json:"cache_creation_tokens,omitempty"`
+	// Timings carries the backend's own split of prompt-evaluation versus
+	// token-generation time, when it reports one. nil for backends that don't.
+	Timings *Timings `json:"timings,omitempty"`
+}
+
+// Timings is a backend-reported breakdown of where a request's wall-clock time
+// went, split between prompt evaluation (prefill) and token generation (decode).
+//
+// It rides on UsageInfo because both are known only at completion and travel the
+// same path, and it is never rendered into an API response — the translate layer
+// builds each protocol's usage object field by field. The router prefers these
+// numbers over its own observations when present, because they exclude queueing
+// and network transit and so measure the backend itself. Absent (nil), the router
+// falls back to what it can see from the outside: dispatch → first token as
+// prefill, first token → done as decode. Streaming-only, hence the preference.
+//
+// Field names mirror llama.cpp's `timings` object, which is the primary source.
+type Timings struct {
+	// PromptN is the number of prompt tokens actually evaluated. Excludes tokens
+	// served from the KV cache, so it can be far below UsageInfo.PromptTokens on
+	// a warm cache hit — pair it with PromptMS, not with PromptTokens.
+	PromptN int `json:"prompt_n,omitempty"`
+	// PromptMS is the wall-clock time spent evaluating those prompt tokens.
+	PromptMS float64 `json:"prompt_ms,omitempty"`
+	// PredictedN is the number of tokens generated.
+	PredictedN int `json:"predicted_n,omitempty"`
+	// PredictedMS is the wall-clock time spent generating them.
+	PredictedMS float64 `json:"predicted_ms,omitempty"`
+}
+
+// Usable reports whether the timings carry at least one complete
+// tokens-and-duration pair, and so can contribute a throughput measurement.
+// A backend that reports the field but populates it with zeros is not usable.
+func (t *Timings) Usable() bool {
+	if t == nil {
+		return false
+	}
+	return (t.PromptN > 0 && t.PromptMS > 0) || (t.PredictedN > 0 && t.PredictedMS > 0)
 }
 
 // ChunkMsg is sent by the client for each token chunk (or full response if non-streaming).

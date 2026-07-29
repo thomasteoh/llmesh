@@ -97,7 +97,7 @@ func labelSuffix(model string) string {
 	return fmt.Sprintf(",model=%q", model)
 }
 
-// Recorder holds latency histograms for the three key router stages.
+// Recorder holds latency and throughput histograms for the key router stages.
 // Observations are keyed by model name and retained for a 10-minute rolling window.
 type Recorder struct {
 	window    time.Duration
@@ -105,6 +105,8 @@ type Recorder struct {
 	queueWait map[string]*Histogram // model → queue wait time histogram
 	ttft      map[string]*Histogram // model → time-to-first-token histogram
 	duration  map[string]*Histogram // model → total job duration histogram
+	promptTPS map[string]*Histogram // model → prompt-evaluation tokens/sec histogram
+	genTPS    map[string]*Histogram // model → token-generation tokens/sec histogram
 }
 
 // New creates a Recorder with a 10-minute rolling window.
@@ -114,6 +116,8 @@ func New() *Recorder {
 		queueWait: make(map[string]*Histogram),
 		ttft:      make(map[string]*Histogram),
 		duration:  make(map[string]*Histogram),
+		promptTPS: make(map[string]*Histogram),
+		genTPS:    make(map[string]*Histogram),
 	}
 }
 
@@ -150,34 +154,59 @@ func (r *Recorder) RecordDuration(model string, d time.Duration) {
 	h.ObserveDuration(d)
 }
 
-// WritePrometheus appends all latency metrics to b in Prometheus text format.
+// RecordPromptThroughput records prompt-evaluation speed in tokens per second.
+// Values <= 0 are ignored so an unmeasured request cannot drag the window down.
+func (r *Recorder) RecordPromptThroughput(model string, tokensPerSec float64) {
+	if tokensPerSec <= 0 {
+		return
+	}
+	r.mu.Lock()
+	h := r.histogram(r.promptTPS, model)
+	r.mu.Unlock()
+	h.Observe(tokensPerSec)
+}
+
+// RecordGenThroughput records token-generation speed in tokens per second.
+// Values <= 0 are ignored, as for RecordPromptThroughput.
+func (r *Recorder) RecordGenThroughput(model string, tokensPerSec float64) {
+	if tokensPerSec <= 0 {
+		return
+	}
+	r.mu.Lock()
+	h := r.histogram(r.genTPS, model)
+	r.mu.Unlock()
+	h.Observe(tokensPerSec)
+}
+
+// WritePrometheus appends all latency and throughput metrics to b in Prometheus
+// text format.
 func (r *Recorder) WritePrometheus(b *strings.Builder) {
 	r.mu.Lock()
 	models := make(map[string]struct{})
-	for m := range r.queueWait {
-		models[m] = struct{}{}
-	}
-	for m := range r.ttft {
-		models[m] = struct{}{}
-	}
-	for m := range r.duration {
-		models[m] = struct{}{}
+	for _, m := range []map[string]*Histogram{r.queueWait, r.ttft, r.duration, r.promptTPS, r.genTPS} {
+		for model := range m {
+			models[model] = struct{}{}
+		}
 	}
 
 	// Snapshot histograms under lock, then release before computing percentiles.
 	type snap struct {
-		model string
-		qw    *Histogram
-		ttft  *Histogram
-		dur   *Histogram
+		model     string
+		qw        *Histogram
+		ttft      *Histogram
+		dur       *Histogram
+		promptTPS *Histogram
+		genTPS    *Histogram
 	}
 	snaps := make([]snap, 0, len(models))
 	for model := range models {
 		snaps = append(snaps, snap{
-			model: model,
-			qw:    r.queueWait[model],
-			ttft:  r.ttft[model],
-			dur:   r.duration[model],
+			model:     model,
+			qw:        r.queueWait[model],
+			ttft:      r.ttft[model],
+			dur:       r.duration[model],
+			promptTPS: r.promptTPS[model],
+			genTPS:    r.genTPS[model],
 		})
 	}
 	r.mu.Unlock()
@@ -202,6 +231,18 @@ func (r *Recorder) WritePrometheus(b *strings.Builder) {
 			s.dur.WritePrometheus(b,
 				"llmrouter_job_duration_seconds",
 				"Total job duration from dispatch to completion (p50/p95/p99 over 10m window).",
+				s.model)
+		}
+		if s.promptTPS != nil {
+			s.promptTPS.WritePrometheus(b,
+				"llmrouter_prompt_tokens_per_second",
+				"Prompt evaluation (prefill) speed in tokens/sec (p50/p95/p99 over 10m window).",
+				s.model)
+		}
+		if s.genTPS != nil {
+			s.genTPS.WritePrometheus(b,
+				"llmrouter_generated_tokens_per_second",
+				"Token generation (decode) speed in tokens/sec (p50/p95/p99 over 10m window).",
 				s.model)
 		}
 	}

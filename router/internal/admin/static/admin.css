@@ -416,6 +416,10 @@ main {
 }
 .usage-chart .bar { shape-rendering: crispEdges; }
 .usage-chart .bar:hover { opacity: .85; }
+/* Rate metrics (tok/s, TTFT) draw as overlaid lines instead of stacked bars —
+   speeds do not sum — so they want smoothing rather than crisp pixel edges. */
+.usage-chart .perf-line,
+.usage-chart .perf-point { shape-rendering: geometricPrecision; }
 .usage-empty {
   position: absolute;
   inset: 0;
@@ -891,6 +895,64 @@ label { font-size: 12.5px; font-weight: 600; color: var(--text-muted); display: 
 .conn-name { font-weight: 600; }
 .conn-version, .conn-models, .conn-capacity { color: var(--text-muted); }
 .conn-jobs { width: 100%; padding-left: 12px; }
+
+/* Performance tiles sit inside a card, which already provides the bottom gap. */
+.perf-stat-grid { margin-bottom: 0; margin-top: 10px; }
+
+/* ─── Client performance sub-row ─────────────────────────────── */
+
+.perf-block { padding: 8px 14px 10px; }
+.perf-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.perf-title { font-weight: 650; }
+.perf-window { font-size: 11.5px; }
+.perf-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 8px;
+}
+.perf-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 9px;
+}
+.perf-metric-value {
+  font-size: 14px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.perf-metric-label { color: var(--text-faint); font-size: 11px; }
+.perf-model-table {
+  width: 100%;
+  margin-top: 8px;
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+.perf-model-table th {
+  text-align: left;
+  color: var(--text-faint);
+  font-weight: 600;
+  padding: 3px 8px 3px 0;
+  border-bottom: 1px solid var(--border);
+}
+.perf-model-table td {
+  padding: 3px 8px 3px 0;
+  font-variant-numeric: tabular-nums;
+}
+.perf-model-table td:first-child {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  color: var(--text-muted);
+}
 
 .job-row { display: flex; flex-direction: column; gap: 1px; padding: 4px 0; font-size: 12px; }
 .job-row-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

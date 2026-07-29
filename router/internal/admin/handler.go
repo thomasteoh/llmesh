@@ -323,6 +323,9 @@ func (a *Admin) registerRoutes() {
 	// Usage JSON API — time-series token usage (members see their own only)
 	mux.HandleFunc("/portal/api/usage", a.requireAuth(a.handleUsageJSON))
 
+	// Performance JSON API — time-series inference speed (members see their own only)
+	mux.HandleFunc("/portal/api/perf", a.requireAuth(a.handlePerfJSON))
+
 	// Logs JSON API (admin-only)
 	mux.HandleFunc("/portal/api/logs", a.requireAdmin(a.handleLogsJSON))
 

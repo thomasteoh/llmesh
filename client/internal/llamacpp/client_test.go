@@ -3,9 +3,12 @@ package llamacpp
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"llmesh/pkg/types"
 )
 
 func TestInferUsageToUsageInfo(t *testing.T) {
@@ -109,5 +112,133 @@ func TestProbeModelID_Errors(t *testing.T) {
 				t.Errorf("expected empty model id, got %q", got)
 			}
 		})
+	}
+}
+
+// --- Backend timings ---
+
+// inferTo runs one inference against a stub server and returns the usage handed
+// to the final callback, which is where timings ride back to the router.
+func inferTo(t *testing.T, stream bool, body string) *types.UsageInfo {
+	t.Helper()
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		if stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+		}
+		io.WriteString(w, body)
+	}))
+	defer srv.Close()
+
+	var final *types.UsageInfo
+	err := New(srv.URL, nil).Infer(context.Background(),
+		types.InferenceRequest{Model: "m", Stream: stream},
+		"",
+		func(delta string, tc json.RawMessage, done bool, finish string, usage *types.UsageInfo) {
+			if done {
+				final = usage
+			}
+		})
+	if err != nil {
+		t.Fatalf("infer: %v", err)
+	}
+	// The llama.cpp extension that asks for timings must actually be sent, or the
+	// server has no reason to report them.
+	if gotBody["timings_per_token"] != true {
+		t.Fatalf("request did not ask for timings: %v", gotBody["timings_per_token"])
+	}
+	return final
+}
+
+func TestInfer_ParsesBatchTimings(t *testing.T) {
+	usage := inferTo(t, false, `{
+		"choices":[{"message":{"content":"hi"},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":800,"completion_tokens":100,"total_tokens":900},
+		"timings":{"prompt_n":780,"prompt_ms":250.5,"predicted_n":100,"predicted_ms":1800}
+	}`)
+	if usage == nil || usage.Timings == nil {
+		t.Fatalf("timings not carried through: %+v", usage)
+	}
+	if usage.PromptTokens != 800 || usage.CompletionTokens != 100 {
+		t.Fatalf("usage mangled: %+v", usage)
+	}
+	got := usage.Timings
+	if got.PromptN != 780 || got.PromptMS != 250.5 || got.PredictedN != 100 || got.PredictedMS != 1800 {
+		t.Fatalf("timings: %+v", got)
+	}
+}
+
+func TestInfer_ParsesStreamTimingsAndKeepsLatest(t *testing.T) {
+	// llama.cpp repeats `timings` as running totals while streaming, so the final
+	// set observed is the complete one. The usage-only chunk arrives after the
+	// finish_reason chunk and must not clobber the timings collected earlier.
+	usage := inferTo(t, true, `data: {"choices":[{"delta":{"content":"a"}}],"timings":{"prompt_n":780,"prompt_ms":250,"predicted_n":1,"predicted_ms":20}}
+
+data: {"choices":[{"delta":{"content":"b"}}],"timings":{"prompt_n":780,"prompt_ms":250,"predicted_n":2,"predicted_ms":40}}
+
+data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
+
+data: {"choices":[],"usage":{"prompt_tokens":800,"completion_tokens":2,"total_tokens":802}}
+
+data: [DONE]
+
+`)
+	if usage == nil || usage.Timings == nil {
+		t.Fatalf("timings not carried through: %+v", usage)
+	}
+	if usage.PromptTokens != 800 || usage.CompletionTokens != 2 {
+		t.Fatalf("usage lost when merging timings: %+v", usage)
+	}
+	// The second chunk's totals, not the first.
+	if usage.Timings.PredictedN != 2 || usage.Timings.PredictedMS != 40 {
+		t.Fatalf("stale timings kept: %+v", usage.Timings)
+	}
+}
+
+func TestInfer_NoTimingsFromBackendLeavesUsageAlone(t *testing.T) {
+	// A plain OpenAI-compatible server reports no timings; usage must survive
+	// untouched and Timings must stay nil so the router knows to fall back.
+	usage := inferTo(t, false, `{
+		"choices":[{"message":{"content":"hi"},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}
+	}`)
+	if usage == nil {
+		t.Fatal("usage dropped")
+	}
+	if usage.Timings != nil {
+		t.Fatalf("timings invented: %+v", usage.Timings)
+	}
+	if usage.PromptTokens != 10 || usage.CompletionTokens != 5 {
+		t.Fatalf("usage mangled: %+v", usage)
+	}
+}
+
+func TestInfer_AllZeroTimingsTreatedAsAbsent(t *testing.T) {
+	// A server that emits the field but fills it with zeros carries no information;
+	// reporting it as present would make the router trust a meaningless split.
+	usage := inferTo(t, false, `{
+		"choices":[{"message":{"content":"hi"},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":10,"completion_tokens":5},
+		"timings":{"prompt_n":0,"prompt_ms":0,"predicted_n":0,"predicted_ms":0}
+	}`)
+	if usage.Timings != nil {
+		t.Fatalf("all-zero timings reported as present: %+v", usage.Timings)
+	}
+}
+
+func TestInfer_TimingsWithoutUsageAreDropped(t *testing.T) {
+	// Timings present, no `usage` object. The timings are discarded rather than
+	// synthesising a zero-token carrier: downstream, a nil usage is the signal that
+	// the backend reported no token counts, and a stand-in would both publish an
+	// empty usage object to the caller and book a zero-token request into the usage
+	// table. Preserving that signal matters more than the lost measurement, which
+	// only arises on a truncated stream.
+	usage := inferTo(t, false, `{
+		"choices":[{"message":{"content":"hi"},"finish_reason":"stop"}],
+		"timings":{"prompt_n":50,"prompt_ms":100,"predicted_n":10,"predicted_ms":200}
+	}`)
+	if usage != nil {
+		t.Fatalf("a usage object was synthesised to carry timings: %+v", usage)
 	}
 }

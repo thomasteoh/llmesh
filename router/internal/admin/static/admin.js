@@ -381,10 +381,23 @@ function initJobStats() {
   });
 }
 
-/* ─── Usage panel (dashboard) ────────────────────────────────────
-   Fetches /portal/api/usage and renders a stacked bar chart as inline
-   SVG (no external chart library). Controls: range (24h/7d/30d/90d),
-   grouping (model/user/key), metric (tokens/requests). */
+/* ─── Usage & performance panel (dashboard) ──────────────────────
+   Renders one chart as inline SVG (no external chart library) from two
+   endpoints. Controls: range (24h/7d/30d/90d), grouping (model/user/key),
+   metric.
+
+   Count metrics (tokens/requests) come from /portal/api/usage and stack:
+   each series is a slice of that bucket's total. Rate metrics (tok/s, TTFT)
+   come from /portal/api/perf and cannot stack — two models each generating
+   40 tok/s do not add up to 80 — so they draw as lines instead. Rate series
+   also carry nulls for buckets with no traffic, where a line must break
+   rather than dip to a zero that never happened. */
+
+/* PERF_METRICS maps a metric id to its axis label. Membership doubles as the
+   test for which endpoint and which chart style a metric needs. */
+var PERF_METRICS = { gen_tps: 'tok/s', prompt_tps: 'tok/s', ttft: 'ms' };
+
+function isPerfMetric(m) { return Object.prototype.hasOwnProperty.call(PERF_METRICS, m); }
 
 var CHART_COLORS = ['--chart-1','--chart-2','--chart-3','--chart-4','--chart-5',
                     '--chart-6','--chart-7','--chart-8','--chart-9','--chart-10'];
@@ -401,6 +414,46 @@ function fmtNum(n) {
   return String(n);
 }
 
+/* fmtDur renders a millisecond duration the way the Clients page does, so the
+   same figure reads identically in both places. */
+function fmtDur(ms) {
+  if (!(ms > 0)) return '—';
+  if (ms < 1000) return Math.round(ms) + ' ms';
+  if (ms < 60000) return (ms / 1000).toFixed(1) + ' s';
+  return (ms / 60000).toFixed(1) + ' min';
+}
+
+/* fmtRate renders a tokens-per-second figure. */
+function fmtRate(v) {
+  if (!(v > 0)) return '—';
+  if (v >= 1000) return (v / 1000).toFixed(1) + 'k tok/s';
+  if (v >= 100) return v.toFixed(0) + ' tok/s';
+  return v.toFixed(1) + ' tok/s';
+}
+
+/* fmtMoney renders integer micro-units of the configured currency. Small amounts
+   keep more decimals: a per-bucket cost rounded to two places would read as 0.00
+   and look like the chart is broken. Mirrors FormatMoney in Go. */
+function fmtMoney(micro) {
+  var v = (micro || 0) / 1e6;
+  if (!v) return '0.00';
+  var av = Math.abs(v);
+  if (av >= 1) return v.toFixed(2);
+  if (av >= 0.01) return v.toFixed(4);
+  return v.toFixed(6);
+}
+
+/* fmtMetricValue formats a chart/legend value for whichever metric is showing.
+   The metric is passed in rather than read from state so a value can never be
+   rendered in the unit of a metric the data on screen is not for. */
+function fmtMetricValue(metric, v) {
+  if (v === null || v === undefined) return '—';
+  if (metric === 'ttft') return fmtDur(v);
+  if (isPerfMetric(metric)) return fmtRate(v);
+  if (metric === 'cost') return fmtMoney(v);
+  return fmtNum(v);
+}
+
 function fmtBucket(b, hourly) {
   var d = new Date(hourly ? b : b + 'T00:00:00Z');
   if (hourly) {
@@ -414,12 +467,35 @@ function initUsage() {
   var svg = document.getElementById('usage-chart');
   if (!svg) return;
 
-  var state = { range: '7d', group: 'model', metric: 'tokens', data: null };
+  var state = { range: '7d', group: 'model', metric: 'tokens', data: null, perf: null };
   try {
     state.range  = localStorage.getItem('llmesh-usage-range')  || state.range;
     state.group  = localStorage.getItem('llmesh-usage-group')  || state.group;
     state.metric = localStorage.getItem('llmesh-usage-metric') || state.metric;
   } catch (e) {}
+
+  /* chartData returns whichever payload backs the selected metric, or null when it
+     has not arrived yet. The two share an envelope shape (range/buckets/series) so
+     the renderer only has to branch on how values are read and drawn.
+
+     A perf payload is only usable for the metric it was actually fetched for — its
+     `values` are that metric's numbers, in that metric's unit. Two clicks in quick
+     succession leave two requests in flight, and if they resolve out of order the
+     held payload can be for the previous metric; rendering it would label tok/s as
+     ms. The server echoes `metric` back precisely so this is checkable. */
+  function chartData() {
+    if (!isPerfMetric(state.metric)) return state.data;
+    if (!state.perf || state.perf.metric !== state.metric) return null;
+    return state.perf;
+  }
+
+  /* chartMetric is the metric the data on screen actually represents. Formatting
+     reads this rather than state.metric so a value can never be rendered in the
+     wrong unit. */
+  function chartMetric() {
+    var d = chartData();
+    return d && d.metric ? d.metric : state.metric;
+  }
 
   function syncButtons() {
     [['usage-range','data-usage-range',state.range],
@@ -433,32 +509,38 @@ function initUsage() {
     });
   }
 
+  /* seriesValues returns one number (or null, for rates with no data) per bucket.
+     Rate series arrive pre-computed in `values`, because a bucket's rate has to be
+     derived from its summed tokens and summed time server-side and cannot be
+     recovered from per-bucket averages. */
   function seriesValues(s) {
-    if (state.metric === 'requests') return s.requests;
-    if (state.metric === 'cost') return s.cost_micro || [];
+    var metric = chartMetric();
+    if (isPerfMetric(metric)) return s.values;
+    if (metric === 'requests') return s.requests;
+    if (metric === 'cost') return s.cost_micro || [];
     return s.prompt_tokens.map(function(p, i) { return p + s.completion_tokens[i]; });
   }
 
-  /* Money arrives as integer micro-units of the configured currency. Small
-     amounts keep more decimals: a per-hour cost rounded to two places would read
-     as 0.00 and look like the chart is broken. Mirrors FormatMoney in Go. */
-  function fmtMoney(micro) {
-    var v = (micro || 0) / 1e6;
-    if (!v) return '0.00';
-    var av = Math.abs(v);
-    if (av >= 1) return v.toFixed(2);
-    if (av >= 0.01) return v.toFixed(4);
-    return v.toFixed(6);
-  }
-
-  /* Format a value in whichever unit the current metric is measured in. */
-  function fmtMetric(v) {
-    return state.metric === 'cost' ? fmtMoney(v) : fmtNum(v);
-  }
-
   function render() {
-    var d = state.data;
-    if (!d) return;
+    var d = chartData();
+    var empty = document.getElementById('usage-empty');
+    if (!d) {
+      // No usable data for the selected metric — mid-fetch, or the fetch failed.
+      // Clear rather than leave the previous metric's chart on screen under a
+      // highlighted button, which would read as this metric's numbers.
+      svg.innerHTML = '';
+      var legend0 = document.getElementById('usage-legend');
+      var totals0 = document.getElementById('usage-totals');
+      if (legend0) legend0.innerHTML = '';
+      if (totals0) totals0.innerHTML = '';
+      if (empty) {
+        empty.textContent = 'Loading…';
+        empty.classList.remove('hidden');
+      }
+      return;
+    }
+    var metric = chartMetric();
+    var perf = isPerfMetric(metric);
     var wrap = svg.parentElement;
     var W = Math.max(280, wrap.clientWidth);
     var H = 240;
@@ -470,16 +552,28 @@ function initUsage() {
     var n = d.buckets.length;
     var hourly = d.range === '24h' || d.range === '7d';
     var series = d.series || [];
-    var stackTotals = [];
+    // Bars stack, so the axis must reach the tallest total. Lines overlay, so it
+    // only needs to reach the single largest value.
+    var peaks = [];
+    var anyData = false;
     for (var i = 0; i < n; i++) {
       var t = 0;
-      series.forEach(function(s) { t += seriesValues(s)[i]; });
-      stackTotals.push(t);
+      series.forEach(function(s) {
+        var v = seriesValues(s)[i];
+        if (v === null || v === undefined) return;
+        anyData = anyData || v > 0;
+        if (perf) { t = Math.max(t, v); } else { t += v; }
+      });
+      peaks.push(t);
     }
-    var maxV = Math.max.apply(null, [1].concat(stackTotals));
+    var maxV = Math.max.apply(null, [1].concat(peaks));
 
-    var empty = document.getElementById('usage-empty');
-    if (empty) empty.classList.toggle('hidden', maxV > 1 || stackTotals.some(function(v){ return v > 0; }));
+    if (empty) {
+      empty.textContent = perf
+        ? 'No performance data recorded in this period.'
+        : 'No usage recorded in this period.';
+      empty.classList.toggle('hidden', anyData);
+    }
 
     var plotW = W - padL - padR, plotH = H - padT - padB;
     var ns = 'http://www.w3.org/2000/svg';
@@ -496,7 +590,7 @@ function initUsage() {
       lbl.setAttribute('class', 'axis-label');
       lbl.setAttribute('x', padL - 6); lbl.setAttribute('y', y + 3.5);
       lbl.setAttribute('text-anchor', 'end');
-      lbl.textContent = fmtMetric(Math.round(maxV * f));
+      lbl.textContent = fmtMetricValue(metric, Math.round(maxV * f));
       svg.appendChild(lbl);
     });
 
@@ -515,28 +609,71 @@ function initUsage() {
       svg.appendChild(tx);
     }
 
-    // Stacked bars.
-    for (var b = 0; b < n; b++) {
-      var yAcc = padT + plotH;
-      var x = padL + slot * b + (slot - barW) / 2;
+    function yFor(v) { return padT + plotH * (1 - v / maxV); }
+
+    if (perf) {
+      // One polyline per series. A null value ends the current run and starts a
+      // fresh one after the gap, so idle periods read as absent rather than slow.
       series.forEach(function(s, si) {
-        var v = seriesValues(s)[b];
-        if (v <= 0) return;
-        var h = (v / maxV) * plotH;
-        yAcc -= h;
-        var rect = document.createElementNS(ns, 'rect');
-        rect.setAttribute('class', 'bar');
-        rect.setAttribute('x', x); rect.setAttribute('y', yAcc);
-        rect.setAttribute('width', barW); rect.setAttribute('height', Math.max(h, 0.5));
-        rect.setAttribute('fill', usageColor(si, s.name));
-        svg.appendChild(rect);
+        var vals = seriesValues(s) || [];
+        var colour = usageColor(si, s.name);
+        var run = [];
+        function flushRun() {
+          if (run.length === 1) {
+            // A lone point has no segment to draw; mark it so it stays visible.
+            var dot = document.createElementNS(ns, 'circle');
+            dot.setAttribute('class', 'perf-point');
+            dot.setAttribute('cx', run[0][0]); dot.setAttribute('cy', run[0][1]);
+            dot.setAttribute('r', 2);
+            dot.setAttribute('fill', colour);
+            svg.appendChild(dot);
+          } else if (run.length > 1) {
+            var pl = document.createElementNS(ns, 'polyline');
+            pl.setAttribute('class', 'perf-line');
+            pl.setAttribute('points', run.map(function(p) { return p[0] + ',' + p[1]; }).join(' '));
+            pl.setAttribute('fill', 'none');
+            pl.setAttribute('stroke', colour);
+            pl.setAttribute('stroke-width', '2');
+            pl.setAttribute('stroke-linejoin', 'round');
+            pl.setAttribute('stroke-linecap', 'round');
+            svg.appendChild(pl);
+          }
+          run = [];
+        }
+        for (var b = 0; b < n; b++) {
+          var v = vals[b];
+          if (v === null || v === undefined) { flushRun(); continue; }
+          run.push([padL + slot * b + slot / 2, yFor(v)]);
+        }
+        flushRun();
       });
-      // Transparent hover strip for the tooltip.
+    } else {
+      // Stacked bars.
+      for (var b = 0; b < n; b++) {
+        var yAcc = padT + plotH;
+        var x = padL + slot * b + (slot - barW) / 2;
+        series.forEach(function(s, si) {
+          var v = seriesValues(s)[b];
+          if (v <= 0) return;
+          var h = (v / maxV) * plotH;
+          yAcc -= h;
+          var rect = document.createElementNS(ns, 'rect');
+          rect.setAttribute('class', 'bar');
+          rect.setAttribute('x', x); rect.setAttribute('y', yAcc);
+          rect.setAttribute('width', barW); rect.setAttribute('height', Math.max(h, 0.5));
+          rect.setAttribute('fill', usageColor(si, s.name));
+          svg.appendChild(rect);
+        });
+      }
+    }
+
+    // Transparent hover strips for the tooltip, added last so they sit on top.
+    for (var hb = 0; hb < n; hb++) {
       var hover = document.createElementNS(ns, 'rect');
-      hover.setAttribute('x', padL + slot * b); hover.setAttribute('y', padT);
+      hover.setAttribute('x', padL + slot * hb); hover.setAttribute('y', padT);
       hover.setAttribute('width', slot); hover.setAttribute('height', plotH);
       hover.setAttribute('fill', 'transparent');
-      hover.setAttribute('data-bucket-idx', b);
+      hover.setAttribute('data-bucket-idx', hb);
       svg.appendChild(hover);
     }
 
@@ -554,9 +691,13 @@ function initUsage() {
         item.appendChild(document.createTextNode(s.name || '(none)'));
         var val = document.createElement('span');
         val.className = 'legend-val';
-        val.textContent = state.metric === 'requests' ? fmtNum(s.total_requests)
-          : state.metric === 'cost' ? fmtMoney((s.actual_cost_micro || 0) + (s.estimated_cost_micro || 0))
-          : fmtNum(s.total_tokens);
+        // For rates the legend shows the window-wide figure, not a sum: adding
+        // tokens/sec across buckets would be meaningless. Cost does sum, but the
+        // two bases are added only here, where the split is already reported in
+        // the totals row below.
+        val.textContent = perf ? fmtMetricValue(metric, s.average)
+          : metric === 'cost' ? fmtMoney((s.actual_cost_micro || 0) + (s.estimated_cost_micro || 0))
+          : fmtNum(metric === 'requests' ? s.total_requests : s.total_tokens);
         item.appendChild(val);
         legend.appendChild(item);
       });
@@ -564,9 +705,15 @@ function initUsage() {
     var totals = document.getElementById('usage-totals');
     if (totals) {
       totals.innerHTML = '';
+      /* Each entry is [value, label]. */
       var cur = d.currency ? ' ' + d.currency : '';
       var parts;
-      if (state.metric === 'cost') {
+      if (perf) {
+        // Rates are window-wide figures rather than sums of the buckets.
+        parts = [[fmtNum(d.totals.samples), 'requests measured'],
+                 [fmtRate(d.totals.gen_tokens_per_sec), 'generation'],
+                 [fmtRate(d.totals.prompt_tokens_per_sec), 'prompt eval']];
+      } else if (metric === 'cost') {
         /* Charged and estimated are never summed into one headline figure. A
            modelled number added to a real invoice produces something that is
            neither, and it is the one mistake this feature exists to prevent. */
@@ -588,7 +735,7 @@ function initUsage() {
       /* Unpriced requests are only surfaced under the cost metric, where they
          are the reason a total may understate. Staying silent about them would
          make an incomplete figure look authoritative. */
-      if (state.metric === 'cost' && d.totals.unpriced_requests > 0) {
+      if (metric === 'cost' && d.totals.unpriced_requests > 0) {
         var warn = document.createElement('span');
         warn.className = 'usage-total-warn';
         warn.title = 'These requests ran on models with no rate configured, so they contribute nothing to the figures above. Set rates under Settings → Pricing.';
@@ -601,14 +748,54 @@ function initUsage() {
     }
   }
 
+  /* renderPerfTiles fills the summary cards. They always reflect the selected
+     range, whichever metric the chart happens to be showing. */
+  function renderPerfTiles() {
+    var p = state.perf;
+    if (!p) return;
+    var t = p.totals || {};
+    function set(id, text) {
+      var el = document.getElementById(id);
+      if (el) el.textContent = text;
+    }
+    set('perf-gen-tps', fmtRate(t.gen_tokens_per_sec));
+    set('perf-prompt-tps', fmtRate(t.prompt_tokens_per_sec));
+    set('perf-ttft', fmtDur(t.avg_ttft_ms));
+    set('perf-queue', fmtDur(t.avg_queue_ms));
+
+    var label = document.getElementById('perf-window-label');
+    if (label) {
+      label.textContent = t.samples
+        ? '· last ' + p.range + ' · ' + fmtNum(t.samples) + ' requests measured'
+        : '· last ' + p.range;
+    }
+    var note = document.getElementById('perf-note');
+    if (note) {
+      if (!t.samples) {
+        note.textContent = 'No completed requests in this period yet.';
+      } else {
+        var parts = ['Worst TTFT ' + fmtDur(t.max_ttft_ms),
+                     'worst end-to-end ' + fmtDur(t.max_total_ms)];
+        // Below 100% some samples were timed by the router from the outside
+        // (dispatch to first token, first token to done) rather than reported by
+        // the backend, which makes those speeds approximate.
+        if (t.backend_measured_frac < 0.999) {
+          parts.push(Math.round(t.backend_measured_frac * 100) +
+                     '% backend-reported (rest approximated by the router)');
+        }
+        note.textContent = parts.join(' · ') + '.';
+      }
+    }
+  }
+
   /* Tooltip */
   var tip = document.getElementById('usage-tip');
   svg.addEventListener('mousemove', function(e) {
-    if (!tip || !state.data) return;
+    var d = chartData();
+    if (!tip || !d) return;
     var t = e.target.closest('[data-bucket-idx]');
     if (!t) { tip.style.display = 'none'; return; }
     var b = parseInt(t.getAttribute('data-bucket-idx'), 10);
-    var d = state.data;
     var hourly = d.range === '24h' || d.range === '7d';
     tip.innerHTML = '';
     var title = document.createElement('div');
@@ -618,7 +805,7 @@ function initUsage() {
     var any = false;
     (d.series || []).forEach(function(s, si) {
       var v = seriesValues(s)[b];
-      if (v <= 0) return;
+      if (v === null || v === undefined || !(v > 0)) return;
       any = true;
       var row = document.createElement('div');
       row.className = 'tip-row';
@@ -631,14 +818,14 @@ function initUsage() {
       name.appendChild(document.createTextNode(s.name || '(none)'));
       var val = document.createElement('span');
       val.className = 'tip-val';
-      val.textContent = fmtMetric(v);
+      val.textContent = fmtMetricValue(chartMetric(), v);
       row.appendChild(name); row.appendChild(val);
       tip.appendChild(row);
     });
     if (!any) {
       var none = document.createElement('div');
       none.className = 'tip-row';
-      none.textContent = 'no usage';
+      none.textContent = isPerfMetric(chartMetric()) ? 'no data' : 'no usage';
       tip.appendChild(none);
     }
     tip.style.display = 'block';
@@ -653,7 +840,24 @@ function initUsage() {
   var usagePoller = poll(function() {
     return '/portal/api/usage?range=' + encodeURIComponent(state.range) +
            '&group=' + encodeURIComponent(state.group);
-  }, 60000, function(d) { state.data = d; render(); });
+  }, 60000, function(d) {
+    state.data = d;
+    if (!isPerfMetric(state.metric)) render();
+  });
+
+  // The performance endpoint is polled unconditionally: the summary tiles show
+  // regardless of which metric the chart is on. Its `metric` parameter only
+  // selects which series the chart half of the payload carries.
+  var perfPoller = poll(function() {
+    var m = isPerfMetric(state.metric) ? state.metric : 'gen_tps';
+    return '/portal/api/perf?range=' + encodeURIComponent(state.range) +
+           '&group=' + encodeURIComponent(state.group) +
+           '&metric=' + encodeURIComponent(m);
+  }, 60000, function(d) {
+    state.perf = d;
+    renderPerfTiles();
+    if (isPerfMetric(state.metric)) render();
+  });
 
   document.addEventListener('click', function(e) {
     var rb = e.target.closest('[data-usage-range]');
@@ -669,7 +873,18 @@ function initUsage() {
       localStorage.setItem('llmesh-usage-metric', state.metric);
     } catch (err) {}
     syncButtons();
-    if (mb) render(); else usagePoller.tick();
+    // Render first so the chart reflects the new selection at once: switching to a
+    // count metric draws immediately from data already held, and switching to a
+    // rate metric clears to "Loading…" rather than leaving the previous metric's
+    // chart under a highlighted button. Then refetch — a rate series is specific
+    // to its metric, so unlike the usage chart it cannot be re-rendered in place.
+    render();
+    if (rb || gb) {
+      usagePoller.tick();
+      perfPoller.tick();
+    } else if (isPerfMetric(state.metric)) {
+      perfPoller.tick();
+    }
   });
 
   var resizeTimer = null;
