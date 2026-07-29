@@ -435,7 +435,25 @@ function initUsage() {
 
   function seriesValues(s) {
     if (state.metric === 'requests') return s.requests;
+    if (state.metric === 'cost') return s.cost_micro || [];
     return s.prompt_tokens.map(function(p, i) { return p + s.completion_tokens[i]; });
+  }
+
+  /* Money arrives as integer micro-units of the configured currency. Small
+     amounts keep more decimals: a per-hour cost rounded to two places would read
+     as 0.00 and look like the chart is broken. Mirrors FormatMoney in Go. */
+  function fmtMoney(micro) {
+    var v = (micro || 0) / 1e6;
+    if (!v) return '0.00';
+    var av = Math.abs(v);
+    if (av >= 1) return v.toFixed(2);
+    if (av >= 0.01) return v.toFixed(4);
+    return v.toFixed(6);
+  }
+
+  /* Format a value in whichever unit the current metric is measured in. */
+  function fmtMetric(v) {
+    return state.metric === 'cost' ? fmtMoney(v) : fmtNum(v);
   }
 
   function render() {
@@ -478,7 +496,7 @@ function initUsage() {
       lbl.setAttribute('class', 'axis-label');
       lbl.setAttribute('x', padL - 6); lbl.setAttribute('y', y + 3.5);
       lbl.setAttribute('text-anchor', 'end');
-      lbl.textContent = fmtNum(Math.round(maxV * f));
+      lbl.textContent = fmtMetric(Math.round(maxV * f));
       svg.appendChild(lbl);
     });
 
@@ -536,8 +554,8 @@ function initUsage() {
         item.appendChild(document.createTextNode(s.name || '(none)'));
         var val = document.createElement('span');
         val.className = 'legend-val';
-        val.textContent = state.metric === 'requests'
-          ? fmtNum(s.total_requests)
+        val.textContent = state.metric === 'requests' ? fmtNum(s.total_requests)
+          : state.metric === 'cost' ? fmtMoney((s.actual_cost_micro || 0) + (s.estimated_cost_micro || 0))
           : fmtNum(s.total_tokens);
         item.appendChild(val);
         legend.appendChild(item);
@@ -546,15 +564,40 @@ function initUsage() {
     var totals = document.getElementById('usage-totals');
     if (totals) {
       totals.innerHTML = '';
-      [['Requests', d.totals.requests], ['Prompt tokens', d.totals.prompt_tokens],
-       ['Completion tokens', d.totals.completion_tokens]].forEach(function(pair) {
+      var cur = d.currency ? ' ' + d.currency : '';
+      var parts;
+      if (state.metric === 'cost') {
+        /* Charged and estimated are never summed into one headline figure. A
+           modelled number added to a real invoice produces something that is
+           neither, and it is the one mistake this feature exists to prevent. */
+        parts = [[fmtMoney(d.totals.actual_cost_micro) + cur, 'charged'],
+                 [fmtMoney(d.totals.estimated_cost_micro) + cur, 'estimated']];
+      } else {
+        parts = [[fmtNum(d.totals.requests), 'Requests'],
+                 [fmtNum(d.totals.prompt_tokens), 'Prompt tokens'],
+                 [fmtNum(d.totals.completion_tokens), 'Completion tokens']];
+      }
+      parts.forEach(function(pair) {
         var sp = document.createElement('span');
         var b = document.createElement('b');
-        b.textContent = fmtNum(pair[1]);
+        b.textContent = pair[0];
         sp.appendChild(b);
-        sp.appendChild(document.createTextNode(' ' + pair[0]));
+        sp.appendChild(document.createTextNode(' ' + pair[1]));
         totals.appendChild(sp);
       });
+      /* Unpriced requests are only surfaced under the cost metric, where they
+         are the reason a total may understate. Staying silent about them would
+         make an incomplete figure look authoritative. */
+      if (state.metric === 'cost' && d.totals.unpriced_requests > 0) {
+        var warn = document.createElement('span');
+        warn.className = 'usage-total-warn';
+        warn.title = 'These requests ran on models with no rate configured, so they contribute nothing to the figures above. Set rates under Settings → Pricing.';
+        var wb = document.createElement('b');
+        wb.textContent = fmtNum(d.totals.unpriced_requests);
+        warn.appendChild(wb);
+        warn.appendChild(document.createTextNode(' requests unpriced'));
+        totals.appendChild(warn);
+      }
     }
   }
 
@@ -588,7 +631,7 @@ function initUsage() {
       name.appendChild(document.createTextNode(s.name || '(none)'));
       var val = document.createElement('span');
       val.className = 'tip-val';
-      val.textContent = fmtNum(v);
+      val.textContent = fmtMetric(v);
       row.appendChild(name); row.appendChild(val);
       tip.appendChild(row);
     });
