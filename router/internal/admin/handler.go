@@ -263,6 +263,9 @@ func (a *Admin) registerRoutes() {
 	mux.HandleFunc("/portal/settings/upstream/add", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleUpstreamAdd)), 20))
 	mux.HandleFunc("/portal/settings/upstream/remove", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleUpstreamRemove)), 20))
 	mux.HandleFunc("/portal/settings/optimization", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleOptimizationUpdate)), 20))
+	mux.HandleFunc("/portal/settings/pricing", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleModelPricingUpdate)), 30))
+	mux.HandleFunc("/portal/settings/pricing/delete", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleModelPricingDelete)), 30))
+	mux.HandleFunc("/portal/settings/currency", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleCostCurrencyUpdate)), 20))
 
 	// Dashboard JSON API
 	mux.HandleFunc("/portal/api/dashboard", a.requireAuth(a.handleDashboardJSON))

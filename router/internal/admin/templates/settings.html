@@ -10,6 +10,7 @@
     <button class="tab-btn" data-tab-target="tab-users" data-tab-hash>Users</button>
     <button class="tab-btn" data-tab-target="tab-upstreams" data-tab-hash>Upstreams</button>
     <button class="tab-btn" data-tab-target="tab-optimization" data-tab-hash>Optimization</button>
+    <button class="tab-btn" data-tab-target="tab-pricing" data-tab-hash>Pricing</button>
     <button class="tab-btn" data-tab-target="tab-logs" data-tab-hash data-tab-onactivate="logs">Logs</button>
     {{end}}
   </div>
@@ -179,6 +180,74 @@
 
           <button type="submit" class="btn">Save optimization settings</button>
         </form>
+      </div>
+    </div>
+  </div>
+
+  {{/* ── Pricing tab ── */}}
+  <div id="tab-pricing" class="tab-panel">
+    <div class="card">
+      <div class="card-title">Model pricing</div>
+      <p class="table-hint mb-3">
+        Token rates per million tokens, used to price recorded usage on the Dashboard. Rates apply at
+        read time, so setting one prices <strong>all</strong> history for that model, not just future
+        requests &mdash; which is how you put a figure on traffic that ran before you had a rate. Mark a
+        rate <mono>charged</mono> only when a provider actually bills you for it; anything modelled
+        locally should stay <mono>estimated</mono> so the two are never totalled together.
+      </p>
+
+      <form method="POST" action="/portal/settings/currency" class="inline-form mb-4">
+        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+        <label for="currency">Currency</label>
+        <input id="currency" name="currency" value="{{.Currency}}" maxlength="8" style="width:90px;"
+               title="Display label only — llmesh does no conversion, so use one currency for every rate.">
+        <button type="submit" class="btn-secondary btn-xs">Update</button>
+        <span class="table-hint">Label only; no conversion is applied.</span>
+      </form>
+
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>Input / Mtok</th>
+              <th>Output / Mtok</th>
+              <th>Basis</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {{range .Pricing}}
+            <tr>
+              <td data-label="Model">
+                <mono>{{.Model}}</mono>
+                {{if .Live}}<span class="badge connected" title="A connected client is serving this model now">●</span>{{end}}
+                {{if not .Configured}}<span class="badge muted-badge" title="No rate configured — this model's requests contribute nothing to cost totals">unpriced</span>{{end}}
+              </td>
+              <td colspan="4">
+                <form method="POST" action="/portal/settings/pricing" class="inline-form">
+                  <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+                  <input type="hidden" name="model" value="{{.Model}}">
+                  <input name="input_rate" value="{{.InputRate}}" placeholder="0" inputmode="decimal"
+                         style="width:88px;" aria-label="Input rate per million tokens for {{.Model}}">
+                  <input name="output_rate" value="{{.OutputRate}}" placeholder="0" inputmode="decimal"
+                         style="width:88px;" aria-label="Output rate per million tokens for {{.Model}}">
+                  <select name="basis" aria-label="Pricing basis for {{.Model}}">
+                    <option value="estimated" {{if not .IsActual}}selected{{end}}>estimated</option>
+                    <option value="actual" {{if .IsActual}}selected{{end}}>charged</option>
+                  </select>
+                  <button type="submit" class="btn-secondary btn-xs">Save</button>
+                </form>
+                {{if .Configured}}
+                {{template "action-button" dict "Action" "/portal/settings/pricing/delete" "CSRF" $.CSRFToken "Fields" (dict "model" .Model) "Confirm" (printf "Clear pricing for %s? Its usage will stop contributing to cost totals." .Model) "Class" "btn-danger btn-xs" "Label" "Clear" "Title" "Return this model to unpriced"}}
+                {{end}}
+              </td>
+            </tr>
+            {{else}}
+            <tr class="empty-row"><td colspan="5">No models seen yet. Rates can be set once a client has connected, or after usage has been recorded.</td></tr>
+            {{end}}
+          </tbody>
+        </table>
       </div>
     </div>
   </div>
