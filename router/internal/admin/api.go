@@ -193,8 +193,14 @@ type usageSeriesJSON struct {
 	Requests         []int64 `json:"requests"`
 	PromptTokens     []int64 `json:"prompt_tokens"`
 	CompletionTokens []int64 `json:"completion_tokens"`
-	TotalRequests    int64   `json:"total_requests"`
-	TotalTokens      int64   `json:"total_tokens"`
+	// Cost is charged plus estimated per bucket, in micro-units, for charting.
+	// The split is not per-bucket: a stacked chart of one series cannot show two
+	// bases at once, and the split that matters is reported in the totals.
+	CostMicro          []int64 `json:"cost_micro"`
+	TotalRequests      int64   `json:"total_requests"`
+	TotalTokens        int64   `json:"total_tokens"`
+	ActualCostMicro    int64   `json:"actual_cost_micro"`
+	EstimatedCostMicro int64   `json:"estimated_cost_micro"`
 }
 
 type usageResponseJSON struct {
@@ -202,10 +208,19 @@ type usageResponseJSON struct {
 	Group   string            `json:"group"`
 	Buckets []string          `json:"buckets"`
 	Series  []usageSeriesJSON `json:"series"`
-	Totals  struct {
+	// Currency is a display label; llmesh does no conversion.
+	Currency string `json:"currency"`
+	Totals   struct {
 		Requests         int64 `json:"requests"`
 		PromptTokens     int64 `json:"prompt_tokens"`
 		CompletionTokens int64 `json:"completion_tokens"`
+		// Charged and estimated stay separate so the portal can never present a
+		// modelled figure as money actually spent.
+		ActualCostMicro    int64 `json:"actual_cost_micro"`
+		EstimatedCostMicro int64 `json:"estimated_cost_micro"`
+		// UnpricedRequests is how many requests contributed no cost because their
+		// model has no rate. Without it a total looks complete when it is not.
+		UnpricedRequests int64 `json:"unpriced_requests"`
 	} `json:"totals"`
 }
 
@@ -286,7 +301,7 @@ func (a *Admin) handleUsageJSON(w http.ResponseWriter, r *http.Request) {
 	}
 	seriesMap := make(map[string]*usageSeriesJSON)
 	var order []string
-	resp := usageResponseJSON{Range: rng, Group: group, Buckets: buckets}
+	resp := usageResponseJSON{Range: rng, Group: group, Buckets: buckets, Currency: a.state.CostCurrency()}
 	for _, row := range rows {
 		i, ok := bucketIdx[row.Bucket]
 		if !ok {
@@ -299,6 +314,7 @@ func (a *Admin) handleUsageJSON(w http.ResponseWriter, r *http.Request) {
 				Requests:         make([]int64, len(buckets)),
 				PromptTokens:     make([]int64, len(buckets)),
 				CompletionTokens: make([]int64, len(buckets)),
+				CostMicro:        make([]int64, len(buckets)),
 			}
 			seriesMap[row.Name] = s
 			order = append(order, row.Name)
@@ -306,11 +322,17 @@ func (a *Admin) handleUsageJSON(w http.ResponseWriter, r *http.Request) {
 		s.Requests[i] += row.Requests
 		s.PromptTokens[i] += row.PromptTokens
 		s.CompletionTokens[i] += row.CompletionTokens
+		s.CostMicro[i] += row.TotalCostMicro()
 		s.TotalRequests += row.Requests
 		s.TotalTokens += row.PromptTokens + row.CompletionTokens
+		s.ActualCostMicro += row.ActualCostMicro
+		s.EstimatedCostMicro += row.EstimatedCostMicro
 		resp.Totals.Requests += row.Requests
 		resp.Totals.PromptTokens += row.PromptTokens
 		resp.Totals.CompletionTokens += row.CompletionTokens
+		resp.Totals.ActualCostMicro += row.ActualCostMicro
+		resp.Totals.EstimatedCostMicro += row.EstimatedCostMicro
+		resp.Totals.UnpricedRequests += row.UnpricedRequests
 	}
 
 	all := make([]usageSeriesJSON, 0, len(order))
@@ -324,15 +346,19 @@ func (a *Admin) handleUsageJSON(w http.ResponseWriter, r *http.Request) {
 			Requests:         make([]int64, len(buckets)),
 			PromptTokens:     make([]int64, len(buckets)),
 			CompletionTokens: make([]int64, len(buckets)),
+			CostMicro:        make([]int64, len(buckets)),
 		}
 		for _, s := range all[maxUsageSeries:] {
 			for i := range buckets {
 				other.Requests[i] += s.Requests[i]
 				other.PromptTokens[i] += s.PromptTokens[i]
 				other.CompletionTokens[i] += s.CompletionTokens[i]
+				other.CostMicro[i] += s.CostMicro[i]
 			}
 			other.TotalRequests += s.TotalRequests
 			other.TotalTokens += s.TotalTokens
+			other.ActualCostMicro += s.ActualCostMicro
+			other.EstimatedCostMicro += s.EstimatedCostMicro
 		}
 		all = append(all[:maxUsageSeries], other)
 	}

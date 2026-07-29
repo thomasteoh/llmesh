@@ -431,11 +431,26 @@ function fmtRate(v) {
   return v.toFixed(1) + ' tok/s';
 }
 
-/* fmtMetricValue formats a chart/legend value for whichever metric is showing. */
+/* fmtMoney renders integer micro-units of the configured currency. Small amounts
+   keep more decimals: a per-bucket cost rounded to two places would read as 0.00
+   and look like the chart is broken. Mirrors FormatMoney in Go. */
+function fmtMoney(micro) {
+  var v = (micro || 0) / 1e6;
+  if (!v) return '0.00';
+  var av = Math.abs(v);
+  if (av >= 1) return v.toFixed(2);
+  if (av >= 0.01) return v.toFixed(4);
+  return v.toFixed(6);
+}
+
+/* fmtMetricValue formats a chart/legend value for whichever metric is showing.
+   The metric is passed in rather than read from state so a value can never be
+   rendered in the unit of a metric the data on screen is not for. */
 function fmtMetricValue(metric, v) {
   if (v === null || v === undefined) return '—';
   if (metric === 'ttft') return fmtDur(v);
   if (isPerfMetric(metric)) return fmtRate(v);
+  if (metric === 'cost') return fmtMoney(v);
   return fmtNum(v);
 }
 
@@ -502,6 +517,7 @@ function initUsage() {
     var metric = chartMetric();
     if (isPerfMetric(metric)) return s.values;
     if (metric === 'requests') return s.requests;
+    if (metric === 'cost') return s.cost_micro || [];
     return s.prompt_tokens.map(function(p, i) { return p + s.completion_tokens[i]; });
   }
 
@@ -574,7 +590,7 @@ function initUsage() {
       lbl.setAttribute('class', 'axis-label');
       lbl.setAttribute('x', padL - 6); lbl.setAttribute('y', y + 3.5);
       lbl.setAttribute('text-anchor', 'end');
-      lbl.textContent = fmtNum(Math.round(maxV * f));
+      lbl.textContent = fmtMetricValue(metric, Math.round(maxV * f));
       svg.appendChild(lbl);
     });
 
@@ -676,9 +692,11 @@ function initUsage() {
         var val = document.createElement('span');
         val.className = 'legend-val';
         // For rates the legend shows the window-wide figure, not a sum: adding
-        // tokens/sec across buckets would be meaningless.
-        val.textContent = perf
-          ? fmtMetricValue(metric, s.average)
+        // tokens/sec across buckets would be meaningless. Cost does sum, but the
+        // two bases are added only here, where the split is already reported in
+        // the totals row below.
+        val.textContent = perf ? fmtMetricValue(metric, s.average)
+          : metric === 'cost' ? fmtMoney((s.actual_cost_micro || 0) + (s.estimated_cost_micro || 0))
           : fmtNum(metric === 'requests' ? s.total_requests : s.total_tokens);
         item.appendChild(val);
         legend.appendChild(item);
@@ -687,21 +705,46 @@ function initUsage() {
     var totals = document.getElementById('usage-totals');
     if (totals) {
       totals.innerHTML = '';
-      var pairs = perf
-        ? [['requests measured', fmtNum(d.totals.samples)],
-           ['generation', fmtRate(d.totals.gen_tokens_per_sec)],
-           ['prompt eval', fmtRate(d.totals.prompt_tokens_per_sec)]]
-        : [['Requests', fmtNum(d.totals.requests)],
-           ['Prompt tokens', fmtNum(d.totals.prompt_tokens)],
-           ['Completion tokens', fmtNum(d.totals.completion_tokens)]];
-      pairs.forEach(function(pair) {
+      /* Each entry is [value, label]. */
+      var cur = d.currency ? ' ' + d.currency : '';
+      var parts;
+      if (perf) {
+        // Rates are window-wide figures rather than sums of the buckets.
+        parts = [[fmtNum(d.totals.samples), 'requests measured'],
+                 [fmtRate(d.totals.gen_tokens_per_sec), 'generation'],
+                 [fmtRate(d.totals.prompt_tokens_per_sec), 'prompt eval']];
+      } else if (metric === 'cost') {
+        /* Charged and estimated are never summed into one headline figure. A
+           modelled number added to a real invoice produces something that is
+           neither, and it is the one mistake this feature exists to prevent. */
+        parts = [[fmtMoney(d.totals.actual_cost_micro) + cur, 'charged'],
+                 [fmtMoney(d.totals.estimated_cost_micro) + cur, 'estimated']];
+      } else {
+        parts = [[fmtNum(d.totals.requests), 'Requests'],
+                 [fmtNum(d.totals.prompt_tokens), 'Prompt tokens'],
+                 [fmtNum(d.totals.completion_tokens), 'Completion tokens']];
+      }
+      parts.forEach(function(pair) {
         var sp = document.createElement('span');
         var b = document.createElement('b');
-        b.textContent = pair[1];
+        b.textContent = pair[0];
         sp.appendChild(b);
-        sp.appendChild(document.createTextNode(' ' + pair[0]));
+        sp.appendChild(document.createTextNode(' ' + pair[1]));
         totals.appendChild(sp);
       });
+      /* Unpriced requests are only surfaced under the cost metric, where they
+         are the reason a total may understate. Staying silent about them would
+         make an incomplete figure look authoritative. */
+      if (metric === 'cost' && d.totals.unpriced_requests > 0) {
+        var warn = document.createElement('span');
+        warn.className = 'usage-total-warn';
+        warn.title = 'These requests ran on models with no rate configured, so they contribute nothing to the figures above. Set rates under Settings → Pricing.';
+        var wb = document.createElement('b');
+        wb.textContent = fmtNum(d.totals.unpriced_requests);
+        warn.appendChild(wb);
+        warn.appendChild(document.createTextNode(' requests unpriced'));
+        totals.appendChild(warn);
+      }
     }
   }
 

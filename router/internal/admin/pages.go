@@ -276,6 +276,65 @@ type SettingsPage struct {
 	Users     []UserRow
 	Upstreams []UpstreamRouterRow
 	Opt       types.RequestOptimization
+	Pricing   []ModelPricingRow
+	Currency  string
+}
+
+// ModelPricingRow is one model's token rate, as displayed and edited.
+type ModelPricingRow struct {
+	Model string
+	// InputRate and OutputRate are the stored rates formatted for a text input
+	// (blank when zero), so the form round-trips what the admin typed.
+	InputRate  string
+	OutputRate string
+	Basis      string // BasisActual | BasisEstimated
+	IsActual   bool   // precomputed; templates cannot compare strings inline
+	Configured bool   // a pricing row exists, even if it sets a zero rate
+	Live       bool   // a connected client currently serves this model
+}
+
+// modelPricingRows lists every model worth pricing: those with a rate already,
+// those being served right now, and those that merely appear in usage history.
+// All three matter. A live-but-unpriced model is silently missing from every cost
+// total until someone prices it, and a model only present in history still owns
+// its share of a past bill — since rates apply retroactively, leaving it out
+// would make that share unreachable from the portal.
+func modelPricingRows(pricing map[string]ModelPricing, liveModels, usageModels []string) []ModelPricingRow {
+	live := make(map[string]bool, len(liveModels))
+	for _, m := range liveModels {
+		live[m] = true
+	}
+	capacity := len(pricing) + len(liveModels) + len(usageModels)
+	seen := make(map[string]bool, capacity)
+	rows := make([]ModelPricingRow, 0, capacity)
+	add := func(model string) {
+		if seen[model] {
+			return
+		}
+		seen[model] = true
+		p, configured := pricing[model]
+		basis := validBasis(p.Basis)
+		rows = append(rows, ModelPricingRow{
+			Model:      model,
+			InputRate:  FormatRatePerMtok(p.InputPPM),
+			OutputRate: FormatRatePerMtok(p.OutputPPM),
+			Basis:      basis,
+			IsActual:   basis == BasisActual,
+			Configured: configured,
+			Live:       live[model],
+		})
+	}
+	for m := range pricing {
+		add(m)
+	}
+	for _, m := range liveModels {
+		add(m)
+	}
+	for _, m := range usageModels {
+		add(m)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Model < rows[j].Model })
+	return rows
 }
 
 type UserRow struct {
@@ -915,12 +974,89 @@ func (a *Admin) renderSettings(w http.ResponseWriter, r *http.Request, u User, f
 	bp := a.newBasePage("settings", u, r)
 	bp.Flash = flash
 	bp.Error = errMsg
+	pricing, err := a.state.ModelPricingAll()
+	if err != nil {
+		a.log.Error("admin: model pricing query", "error", err)
+		pricing = map[string]ModelPricing{}
+	}
+	activeModels := a.hub.ActiveModels()
+	sort.Strings(activeModels)
+	usageModels, err := a.state.UsageModels()
+	if err != nil {
+		a.log.Error("admin: usage models query", "error", err)
+	}
 	a.render(w, "settings", SettingsPage{
 		basePage:  bp,
 		Users:     rows,
 		Upstreams: upstreamRows,
 		Opt:       a.state.RequestOpts(),
+		Pricing:   modelPricingRows(pricing, activeModels, usageModels),
+		Currency:  a.state.CostCurrency(),
 	})
+}
+
+// handleModelPricingUpdate upserts one model's token rates.
+func (a *Admin) handleModelPricingUpdate(w http.ResponseWriter, r *http.Request) {
+	u := ctxGetUser(r)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	model := strings.TrimSpace(r.FormValue("model"))
+	if model == "" {
+		a.renderSettings(w, r, u, "", "model is required")
+		return
+	}
+	inPPM, err := ParseRatePerMtok(r.FormValue("input_rate"))
+	if err != nil {
+		a.renderSettings(w, r, u, "", "input "+err.Error())
+		return
+	}
+	outPPM, err := ParseRatePerMtok(r.FormValue("output_rate"))
+	if err != nil {
+		a.renderSettings(w, r, u, "", "output "+err.Error())
+		return
+	}
+	basis := validBasis(r.FormValue("basis"))
+	if err := a.state.SetModelPricing(model, inPPM, outPPM, basis); err != nil {
+		a.renderSettings(w, r, u, "", "could not save pricing: "+err.Error())
+		return
+	}
+	a.state.RecordAudit(u.Username, "pricing.set",
+		fmt.Sprintf("%s in=%d out=%d %s", model, inPPM, outPPM, basis), a.clientIP(r))
+	a.renderSettings(w, r, u, "Pricing saved for "+model+".", "")
+}
+
+// handleModelPricingDelete returns a model to unpriced.
+func (a *Admin) handleModelPricingDelete(w http.ResponseWriter, r *http.Request) {
+	u := ctxGetUser(r)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	model := strings.TrimSpace(r.FormValue("model"))
+	if err := a.state.DeleteModelPricing(model); err != nil {
+		a.renderSettings(w, r, u, "", "could not clear pricing: "+err.Error())
+		return
+	}
+	a.state.RecordAudit(u.Username, "pricing.delete", model, a.clientIP(r))
+	a.renderSettings(w, r, u, "Pricing cleared for "+model+".", "")
+}
+
+// handleCostCurrencyUpdate sets the display currency label.
+func (a *Admin) handleCostCurrencyUpdate(w http.ResponseWriter, r *http.Request) {
+	u := ctxGetUser(r)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	code := strings.ToUpper(strings.TrimSpace(r.FormValue("currency")))
+	if err := a.state.SetCostCurrency(code); err != nil {
+		a.renderSettings(w, r, u, "", err.Error())
+		return
+	}
+	a.state.RecordAudit(u.Username, "pricing.currency", code, a.clientIP(r))
+	a.renderSettings(w, r, u, "Currency updated.", "")
 }
 
 func (a *Admin) handleUpstreamAdd(w http.ResponseWriter, r *http.Request) {
@@ -1122,6 +1258,41 @@ func (a *Admin) handleUserDemote(w http.ResponseWriter, r *http.Request) {
 	}
 	a.state.RecordAudit(u.Username, "user.demote", target, a.clientIP(r))
 	http.Redirect(w, r, "/portal/settings", http.StatusFound)
+}
+
+// handleUserIsolation toggles one of a user's two request-isolation flags. The
+// "field" form value selects the direction (send|receive) and "value" the new
+// state (1|0); the other flag is preserved.
+func (a *Admin) handleUserIsolation(w http.ResponseWriter, r *http.Request) {
+	u := ctxGetUser(r)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	target := r.FormValue("username")
+	field := r.FormValue("field")
+	enabled := r.FormValue("value") == "1"
+	cur, ok := a.state.LookupUser(target)
+	if !ok {
+		a.renderSettings(w, r, u, "", fmt.Sprintf("User %q not found.", target))
+		return
+	}
+	send, receive := cur.SendIsolation, cur.ReceiveIsolation
+	switch field {
+	case "send":
+		send = enabled
+	case "receive":
+		receive = enabled
+	default:
+		a.renderSettings(w, r, u, "", "Invalid isolation setting.")
+		return
+	}
+	if err := a.state.SetUserIsolation(target, send, receive); err != nil {
+		a.renderSettings(w, r, u, "", err.Error())
+		return
+	}
+	a.state.RecordAudit(u.Username, "user.isolation", fmt.Sprintf("%s %s=%t", target, field, enabled), a.clientIP(r))
+	http.Redirect(w, r, "/portal/settings#tab-users", http.StatusFound)
 }
 
 // statsRows converts stats.Stats rows to StatRow slices sorted by total tokens desc.

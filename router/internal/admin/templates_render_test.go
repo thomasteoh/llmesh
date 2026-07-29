@@ -166,6 +166,17 @@ func TestTemplatesRender(t *testing.T) {
 		d["Upstreams"] = []any{map[string]any{
 			"Name": "orch", "URL": "https://orch.example.com", "Priority": "high", "Connected": true,
 		}}
+		d["Currency"] = "AUD"
+		// Covers each pricing state: charged and live, estimated and live,
+		// and a configured rate whose model no longer has a worker.
+		d["Pricing"] = []any{
+			map[string]any{"Model": "gpt-4o", "InputRate": "2.5", "OutputRate": "10",
+				"Basis": "actual", "IsActual": true, "Configured": true, "Live": true},
+			map[string]any{"Model": "qwen3-30b", "InputRate": "", "OutputRate": "",
+				"Basis": "estimated", "IsActual": false, "Configured": false, "Live": true},
+			map[string]any{"Model": "retired", "InputRate": "0.01", "OutputRate": "0.02",
+				"Basis": "estimated", "IsActual": false, "Configured": true, "Live": false},
+		}
 		renderPage(t, "settings", d)
 	})
 
