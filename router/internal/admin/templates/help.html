@@ -56,6 +56,7 @@
       <a class="docs-link" onclick="showDoc('priority-tiers',this)">Priority tiers</a>
       <div class="docs-nav-section">Features</div>
       <a class="docs-link" onclick="showDoc('model-aliases',this)">Model aliases</a>
+      <a class="docs-link" onclick="showDoc('cost-tracking',this)">Cost tracking</a>
       <a class="docs-link" onclick="showDoc('tool-calling',this)">Tool calling</a>
       <a class="docs-link" onclick="showDoc('chat-templates',this)">Chat templates</a>
       <div class="docs-nav-section">Internals</div>
@@ -379,6 +380,39 @@ flowchart LR
       <p class="docs-p">Targets sharing a tier are load-spread across rather than ordered, which is the behaviour every alias had before tiers existed &mdash; adding a target puts it in tier 0 by default, so nothing is silently demoted. Set a tier explicitly in the <mono>tier</mono> box when adding, or reorder with the arrows afterwards.</p>
       <p class="docs-p">Preference outranks prefix affinity: a conversation that spilled to a fallback tier returns to the preferred model as soon as it has capacity, at the cost of a cold prompt cache. It does <em>not</em> outrank priority or queue order &mdash; a fallback-tier request never jumps ahead of a higher-priority or older one.</p>
       <p class="docs-p">Retries re-resolve the alias. If a worker dies or reports an error before any output is streamed, the request goes back on the queue under the name the caller used, so the next of its three attempts can land on another worker in the same tier, or drop to the next tier &mdash; rather than being pinned to the model that just failed.</p>
+    </div>
+
+    {{/* ── Cost tracking ──────────────────────────────────────── */}}
+    <div class="docs-section" id="cost-tracking">
+      <div class="docs-title">Cost tracking</div>
+      <div class="docs-subtitle">Put a number on token usage &mdash; and keep real charges apart from estimates</div>
+
+      <p class="docs-p">llmesh already records prompt and completion tokens per hour against each user, API key, and model. Give a model a token rate under <a href="/portal/settings#tab-pricing">Settings &rarr; Pricing</a> and the Dashboard usage chart gains a <strong>Cost</strong> view, with the same by-model, by-user and by-key breakdowns as tokens and requests.</p>
+
+      <div class="docs-label">Rates apply to history, not just new traffic</div>
+      <p class="docs-p">Rates are entered per million tokens, input and output separately, and are applied when a figure is <em>read</em> rather than when a request completes. Setting a rate prices that model's entire recorded history &mdash; which is how you attach a number to traffic that ran before anyone was thinking about cost. The flip side: editing a rate moves past totals too. There is no frozen ledger, so if you need one, export before you change a rate.</p>
+      <div class="docs-code"># qwen3-30b ran for three weeks with no rate.
+# Set input 0.05 / output 0.15 today:
+#   → all three weeks are priced, not just from today.</div>
+
+      <div class="docs-label">Charged vs estimated</div>
+      <p class="docs-p">Every rate carries a <strong>basis</strong>, and the two are never totalled together:</p>
+      <div class="table-scroll mb-4">
+        <table class="data-table">
+          <thead><tr><th>Basis</th><th>Use it when</th></tr></thead>
+          <tbody>
+            <tr><td><mono>charged</mono></td><td>A provider actually invoices you for these tokens &mdash; an OpenAI or Anthropic model reached through a shim. Real money.</td></tr>
+            <tr><td><mono>estimated</mono></td><td>You modelled the number yourself. The normal case for local models, where the true cost is electricity and amortised hardware rather than a bill.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="docs-p">Totals always show the two side by side, never summed. A modelled figure added to a real invoice gives a number that is neither, and that is the mistake this split exists to prevent. New rates default to <mono>estimated</mono> so llmesh never asserts a charge it cannot substantiate &mdash; promote a rate to <mono>charged</mono> deliberately.</p>
+
+      <div class="docs-label">Unpriced traffic is called out</div>
+      <p class="docs-p">Requests on a model with no rate contribute nothing to cost. Rather than quietly shrinking the total, they are counted and shown beside it as <em>N requests unpriced</em>, so a partial figure looks partial. The pricing table lists every model that is configured, currently being served, <strong>or</strong> merely present in usage history &mdash; so a model you have since retired can still be given its share of a past bill.</p>
+
+      <div class="docs-label">Currency</div>
+      <p class="docs-p">The currency is a display label only, defaulting to <mono>USD</mono>. llmesh performs no conversion, so use a single currency across all rates; mixing them would add unlike amounts into one total without warning.</p>
     </div>
 
     {{/* ── Tool calling ───────────────────────────────────────── */}}

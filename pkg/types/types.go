@@ -267,6 +267,19 @@ type AliasTarget struct {
 	Priority int    `json:"priority"`
 }
 
+// UserIsolation holds a user's request-isolation flags, resolved by the
+// scheduler when deciding whether a request may pair with a client.
+//
+//	SendIsolated    — the user's requests may only run on clients they own.
+//	ReceiveIsolated — the user's clients may only serve the user's own requests.
+//
+// The two directions are independent. A pairing where the request owner equals
+// the client owner is always allowed regardless of either flag.
+type UserIsolation struct {
+	SendIsolated    bool
+	ReceiveIsolated bool
+}
+
 // ClientSummary is a snapshot of an available client used by the scheduler.
 // Defined here (rather than in the hub package) so the scheduler can depend
 // on it via an interface without importing hub.

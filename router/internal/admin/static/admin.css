@@ -829,6 +829,10 @@ label { font-size: 12.5px; font-weight: 600; color: var(--text-muted); display: 
 @media (max-width: 620px) {
   .alias-chain { grid-template-columns: 1fr; gap: 6px; }
 }
+/* Flags a cost total that is missing traffic, so an incomplete figure does not
+   read as authoritative. */
+.usage-total-warn { color: var(--warning); }
+.usage-total-warn b { color: var(--warning); }
 
 /* ─── Collapsible sections ──────────────────────────────────── */
 
