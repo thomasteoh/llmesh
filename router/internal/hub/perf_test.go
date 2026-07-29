@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"encoding/json"
 	"log/slog"
 	"math"
 	"strings"
@@ -336,6 +337,69 @@ func TestClientLabel(t *testing.T) {
 		if got := rec.ClientLabel(); got != tc.want {
 			t.Fatalf("owner %q name %q: got %q, want %q", tc.owner, tc.name, got, tc.want)
 		}
+	}
+}
+
+// metricsAfterChunk tracks one job for a connected client, feeds the hub a chunk
+// as though that client had sent it, and returns the resulting /metrics output.
+// Goes through dispatch rather than calling the recording code directly, because
+// the TTFT histogram is fed from the chunk hot path and not from recordPerf.
+func metricsAfterChunk(t *testing.T, stream bool, chunk types.ChunkMsg) string {
+	t.Helper()
+	h := New(slog.Default())
+	h.Latency = latency.New()
+
+	client := &Client{ID: "c1", Owner: "alice", Name: "mac"}
+	h.mu.Lock()
+	h.clients[client.ID] = client
+	h.mu.Unlock()
+	if !h.TrackJob(client.ID, types.InferenceRequest{
+		ID: "r1", Model: "llama", Owner: "alice", APIKeyLabel: "alice/prod",
+		Stream: stream, EnqueuedAt: time.Now(),
+	}) {
+		t.Fatal("track job: client not registered")
+	}
+
+	data, err := json.Marshal(chunk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.dispatch(client, data)
+
+	var b strings.Builder
+	h.Latency.WritePrometheus(&b)
+	return b.String()
+}
+
+func TestChunk_BatchResponseContributesNoTTFTObservation(t *testing.T) {
+	// One chunk carrying the whole body, which is how both the client and the shim
+	// answer a non-streaming request.
+	out := metricsAfterChunk(t, false, types.ChunkMsg{
+		Type: "chunk", RequestID: "r1", Delta: "the whole answer",
+		Done: true, FinishReason: "stop",
+	})
+
+	// The model reaches the metrics output either way, so TTFT's absence below is a
+	// real exclusion rather than a request that never got recorded at all.
+	if !strings.Contains(out, `llmrouter_queue_wait_seconds{quantile=`) {
+		t.Fatalf("request was not recorded at all, so this proves nothing:\n%s", out)
+	}
+	// That single chunk arrives at completion, so timing it from dispatch measures
+	// the whole inference. Scraped as TTFT it would inflate the reported p50 by the
+	// entire decode phase, and disagree with the hourly buckets for the same request.
+	if strings.Contains(out, "llmrouter_ttft_seconds") {
+		t.Fatalf("a batch response was scraped as a TTFT observation:\n%s", out)
+	}
+}
+
+func TestChunk_StreamingResponseContributesTTFTObservation(t *testing.T) {
+	// The counterpart: excluding batch responses must not cost the streaming
+	// requests that do have a first token distinct from their completion.
+	out := metricsAfterChunk(t, true, types.ChunkMsg{
+		Type: "chunk", RequestID: "r1", Delta: "one",
+	})
+	if !strings.Contains(out, `llmrouter_ttft_seconds{quantile=`) {
+		t.Fatalf("streaming request recorded no TTFT:\n%s", out)
 	}
 }
 

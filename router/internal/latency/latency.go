@@ -224,7 +224,7 @@ func (r *Recorder) WritePrometheus(b *strings.Builder) {
 		if s.ttft != nil {
 			s.ttft.WritePrometheus(b,
 				"llmrouter_ttft_seconds",
-				"Time from job dispatch to first non-empty token received from worker (p50/p95/p99 over 10m window).",
+				"Time from job dispatch to first non-empty token received from worker, over streaming requests only (p50/p95/p99 over 10m window). Batch responses arrive as one chunk at completion, so they have no first-token signal and are not observed here.",
 				s.model)
 		}
 		if s.dur != nil {
