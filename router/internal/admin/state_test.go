@@ -327,6 +327,72 @@ func TestCSRFConsume(t *testing.T) {
 
 // --- Hashed-secret helpers and migration ---
 
+func TestDeleteUser_RequiresDisabled(t *testing.T) {
+	s, _ := LoadState(filepath.Join(t.TempDir(), "state.json"))
+	s.AddUser(User{Username: "bob", Role: "member", Disabled: false})
+	if err := s.DeleteUser("admin", "bob"); err == nil {
+		t.Fatal("expected error deleting an enabled user")
+	}
+	if _, ok := s.LookupUser("bob"); !ok {
+		t.Fatal("enabled user must not be deleted")
+	}
+	// After disabling, deletion succeeds.
+	s.UpdateUser("bob", func(u *User) { u.Disabled = true })
+	if err := s.DeleteUser("admin", "bob"); err != nil {
+		t.Fatalf("deleting disabled user: %v", err)
+	}
+	if _, ok := s.LookupUser("bob"); ok {
+		t.Fatal("user still present after delete")
+	}
+}
+
+func TestDeleteUser_CascadesCredentials(t *testing.T) {
+	s, _ := LoadState(filepath.Join(t.TempDir(), "state.json"))
+	s.AddUser(User{Username: "carol", Role: "member", Disabled: true})
+	s.AddAPIKey(testAPIKey("prod", "carol", "sk-carol-abc123", "normal"))
+	s.AddClientToken(testClientToken("box", "carol", "ct-carol-abc123"))
+	if err := s.DeleteUser("admin", "carol"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if keys := s.APIKeysFor("carol", false); len(keys) != 0 {
+		t.Fatalf("api keys must be revoked on delete, got %d", len(keys))
+	}
+	if _, ok := s.LookupAPIKey("sk-carol-abc123"); ok {
+		t.Fatal("deleted user's API key still authenticates")
+	}
+	if toks := s.ClientTokensFor("carol", false); len(toks) != 0 {
+		t.Fatalf("client tokens must be revoked on delete, got %d", len(toks))
+	}
+}
+
+func TestDeleteUser_Self(t *testing.T) {
+	s, _ := LoadState(filepath.Join(t.TempDir(), "state.json"))
+	s.AddUser(User{Username: "admin", Role: "admin", Disabled: true})
+	if err := s.DeleteUser("admin", "admin"); err == nil {
+		t.Fatal("expected error deleting self")
+	}
+}
+
+func TestDeleteUser_LastAdmin(t *testing.T) {
+	s, _ := LoadState(filepath.Join(t.TempDir(), "state.json"))
+	s.AddUser(User{Username: "solo", Role: "admin", Disabled: true})
+	if err := s.DeleteUser("other", "solo"); err == nil {
+		t.Fatal("expected error deleting the last admin account")
+	}
+	// A second admin makes deleting the disabled one safe.
+	s.AddUser(User{Username: "keeper", Role: "admin", Disabled: false})
+	if err := s.DeleteUser("keeper", "solo"); err != nil {
+		t.Fatalf("deleting a non-last disabled admin: %v", err)
+	}
+}
+
+func TestDeleteUser_NotFound(t *testing.T) {
+	s, _ := LoadState(filepath.Join(t.TempDir(), "state.json"))
+	if err := s.DeleteUser("admin", "ghost"); err == nil {
+		t.Fatal("expected error deleting a nonexistent user")
+	}
+}
+
 func testAPIKey(label, owner, plain, priority string) APIKey {
 	return APIKey{Label: label, Owner: owner, KeyHash: HashSecret(plain), KeyPrefix: SecretPrefix(plain), Priority: priority}
 }

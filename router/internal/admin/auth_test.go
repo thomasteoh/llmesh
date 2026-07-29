@@ -144,3 +144,26 @@ func TestRequireAdmin_Forbidden(t *testing.T) {
 		t.Fatalf("expected 403, got %d", rr.Code)
 	}
 }
+
+func TestGenerateTempPassword(t *testing.T) {
+	a, err := generateTempPassword()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if len(a) < 16 {
+		t.Fatalf("temp password too short: %q", a)
+	}
+	// It must hash and verify like any other password.
+	hash, err := HashPassword(a)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(a)) != nil {
+		t.Fatal("generated password does not verify against its own hash")
+	}
+	// Successive calls must differ.
+	b, _ := generateTempPassword()
+	if a == b {
+		t.Fatal("temp passwords are not unique")
+	}
+}
