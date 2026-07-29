@@ -45,13 +45,27 @@
       </div>
       <div class="table-scroll">
         <table class="data-table">
-          <thead><tr><th>Username</th><th>Role</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>Username</th><th>Role</th><th>Status</th><th>Isolation</th><th></th></tr></thead>
           <tbody>
             {{range .Users}}
             <tr{{if .Disabled}} class="row-dim"{{end}}>
               <td>{{.Username}}{{if .IsSelf}} <span class="muted">(you)</span>{{end}}</td>
               <td>{{template "status-badge" dict "Class" .Role "Label" .Role}}</td>
               <td>{{if .Disabled}}{{template "status-badge" dict "Class" "disabled" "Label" "disabled"}}{{else}}{{template "status-badge" dict "Class" "active" "Label" "active"}}{{end}}</td>
+              <td>
+                <div class="flex gap-1">
+                  {{if .SendIsolation}}
+                    {{template "action-button" dict "Action" "/portal/settings/users/isolation" "CSRF" $.CSRFToken "Fields" (dict "username" .Username "field" "send" "value" "0") "Class" "btn-danger btn-xs" "Label" "Send: isolated" "Title" "Requests run only on this user's own clients — click to share"}}
+                  {{else}}
+                    {{template "action-button" dict "Action" "/portal/settings/users/isolation" "CSRF" $.CSRFToken "Fields" (dict "username" .Username "field" "send" "value" "1") "Class" "btn-secondary btn-xs" "Label" "Send: shared" "Title" "Requests may use any client — click to isolate to own clients"}}
+                  {{end}}
+                  {{if .ReceiveIsolation}}
+                    {{template "action-button" dict "Action" "/portal/settings/users/isolation" "CSRF" $.CSRFToken "Fields" (dict "username" .Username "field" "receive" "value" "0") "Class" "btn-danger btn-xs" "Label" "Recv: isolated" "Title" "This user's clients serve only their own requests — click to share"}}
+                  {{else}}
+                    {{template "action-button" dict "Action" "/portal/settings/users/isolation" "CSRF" $.CSRFToken "Fields" (dict "username" .Username "field" "receive" "value" "1") "Class" "btn-secondary btn-xs" "Label" "Recv: shared" "Title" "This user's clients may serve anyone — click to isolate to own requests"}}
+                  {{end}}
+                </div>
+              </td>
               <td class="cell-actions">
                 {{if not .IsSelf}}
                 <div class="flex gap-1 justify-end">
@@ -70,7 +84,7 @@
           </tbody>
         </table>
       </div>
-      <p class="table-hint">Cannot disable or demote yourself. At least one active admin must remain.</p>
+      <p class="table-hint">Cannot disable or demote yourself. At least one active admin must remain. Isolation limits a user's routing: <em>Send</em> keeps their requests on their own clients; <em>Recv</em> keeps their clients serving only their own requests. The two are independent.</p>
     </div>
   </div>
 

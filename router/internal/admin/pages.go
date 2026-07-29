@@ -1004,6 +1004,41 @@ func (a *Admin) handleUserDemote(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/portal/settings", http.StatusFound)
 }
 
+// handleUserIsolation toggles one of a user's two request-isolation flags. The
+// "field" form value selects the direction (send|receive) and "value" the new
+// state (1|0); the other flag is preserved.
+func (a *Admin) handleUserIsolation(w http.ResponseWriter, r *http.Request) {
+	u := ctxGetUser(r)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	target := r.FormValue("username")
+	field := r.FormValue("field")
+	enabled := r.FormValue("value") == "1"
+	cur, ok := a.state.LookupUser(target)
+	if !ok {
+		a.renderSettings(w, r, u, "", fmt.Sprintf("User %q not found.", target))
+		return
+	}
+	send, receive := cur.SendIsolation, cur.ReceiveIsolation
+	switch field {
+	case "send":
+		send = enabled
+	case "receive":
+		receive = enabled
+	default:
+		a.renderSettings(w, r, u, "", "Invalid isolation setting.")
+		return
+	}
+	if err := a.state.SetUserIsolation(target, send, receive); err != nil {
+		a.renderSettings(w, r, u, "", err.Error())
+		return
+	}
+	a.state.RecordAudit(u.Username, "user.isolation", fmt.Sprintf("%s %s=%t", target, field, enabled), a.clientIP(r))
+	http.Redirect(w, r, "/portal/settings#tab-users", http.StatusFound)
+}
+
 // statsRows converts stats.Stats rows to StatRow slices sorted by total tokens desc.
 // byModel=true returns per-model rows; false returns per-user rows.
 func statsRows(s *stats.Stats, byModel bool) []StatRow {

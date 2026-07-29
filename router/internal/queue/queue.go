@@ -127,13 +127,23 @@ func (q *Queue) popBestLocked(models map[string]bool, aliases map[string][]strin
 // PeekBestForClient returns the best request (without removing it) for a client
 // supporting the given models and aliases, preferring requests from preferOwner.
 // Comparison order: affinity match > priority tier > FIFO.
-// Returns nil if no matching request exists.
-func (q *Queue) PeekBestForClient(models map[string]bool, aliases map[string][]string, preferOwner string) *types.InferenceRequest {
+//
+// eligible, when non-nil, is an extra hard filter: a request whose owner it
+// rejects is skipped as if the client could not serve it. This is how request
+// isolation is enforced — filtering here (rather than after selection) means a
+// request the client may not serve never shadows one it can, so an isolated
+// request cannot starve other work on the client.
+//
+// Returns nil if no matching, eligible request exists.
+func (q *Queue) PeekBestForClient(models map[string]bool, aliases map[string][]string, preferOwner string, eligible func(reqOwner string) bool) *types.InferenceRequest {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	bestIdx := -1
 	for i, req := range q.items {
 		if !canHandle(req, models, aliases) {
+			continue
+		}
+		if eligible != nil && !eligible(req.Owner) {
 			continue
 		}
 		if bestIdx == -1 {
