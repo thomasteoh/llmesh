@@ -62,8 +62,55 @@
           <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
           <input type="hidden" name="model" value="{{$model}}">
           <input name="alias" placeholder="add alias&hellip;" autocomplete="off" style="width:90px;">
+          <input name="tier" placeholder="tier" autocomplete="off" inputmode="numeric" style="width:44px;"
+                 title="Preference tier (optional). Lower is preferred; blank means 0. Targets sharing a tier are load-spread.">
           <button type="submit" class="alias-add-btn" title="Add alias">+</button>
         </form>
+        {{end}}
+      </div>
+    </div>
+    {{end}}
+  </div>
+</div>
+{{end}}
+
+{{if .AliasChains}}
+<div class="card">
+  <div class="card-title">Alias fallback order</div>
+  <div class="muted text-xs mb-3">
+    A request naming an alias is served by the most-preferred tier that has a free slot at that moment, spilling to
+    the next tier while the one above is busy or has no worker online. Retries re-resolve the alias, so a failing
+    model does not trap the request. Targets sharing a tier are load-spread across rather than ordered.
+  </div>
+  <div class="alias-chain-list">
+    {{range .AliasChains}}
+    {{$alias := .Alias}}
+    <div class="alias-chain">
+      <div class="alias-chain-name">
+        <span class="alias-badge">{{$alias}}</span>
+        {{if $.IsAdmin}}
+        {{template "action-button" dict "Action" "/portal/model-aliases/delete" "CSRF" $.CSRFToken "Fields" (dict "alias" $alias) "Confirm" (printf "Remove the whole %s alias?" $alias) "Class" "alias-badge-del" "Label" "✕" "Title" "Remove this alias entirely"}}
+        {{end}}
+      </div>
+      <div class="alias-chain-targets">
+        {{range .Targets}}
+        <div class="alias-tier">
+          <span class="alias-tier-num" title="Preference tier {{.Tier}} — lower is preferred">{{.Tier}}</span>
+          <span class="alias-tier-model">{{.Model}}</span>
+          {{if .Live}}
+          {{template "status-badge" dict "Class" "connected" "Label" "● reachable"}}
+          {{else}}
+          {{template "status-badge" dict "Class" "offline" "Label" "○ no worker"}}
+          {{end}}
+          {{if .Shared}}<span class="badge muted-badge" title="Shares a tier with another target, so load is spread across them instead of one being preferred.">shared tier</span>{{end}}
+          {{if $.IsAdmin}}
+          <span class="alias-tier-actions">
+            {{if .CanUp}}{{template "action-button" dict "Action" "/portal/model-aliases/reorder" "CSRF" $.CSRFToken "Fields" (dict "alias" $alias "model" .Model "dir" "up") "Class" "alias-add-btn" "Label" "↑" "Title" "Prefer this target sooner"}}{{end}}
+            {{if .CanDown}}{{template "action-button" dict "Action" "/portal/model-aliases/reorder" "CSRF" $.CSRFToken "Fields" (dict "alias" $alias "model" .Model "dir" "down") "Class" "alias-add-btn" "Label" "↓" "Title" "Prefer this target later"}}{{end}}
+            {{template "action-button" dict "Action" "/portal/model-aliases/delete" "CSRF" $.CSRFToken "Fields" (dict "alias" $alias "model" .Model) "Confirm" (printf "Remove %s from alias %s?" .Model $alias) "Class" "alias-badge-del" "Label" "✕" "Title" "Remove this target"}}
+          </span>
+          {{end}}
+        </div>
         {{end}}
       </div>
     </div>

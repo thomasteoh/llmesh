@@ -18,7 +18,25 @@ import (
 // noAlias satisfies AliasProvider with no aliases.
 type noAlias struct{}
 
-func (noAlias) AliasMap() map[string][]string { return nil }
+func (noAlias) AliasMap() map[string][]string                { return nil }
+func (noAlias) AliasTargets() map[string][]types.AliasTarget { return nil }
+
+// tieredAlias satisfies AliasProvider from a preference-ordered target list per
+// alias, deriving the name-only view from the same data the way *admin.State does
+// so the two can never disagree in a test.
+type tieredAlias map[string][]types.AliasTarget
+
+func (t tieredAlias) AliasTargets() map[string][]types.AliasTarget { return t }
+
+func (t tieredAlias) AliasMap() map[string][]string {
+	out := make(map[string][]string, len(t))
+	for alias, targets := range t {
+		for _, tg := range targets {
+			out[alias] = append(out[alias], tg.Model)
+		}
+	}
+	return out
+}
 
 // dialClient connects to the hub test server with the given ownerSlots map.
 // Pass nil for fully shared (no slots reserved for owner).

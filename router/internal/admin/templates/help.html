@@ -368,6 +368,18 @@ flowchart LR
       </div>
       <div class="docs-label">Shared aliases</div>
       <p class="docs-p">Multiple clients can serve models with the same alias. A caller requesting <mono>"qwen"</mono> will be routed to whichever matching client has spare capacity first &mdash; load-balancing and affinity rules apply as normal. The alias is resolved to the canonical model name at dispatch time.</p>
+
+      <div class="docs-label">Fallback order</div>
+      <p class="docs-p">An alias pointing at several <em>different</em> models becomes a fallback chain. Each target carries a preference tier, ordered on the <strong>Dashboard</strong> under &ldquo;Alias fallback order&rdquo;. Lower tiers are preferred; a request goes to the most-preferred tier that has a free slot at that moment and spills to the next while the one above is busy or has no worker online. This is how you keep traffic on your own hardware and let it overflow to a paid API only under load.</p>
+      <div class="docs-code"># chat →  tier 0  unsloth/Qwen3.6-35B-A3B   (your GPU box)
+#         tier 1  gpt-4o                    (shim to OpenAI)
+#
+# Both idle       → the GPU box, every time.
+# GPU box full    → spills to gpt-4o rather than queueing.
+# GPU box offline → gpt-4o.</div>
+      <p class="docs-p">Targets sharing a tier are load-spread across rather than ordered, which is the behaviour every alias had before tiers existed &mdash; adding a target puts it in tier 0 by default, so nothing is silently demoted. Set a tier explicitly in the <mono>tier</mono> box when adding, or reorder with the arrows afterwards.</p>
+      <p class="docs-p">Preference outranks prefix affinity: a conversation that spilled to a fallback tier returns to the preferred model as soon as it has capacity, at the cost of a cold prompt cache. It does <em>not</em> outrank priority or queue order &mdash; a fallback-tier request never jumps ahead of a higher-priority or older one.</p>
+      <p class="docs-p">Retries re-resolve the alias. If a worker dies or reports an error before any output is streamed, the request goes back on the queue under the name the caller used, so the next of its three attempts can land on another worker in the same tier, or drop to the next tier &mdash; rather than being pinned to the model that just failed.</p>
     </div>
 
     {{/* ── Cost tracking ──────────────────────────────────────── */}}

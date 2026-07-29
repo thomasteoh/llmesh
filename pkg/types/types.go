@@ -118,6 +118,12 @@ type InferenceRequest struct {
 	EnqueuedAt time.Time `json:"enqueued_at"`
 	Attempts   int       `json:"attempts,omitempty"`  // number of times this request has errored and been retried
 	OriginID   string    `json:"origin_id,omitempty"` // request ID assigned by the originating router; set by upstream connector for cross-hop tracing
+	// RequestedModel is Model as the caller asked for it, which may be an alias
+	// or "any". Model is rewritten to a concrete name at dispatch, so without
+	// this a retry would be pinned to the very model that just failed. Set by
+	// the scheduler immediately before the rewrite; restored by the hub before
+	// a request is released back to the queue so the retry re-resolves.
+	RequestedModel string `json:"requested_model,omitempty"`
 }
 
 // RequestOptimization holds the router-wide toggles that shape inbound requests
@@ -249,6 +255,17 @@ type ReleaseMsg struct {
 // being failed back to the caller (initial attempt + retries on client errors/disconnects).
 // Defined here so the api package can use it without importing hub.
 const MaxAttempts = 3
+
+// AliasTarget is one model an alias can resolve to, together with its preference
+// tier. Lower Priority is preferred: the scheduler dispatches to the lowest tier
+// that has a free slot right now, and spills to the next tier when it does not.
+// Targets sharing a Priority are interchangeable, and load is spread across them
+// by the usual client-quality ordering — which is why the tier must be compared
+// as a value rather than by position in the target list.
+type AliasTarget struct {
+	Model    string `json:"model"`
+	Priority int    `json:"priority"`
+}
 
 // UserIsolation holds a user's request-isolation flags, resolved by the
 // scheduler when deciding whether a request may pair with a client.

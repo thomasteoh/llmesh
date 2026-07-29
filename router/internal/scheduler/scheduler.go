@@ -20,9 +20,13 @@ const (
 	prefixAffinityMax = 4096
 )
 
-// AliasProvider supplies the current alias→[]models map. Satisfied by *admin.State.
+// AliasProvider supplies the current alias maps. Satisfied by *admin.State.
+// Both views come from one cached snapshot, so they cannot disagree: AliasMap
+// answers "can this client serve the request at all" for the queue, while
+// AliasTargets carries the preference tiers the dispatch comparison needs.
 type AliasProvider interface {
 	AliasMap() map[string][]string
+	AliasTargets() map[string][]types.AliasTarget
 }
 
 // OptProvider supplies request-optimization toggles. Satisfied by *admin.State.
@@ -52,6 +56,10 @@ type candidate struct {
 	// dispatch all agree (map iteration for "any"/aliases is otherwise
 	// nondeterministic and could disagree across those three sites).
 	resolved string
+	// tier is the alias preference tier of resolved (0 for a concrete model or
+	// "any"). Lower is preferred. Only comparable between candidates holding the
+	// same request, since tiers of different aliases are unrelated numbers.
+	tier int
 }
 
 // Dispatcher is satisfied by *hub.Hub. It exposes only the methods the scheduler
@@ -163,6 +171,7 @@ func (s *Scheduler) loop() {
 // the job is sent to the client.
 func (s *Scheduler) drainQueue() {
 	aliases := s.aliases.AliasMap()
+	aliasTargets := s.aliases.AliasTargets()
 
 	var opts types.RequestOptimization
 	if s.opts != nil {
@@ -254,7 +263,7 @@ func (s *Scheduler) drainQueue() {
 			}
 			// Resolve the concrete model once and reuse it everywhere below so
 			// the owner-slot cap, context check, and dispatch cannot disagree.
-			resolved := resolveModel(req.Model, c.Models, aliases)
+			resolved, tier := resolveModel(req.Model, c.Models, aliasTargets)
 			// Enforce per-model owner-slot constraints for non-owner requests.
 			if req.Owner != c.Owner {
 				// Resolve model names for OwnerSlots and NonOwnerInFlight separately:
@@ -330,7 +339,7 @@ func (s *Scheduler) drainQueue() {
 					}
 				}
 			}
-			cand := &candidate{client: cc, req: *req, affinity: affinity, resolved: resolved}
+			cand := &candidate{client: cc, req: *req, affinity: affinity, resolved: resolved, tier: tier}
 			if best == nil || betterCandidate(cand, best) {
 				best = cand
 			}
@@ -347,6 +356,13 @@ func (s *Scheduler) drainQueue() {
 			continue
 		}
 
+		// Preserve the name the caller asked for before rewriting to the concrete
+		// model, so a retry re-resolves the alias instead of being pinned to the
+		// model that just failed. Idempotent: a released request arrives with
+		// Model already restored to RequestedModel.
+		if req.RequestedModel == "" {
+			req.RequestedModel = req.Model
+		}
 		req.Model = best.resolved
 
 		// Seed the local non-owner base from the hub before tracking this job, so
@@ -401,10 +417,20 @@ func (s *Scheduler) drainQueue() {
 	}
 }
 
-// betterCandidate reports whether candidate a should beat b. An affinity match
-// (this client last served the request's prefix) wins outright; otherwise the
-// usual affinity > priority > FIFO > load ordering applies.
+// betterCandidate reports whether candidate a should beat b. Ordering:
+// alias preference tier > affinity > priority > FIFO > load.
+//
+// Tier leads because it is an explicit operator statement about which model
+// should serve the request, whereas affinity is only a cache-warmth
+// optimisation — a conversation that spilled to a fallback tier should return to
+// the preferred model as soon as it has capacity, even at the cost of a cold
+// prefix. Tier is compared only between candidates holding the same request:
+// applying it across requests would let a fallback-tier request jump the queue
+// ahead of a higher-priority or older one.
 func betterCandidate(a, b *candidate) bool {
+	if a.req.ID == b.req.ID && a.tier != b.tier {
+		return a.tier < b.tier
+	}
 	if a.affinity != b.affinity {
 		return a.affinity
 	}
@@ -459,22 +485,23 @@ func betterClient(a, b types.ClientSummary) bool {
 }
 
 // resolveModel maps a request model name to the concrete model name that
-// clientModels actually serves. Handles "any" (pick first available) and
-// aliases (pick the first matching target). Returns reqModel unchanged if it
-// is already a concrete name served by this client.
-func resolveModel(reqModel string, clientModels map[string]bool, aliases map[string][]string) string {
+// clientModels actually serves, plus that model's alias preference tier. Handles
+// "any" (pick first available) and aliases (pick the most-preferred matching
+// target, since targets are ordered preferred-first). Returns reqModel unchanged
+// at tier 0 if it is already a concrete name served by this client.
+func resolveModel(reqModel string, clientModels map[string]bool, aliases map[string][]types.AliasTarget) (string, int) {
 	if reqModel == "any" {
 		for m := range clientModels {
-			return m
+			return m, 0
 		}
-		return reqModel
+		return reqModel, 0
 	}
 	if targets, ok := aliases[reqModel]; ok {
 		for _, t := range targets {
-			if clientModels[t] {
-				return t
+			if clientModels[t.Model] {
+				return t.Model, t.Priority
 			}
 		}
 	}
-	return reqModel
+	return reqModel, 0
 }

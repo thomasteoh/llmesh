@@ -148,10 +148,16 @@ func (sd *stateData) UnmarshalJSON(data []byte) error {
 type State struct {
 	db *sql.DB
 
-	// aliasCache holds an immutable snapshot of the alias→models map. It is read
-	// on every inference request and dispatch cycle, so we cache it in memory and
-	// invalidate (store nil) on any alias mutation rather than hitting SQLite each call.
-	aliasCache atomic.Pointer[map[string][]string]
+	// aliasCache holds an immutable snapshot of alias→ranked targets, ordered by
+	// (priority, model). It is read on every inference request and dispatch cycle,
+	// so we cache it in memory and invalidate (store nil) on any alias mutation
+	// rather than hitting SQLite each call.
+	aliasCache atomic.Pointer[map[string][]types.AliasTarget]
+
+	// aliasNameCache is the tier-stripped view of aliasCache, for the many callers
+	// that only test membership. Derived from the same snapshot so the two can
+	// never disagree, and invalidated alongside it.
+	aliasNameCache atomic.Pointer[map[string][]string]
 
 	// optCache holds the request-optimization toggles. Read on the per-request
 	// hot path and per scheduler drain, so it is cached and invalidated (store
@@ -234,8 +240,9 @@ func createSchema(db *sql.DB) error {
 			UNIQUE(owner, name)
 		);
 		CREATE TABLE IF NOT EXISTS model_aliases (
-			alias TEXT NOT NULL,
-			model TEXT NOT NULL,
+			alias    TEXT NOT NULL,
+			model    TEXT NOT NULL,
+			priority INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY (alias, model)
 		);
 		CREATE TABLE IF NOT EXISTS upstream_routers (
@@ -281,6 +288,10 @@ func createSchema(db *sql.DB) error {
 	// Non-destructive migration: add priority column for existing databases.
 	// SQLite returns an error if the column already exists; ignore it.
 	_, _ = db.Exec(`ALTER TABLE upstream_routers ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'`)
+	// Alias preference tiers. Defaulting to 0 puts every pre-existing target in
+	// the same tier, which is exactly the load-spreading behaviour they had
+	// before preference existed — upgrading changes no routing decision.
+	_, _ = db.Exec(`ALTER TABLE model_aliases ADD COLUMN priority INTEGER NOT NULL DEFAULT 0`)
 	// Non-destructive migration: per-user request-isolation flags.
 	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN send_isolation INTEGER NOT NULL DEFAULT 0`)
 	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN receive_isolation INTEGER NOT NULL DEFAULT 0`)
@@ -1110,41 +1121,130 @@ func (s *State) RefreshCSRFToken(username string) (string, error) {
 
 // --- Model Aliases ---
 
-// AliasMap returns the alias→models map. The result is a cached, immutable
-// snapshot shared across callers; callers must not mutate it. The cache is
-// rebuilt lazily after any alias mutation invalidates it.
-func (s *State) AliasMap() map[string][]string {
+// AliasTargets returns the alias→ranked targets map, each target list ordered
+// most-preferred first (by priority, then model name for a stable order within a
+// tier). The result is a cached, immutable snapshot shared across callers;
+// callers must not mutate it. The cache is rebuilt lazily after any alias
+// mutation invalidates it.
+func (s *State) AliasTargets() map[string][]types.AliasTarget {
 	if cached := s.aliasCache.Load(); cached != nil {
 		return *cached
 	}
-	rows, err := s.db.Query(`SELECT alias, model FROM model_aliases ORDER BY alias, model`)
+	rows, err := s.db.Query(`SELECT alias, model, priority FROM model_aliases ORDER BY alias, priority, model`)
 	if err != nil {
 		return nil
 	}
 	defer rows.Close()
-	out := make(map[string][]string)
+	out := make(map[string][]types.AliasTarget)
 	for rows.Next() {
-		var alias, model string
-		if err := rows.Scan(&alias, &model); err == nil {
-			out[alias] = append(out[alias], model)
+		var alias string
+		var t types.AliasTarget
+		if err := rows.Scan(&alias, &t.Model, &t.Priority); err == nil {
+			out[alias] = append(out[alias], t)
 		}
 	}
 	s.aliasCache.Store(&out)
 	return out
 }
 
+// AliasMap returns the alias→models map with tiers stripped, preserving the
+// preferred-first ordering of AliasTargets. For callers that only need to know
+// which models an alias reaches. Cached and immutable; callers must not mutate it.
+func (s *State) AliasMap() map[string][]string {
+	if cached := s.aliasNameCache.Load(); cached != nil {
+		return *cached
+	}
+	targets := s.AliasTargets()
+	out := make(map[string][]string, len(targets))
+	for alias, ts := range targets {
+		models := make([]string, 0, len(ts))
+		for _, t := range ts {
+			models = append(models, t.Model)
+		}
+		out[alias] = models
+	}
+	s.aliasNameCache.Store(&out)
+	return out
+}
+
+// invalidateAliases drops both alias caches. Every alias mutation must call this;
+// dropping only one would leave the two views disagreeing about the same alias.
+func (s *State) invalidateAliases() {
+	s.aliasCache.Store(nil)
+	s.aliasNameCache.Store(nil)
+}
+
+// AddAlias adds a target to an alias in the most-preferred tier (0), matching
+// the pre-preference behaviour where every target of an alias was interchangeable.
 func (s *State) AddAlias(alias, model string) error {
+	return s.AddAliasWithPriority(alias, model, 0)
+}
+
+// AddAliasWithPriority adds a target to an alias at an explicit preference tier.
+// Lower is preferred; targets sharing a tier are load-spread rather than ordered.
+func (s *State) AddAliasWithPriority(alias, model string, priority int) error {
 	if alias == "" || model == "" {
 		return fmt.Errorf("alias and model must not be blank")
 	}
-	_, err := s.db.Exec(`INSERT INTO model_aliases (alias, model) VALUES (?, ?)`, alias, model)
+	if priority < 0 {
+		return fmt.Errorf("priority must not be negative")
+	}
+	_, err := s.db.Exec(`INSERT INTO model_aliases (alias, model, priority) VALUES (?, ?, ?)`, alias, model, priority)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			return fmt.Errorf("alias %q → %q already exists", alias, model)
 		}
 		return err
 	}
-	s.aliasCache.Store(nil)
+	s.invalidateAliases()
+	return nil
+}
+
+// MoveAliasTarget shifts one target of an alias by delta places in its preference
+// order (-1 promotes, +1 demotes) and renumbers the whole group to a strict
+// 0..n-1 sequence. Renumbering is what makes the arrows predictable: a group with
+// tied tiers has no unambiguous "one place up", so the first move resolves the
+// group into an explicit chain. Moving past either end is a no-op.
+func (s *State) MoveAliasTarget(alias, model string, delta int) error {
+	targets := s.AliasTargets()[alias]
+	if len(targets) == 0 {
+		return fmt.Errorf("alias %q not found", alias)
+	}
+	idx := -1
+	for i, t := range targets {
+		if t.Model == model {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return fmt.Errorf("alias %q → %q not found", alias, model)
+	}
+	dest := idx + delta
+	if dest < 0 || dest >= len(targets) {
+		return nil
+	}
+	// Copy before reordering: the snapshot from AliasTargets is shared.
+	order := make([]string, len(targets))
+	for i, t := range targets {
+		order[i] = t.Model
+	}
+	order[idx], order[dest] = order[dest], order[idx]
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for i, m := range order {
+		if _, err := tx.Exec(`UPDATE model_aliases SET priority = ? WHERE alias = ? AND model = ?`, i, alias, m); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.invalidateAliases()
 	return nil
 }
 
@@ -1156,7 +1256,7 @@ func (s *State) DeleteAlias(alias, model string) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("alias %q → %q not found", alias, model)
 	}
-	s.aliasCache.Store(nil)
+	s.invalidateAliases()
 	return nil
 }
 
@@ -1168,7 +1268,7 @@ func (s *State) DeleteAliasGroup(alias string) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("alias %q not found", alias)
 	}
-	s.aliasCache.Store(nil)
+	s.invalidateAliases()
 	return nil
 }
 

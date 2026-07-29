@@ -782,6 +782,53 @@ label { font-size: 12.5px; font-weight: 600; color: var(--text-muted); display: 
 }
 .alias-add-btn:hover { color: var(--text); }
 
+/* ─── Alias fallback chains ─────────────────────────────────── */
+
+.alias-chain-list { display: flex; flex-direction: column; gap: 14px; }
+.alias-chain {
+  display: grid;
+  grid-template-columns: minmax(90px, 160px) 1fr;
+  gap: 10px 14px;
+  align-items: start;
+}
+.alias-chain-name { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.alias-chain-targets { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.alias-tier {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+/* The tier number is the load-bearing element here: position in the list only
+   implies preference when tiers differ, so the number is what the eye should
+   land on. */
+.alias-tier-num {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  background: var(--surface-3);
+  border: 1px solid var(--border-strong);
+  color: var(--text-muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.alias-tier-model {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.alias-tier-actions { display: inline-flex; align-items: center; gap: 3px; margin-left: auto; }
+
+@media (max-width: 620px) {
+  .alias-chain { grid-template-columns: 1fr; gap: 6px; }
+}
 /* Flags a cost total that is missing traffic, so an incomplete figure does not
    read as authoritative. */
 .usage-total-warn { color: var(--warning); }

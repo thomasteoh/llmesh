@@ -92,6 +92,8 @@ A request whose owner matches the client's owner is always allowed regardless of
 
 Model aliases allow multiple clients serving different implementations of the same model to be addressed by a single logical name (e.g., `gpt-4o` → `unsloth/qwen3-30b` or `llama3.1:70b`).
 
+An alias pointing at several *different* models is also a **fallback chain**. Each target carries a preference tier, ordered from the Dashboard under "Alias fallback order": a request goes to the most-preferred tier that has a free slot at that moment, and spills to the next while the one above is busy or has no worker online. That is how local hardware overflows to a paid API only under load. Targets sharing a tier are load-spread rather than ordered — the behaviour every alias had before tiers existed, and new targets land in tier 0, so upgrading changes no routing decision. Retries re-resolve the alias, so a failing model cannot trap a request on itself.
+
 ---
 
 ## Keys and your endpoint

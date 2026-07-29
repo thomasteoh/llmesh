@@ -63,11 +63,33 @@ type DashboardPage struct {
 	ActiveModels  []string
 	ActiveAliases map[string][]string // alias → []target models
 	ModelAliases  map[string][]string // model → []aliases pointing to it (inverted, for per-model UI)
+	AliasChains   []AliasChainRow     // alias → ordered fallback chain (for the preference UI)
 	Clients       []ClientRow
 	StatsByModel  []StatRow
 	StatsByUser   []StatRow
 	QueueLen      int
 	QueueItems    []QueuedJobRow // filtered to the requesting user's own items for non-admins
+}
+
+// AliasChainRow is one alias and its preference-ordered targets, for the
+// fallback-chain UI. Presented alias-first because that is the direction a
+// fallback reads; the per-model badges elsewhere show the same data inverted.
+type AliasChainRow struct {
+	Alias   string
+	Targets []AliasTargetRow
+}
+
+// AliasTargetRow is one model in an alias's chain, decorated for display.
+type AliasTargetRow struct {
+	Model string
+	Tier  int  // preference tier as stored; lower is preferred
+	Live  bool // a connected client currently serves this model
+	// Shared marks a target that shares its tier with another target, meaning the
+	// two are load-spread rather than ordered. Worth surfacing, since it is the
+	// one case where position in the list does not imply preference.
+	Shared  bool
+	CanUp   bool // not already first
+	CanDown bool // not already last
 }
 
 type ClientRow struct {
@@ -250,6 +272,36 @@ type UserRow struct {
 	IsSelf bool
 }
 
+// aliasChainRows builds the preference-ordered view of every alias. liveModels is
+// the set of models a connected client currently serves, used to mark targets
+// that are reachable right now — the whole point of a fallback chain is knowing
+// which tier traffic is actually landing on.
+func aliasChainRows(targets map[string][]types.AliasTarget, liveModels []string) []AliasChainRow {
+	live := make(map[string]bool, len(liveModels))
+	for _, m := range liveModels {
+		live[m] = true
+	}
+	rows := make([]AliasChainRow, 0, len(targets))
+	for alias, ts := range targets {
+		out := make([]AliasTargetRow, 0, len(ts))
+		for i, t := range ts {
+			shared := (i > 0 && ts[i-1].Priority == t.Priority) ||
+				(i+1 < len(ts) && ts[i+1].Priority == t.Priority)
+			out = append(out, AliasTargetRow{
+				Model:   t.Model,
+				Tier:    t.Priority,
+				Live:    live[t.Model],
+				Shared:  shared,
+				CanUp:   i > 0,
+				CanDown: i+1 < len(ts),
+			})
+		}
+		rows = append(rows, AliasChainRow{Alias: alias, Targets: out})
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Alias < rows[j].Alias })
+	return rows
+}
+
 // invertAliasMap returns model→[]aliases from an alias→[]models map, with each alias list sorted.
 func invertAliasMap(aliasMap map[string][]string) map[string][]string {
 	inv := make(map[string][]string, len(aliasMap))
@@ -334,6 +386,7 @@ func (a *Admin) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		ActiveModels:  activeModels,
 		ActiveAliases: activeAliases,
 		ModelAliases:  modelAliases,
+		AliasChains:   aliasChainRows(a.state.AliasTargets(), activeModels),
 		Clients:       clients,
 		StatsByModel:  statsRows(a.stats, true),
 		StatsByUser:   statsRows(a.stats, false),
@@ -790,13 +843,58 @@ func (a *Admin) handleModelAliasCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	alias := strings.TrimSpace(r.FormValue("alias"))
 	model := strings.TrimSpace(r.FormValue("model"))
+	// Blank tier means tier 0, so adding a second target to an alias load-spreads
+	// by default rather than silently demoting it behind the first.
+	tier := 0
+	if v := strings.TrimSpace(r.FormValue("tier")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			http.Error(w, "tier must be a non-negative whole number", http.StatusBadRequest)
+			return
+		}
+		tier = n
+	}
 	if alias != "" && model != "" {
-		if err := a.state.AddAlias(alias, model); err != nil {
+		if err := a.state.AddAliasWithPriority(alias, model, tier); err != nil {
 			http.Error(w, "could not add alias: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		a.state.RecordAudit(u.Username, "alias.create", alias+"="+model, a.clientIP(r))
+		a.state.RecordAudit(u.Username, "alias.create",
+			fmt.Sprintf("%s=%s@%d", alias, model, tier), a.clientIP(r))
 	}
+	http.Redirect(w, r, "/portal/", http.StatusFound)
+}
+
+// handleModelAliasReorder promotes or demotes one target within its alias's
+// preference chain.
+func (a *Admin) handleModelAliasReorder(w http.ResponseWriter, r *http.Request) {
+	u := ctxGetUser(r)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	alias := strings.TrimSpace(r.FormValue("alias"))
+	model := strings.TrimSpace(r.FormValue("model"))
+	dir := r.FormValue("dir")
+	delta := 0
+	switch dir {
+	case "up":
+		delta = -1
+	case "down":
+		delta = 1
+	default:
+		http.Error(w, "dir must be up or down", http.StatusBadRequest)
+		return
+	}
+	if alias == "" || model == "" {
+		http.Error(w, "alias and model are required", http.StatusBadRequest)
+		return
+	}
+	if err := a.state.MoveAliasTarget(alias, model, delta); err != nil {
+		http.Error(w, "could not reorder alias: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	a.state.RecordAudit(u.Username, "alias.reorder", alias+"="+model+" "+dir, a.clientIP(r))
 	http.Redirect(w, r, "/portal/", http.StatusFound)
 }
 

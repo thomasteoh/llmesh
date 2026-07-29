@@ -288,6 +288,7 @@ func (a *Admin) registerRoutes() {
 
 	mux.HandleFunc("/portal/model-aliases", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleModelAliasCreate)), 20))
 	mux.HandleFunc("/portal/model-aliases/delete", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleModelAliasDelete)), 20))
+	mux.HandleFunc("/portal/model-aliases/reorder", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleModelAliasReorder)), 30))
 
 	mux.HandleFunc("/portal/jobs/cancel", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleJobCancel)), 20))
 	mux.HandleFunc("/portal/queue/cancel", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleQueueCancel)), 20))
