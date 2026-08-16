@@ -454,10 +454,18 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 			FinishReason:   in.FinishReason,
 			Usage:          in.Usage,
 		}
+		h.mu.RLock()
+		rec, ok := h.jobs[msg.RequestID]
+		h.mu.RUnlock()
+		// Stamp the concrete model the scheduler resolved this job to. Nothing
+		// else on the response path carries that name back to the HTTP handler,
+		// which still holds the alias the caller sent. Only the client currently
+		// holding the job may name it, so a stale chunk from a superseded
+		// attempt cannot relabel the live one.
+		if ok && rec.ClientID == client.ID {
+			msg.Model = rec.Req.Model
+		}
 		if msg.Delta != "" {
-			h.mu.RLock()
-			rec, ok := h.jobs[msg.RequestID]
-			h.mu.RUnlock()
 			if ok && rec.live != nil {
 				rec.live.deltaCount.Add(1)
 				if rec.live.firstChunkAt.Load() == nil {

@@ -261,6 +261,13 @@ type ChunkMsg struct {
 	Done           bool            `json:"done"`
 	FinishReason   string          `json:"finish_reason,omitempty"`
 	Usage          *UsageInfo      `json:"usage,omitempty"`
+	// Model is the concrete model that produced this chunk, stamped by the hub
+	// from the in-flight job record on the way to the HTTP handler. The handler
+	// holds its own copy of the request, still carrying the name the caller
+	// asked for — which may be an alias or "any" — so this is the only way it
+	// learns what actually ran. Router-internal: never marshalled, so a client
+	// cannot set it and an older client does not need to.
+	Model string `json:"-"`
 }
 
 // ErrorMsg is sent by the client when inference fails.

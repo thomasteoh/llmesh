@@ -227,12 +227,22 @@ func (h *Handler) cancelRequest(reqID string) {
 	}
 }
 
-// recordStats records token usage for a completed request.
-// Alias names are resolved to their first underlying model before recording
-// so stats always accumulate under the canonical model name.
-func (h *Handler) recordStats(req *types.InferenceRequest, usage *types.UsageInfo) {
-	if usage == nil {
-		return
+// attributedModel returns the model a completed request should be accounted to.
+//
+// served is the concrete name the hub stamped on the response chunks, and is
+// authoritative: it is the model the scheduler actually dispatched to, after
+// alias resolution, tier fallback, and any retries. It is empty only when no
+// chunk carried one — a timeout, a shutdown drain, or a terminal error chunk
+// synthesised by the router itself.
+//
+// The fallback then guesses, by resolving an alias to its first target. That
+// guess is what this used to do unconditionally, and it is wrong whenever an
+// alias has more than one target: the scheduler picks by tier and availability,
+// so work that spilled over to a second-tier model was billed to whichever
+// model happened to sit at the head of the alias list.
+func (h *Handler) attributedModel(req *types.InferenceRequest, served string) string {
+	if served != "" {
+		return served
 	}
 	model := req.Model
 	if h.Aliases != nil {
@@ -240,6 +250,16 @@ func (h *Handler) recordStats(req *types.InferenceRequest, usage *types.UsageInf
 			model = targets[0]
 		}
 	}
+	return model
+}
+
+// recordStats records token usage for a completed request against the model
+// that actually served it. See attributedModel for how that is determined.
+func (h *Handler) recordStats(req *types.InferenceRequest, usage *types.UsageInfo, served string) {
+	if usage == nil {
+		return
+	}
+	model := h.attributedModel(req, served)
 	if h.Stats != nil {
 		h.Stats.Record(model, req.Owner, usage.PromptTokens, usage.CompletionTokens)
 	}
@@ -565,6 +585,10 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 
 	started := false
 	var firstTokenAt time.Time
+	// The concrete model behind req.Model, learned from the chunks themselves.
+	// Last one wins: a mid-stream retry re-resolves the alias, and the model
+	// that finished the response is the one the tokens should be billed to.
+	var servedModel string
 
 	for {
 		select {
@@ -591,6 +615,9 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 			if chunk.Delta != "" && firstTokenAt.IsZero() {
 				firstTokenAt = time.Now()
 			}
+			if chunk.Model != "" {
+				servedModel = chunk.Model
+			}
 			if dedupHash != "" && h.Dedup != nil {
 				h.Dedup.Forward(dedupHash, chunk)
 			}
@@ -603,8 +630,8 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 					flusher.Flush()
 				}
 				if chunk.Done {
-					logRequestDone(req, chunk.Usage, firstTokenAt, true, chunk.FinishReason)
-					h.recordStats(req, chunk.Usage)
+					logRequestDone(req, chunk.Usage, firstTokenAt, true, chunk.FinishReason, servedModel)
+					h.recordStats(req, chunk.Usage, servedModel)
 					for _, l := range anthropicStreamer.Done(chunk.FinishReason, chunk.Usage) {
 						writeSSE(w, l)
 					}
@@ -617,8 +644,8 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 					flusher.Flush()
 				}
 				if chunk.Done {
-					logRequestDone(req, chunk.Usage, firstTokenAt, true, chunk.FinishReason)
-					h.recordStats(req, chunk.Usage)
+					logRequestDone(req, chunk.Usage, firstTokenAt, true, chunk.FinishReason, servedModel)
+					h.recordStats(req, chunk.Usage, servedModel)
 					writeSSE(w, translate.OpenAIResponsesSSEDone())
 					flusher.Flush()
 					return
@@ -629,8 +656,8 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 					flusher.Flush()
 				}
 				if chunk.Done {
-					logRequestDone(req, chunk.Usage, firstTokenAt, true, chunk.FinishReason)
-					h.recordStats(req, chunk.Usage)
+					logRequestDone(req, chunk.Usage, firstTokenAt, true, chunk.FinishReason, servedModel)
+					h.recordStats(req, chunk.Usage, servedModel)
 					// Emit final chunk with finish_reason and usage before [DONE]
 					writeSSE(w, translate.OpenAISSEChunk(req.ID, req.Model, chunk))
 					flusher.Flush()
@@ -669,6 +696,8 @@ func (h *Handler) batchResponse(w http.ResponseWriter, r *http.Request, req *typ
 	var toolCalls json.RawMessage
 	var usage *types.UsageInfo
 	finishReason := "stop"
+	// See streamResponse: the concrete model behind req.Model, per attempt.
+	var servedModel string
 
 	for {
 		select {
@@ -684,6 +713,9 @@ func (h *Handler) batchResponse(w http.ResponseWriter, r *http.Request, req *typ
 			if dedupHash != "" && h.Dedup != nil {
 				h.Dedup.Forward(dedupHash, chunk)
 			}
+			if chunk.Model != "" {
+				servedModel = chunk.Model
+			}
 			if chunk.Done {
 				if chunk.FinishReason != "" {
 					finishReason = chunk.FinishReason
@@ -694,7 +726,7 @@ func (h *Handler) batchResponse(w http.ResponseWriter, r *http.Request, req *typ
 				if chunk.Usage != nil {
 					usage = chunk.Usage
 				}
-				h.writeBatch(w, req, sb.String(), finishReason, toolCalls, usage)
+				h.writeBatch(w, req, sb.String(), finishReason, toolCalls, usage, servedModel)
 				return
 			}
 			sb.WriteString(chunk.Delta)
@@ -720,6 +752,7 @@ func (h *Handler) batchResponse(w http.ResponseWriter, r *http.Request, req *typ
 				toolCalls = nil
 				usage = nil
 				finishReason = "stop"
+				servedModel = ""
 				h.Queue.Push(*req)
 				h.Scheduler.Wake()
 				timeout.Reset(batch)
@@ -737,9 +770,9 @@ func (h *Handler) batchResponse(w http.ResponseWriter, r *http.Request, req *typ
 	}
 }
 
-func (h *Handler) writeBatch(w http.ResponseWriter, req *types.InferenceRequest, content, finishReason string, toolCalls json.RawMessage, usage *types.UsageInfo) {
-	h.recordStats(req, usage)
-	logRequestDone(req, usage, time.Time{}, false, finishReason)
+func (h *Handler) writeBatch(w http.ResponseWriter, req *types.InferenceRequest, content, finishReason string, toolCalls json.RawMessage, usage *types.UsageInfo, served string) {
+	h.recordStats(req, usage, served)
+	logRequestDone(req, usage, time.Time{}, false, finishReason, served)
 	w.Header().Set("Content-Type", "application/json")
 	var resp map[string]any
 	switch req.SourceFmt {
@@ -993,17 +1026,31 @@ func (h *Handler) writeStreamError(w io.Writer, flusher http.Flusher, req *types
 // logRequestDone emits the "api: request completed" structured log with timing and token stats.
 // For streaming requests, firstTokenAt is used to compute TTFT (queue wait + prompt eval + first token)
 // and tok_per_sec (completion tokens / generation time). Pass zero time for batch requests.
-func logRequestDone(req *types.InferenceRequest, usage *types.UsageInfo, firstTokenAt time.Time, stream bool, finishReason string) {
+// served is the concrete model the hub reported, or empty if none reached us;
+// unlike the accounting path this does not guess a substitute, since a log line
+// that names a model nobody ran is worse than one that names the alias.
+func logRequestDone(req *types.InferenceRequest, usage *types.UsageInfo, firstTokenAt time.Time, stream bool, finishReason, served string) {
 	now := time.Now()
 	elapsed := now.Sub(req.EnqueuedAt)
+	model := served
+	if model == "" {
+		model = req.Model
+	}
 	args := []any{
 		"request_id", req.ID,
-		"model", req.Model,
+		"model", model,
+	}
+	// Carry the caller's name too when it differs, so a request routed by alias
+	// can be read off one line instead of joined against the dispatch log.
+	if model != req.Model {
+		args = append(args, "requested_model", req.Model)
+	}
+	args = append(args,
 		"owner", req.Owner,
 		"elapsed_ms", elapsed.Milliseconds(),
 		"stream", stream,
 		"finish_reason", finishReason,
-	}
+	)
 	if usage != nil {
 		args = append(args, "prompt_tokens", usage.PromptTokens, "completion_tokens", usage.CompletionTokens)
 		if stream && !firstTokenAt.IsZero() {
