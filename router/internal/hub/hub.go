@@ -869,6 +869,109 @@ func (h *Hub) ActiveModelInfos() []types.ModelInfo {
 	return out
 }
 
+// ModelActivity is a live view of one model across the connected fleet: the
+// capacity advertised for it and what that capacity is doing right now.
+type ModelActivity struct {
+	Model string
+	// Clients is how many connected clients advertise this model. Zero is
+	// possible and transient: a job outlives its client until the lease expires.
+	Clients int
+	// TotalSlots is the combined concurrency of those clients. A client serving
+	// several models contributes its whole concurrency to each, because slots are
+	// shared rather than partitioned per model. Read it as the ceiling this model
+	// could reach with nothing else running, not as a reservation.
+	TotalSlots int
+	// PromptProcessing and Decoding split the in-flight jobs by phase. A job that
+	// has produced no output yet is still evaluating the prompt; one that has is
+	// generating. Their sum is how many slots the model is currently occupying.
+	PromptProcessing int
+	Decoding         int
+	// ContextSize is the largest context window advertised for the model, and
+	// Modalities the union of the input modalities advertised for it.
+	ContextSize int
+	Modalities  []string
+}
+
+// Busy is the number of slots this model currently occupies.
+func (a ModelActivity) Busy() int { return a.PromptProcessing + a.Decoding }
+
+// ActivityByModel reports every model the fleet is serving, with its live phase
+// breakdown. Sorted by model name.
+//
+// Capacity and in-flight work are read under one lock so the two cannot
+// disagree: composing the existing per-model slot and job accessors would let a
+// dispatch land between the calls and report a model as busier than its own
+// capacity. Carries nothing client-identifying, so it is safe to serve publicly.
+func (h *Hub) ActivityByModel() []ModelActivity {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	type acc struct {
+		clients    int
+		totalSlots int
+		prefill    int
+		decoding   int
+		ctx        int
+		modalities map[string]bool
+	}
+	byModel := make(map[string]*acc)
+	at := func(model string) *acc {
+		a := byModel[model]
+		if a == nil {
+			a = &acc{modalities: make(map[string]bool)}
+			byModel[model] = a
+		}
+		return a
+	}
+
+	for _, c := range h.clients {
+		if c.Models == nil {
+			continue // connected but not yet registered
+		}
+		for m := range c.Models {
+			a := at(m)
+			a.clients++
+			a.totalSlots += c.MaxConcurrent
+			if sz := c.ModelContextSizes[m]; sz > a.ctx {
+				a.ctx = sz
+			}
+			for _, mod := range c.ModelModalities[m] {
+				a.modalities[mod] = true
+			}
+		}
+	}
+
+	for _, rec := range h.jobs {
+		// FirstChunkAt reads an atomic on the shared live stats, so it is current
+		// even though the job record itself was copied into the map at dispatch.
+		if rec.FirstChunkAt() == nil {
+			at(rec.Req.Model).prefill++
+		} else {
+			at(rec.Req.Model).decoding++
+		}
+	}
+
+	out := make([]ModelActivity, 0, len(byModel))
+	for m, a := range byModel {
+		mods := make([]string, 0, len(a.modalities))
+		for mod := range a.modalities {
+			mods = append(mods, mod)
+		}
+		sort.Strings(mods)
+		out = append(out, ModelActivity{
+			Model:            m,
+			Clients:          a.clients,
+			TotalSlots:       a.totalSlots,
+			PromptProcessing: a.prefill,
+			Decoding:         a.decoding,
+			ContextSize:      a.ctx,
+			Modalities:       mods,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Model < out[j].Model })
+	return out
+}
+
 // IncrInFlight increments the in-flight counter for clientID.
 // No-op if the client is not connected.
 func (h *Hub) IncrInFlight(clientID string) {
@@ -1035,6 +1138,13 @@ func (h *Hub) recordPerf(rec InFlightRecord, usage *types.UsageInfo, doneAt time
 		}
 		if s.DecodeMS > 0 && s.DecodeTokens > 0 {
 			h.Latency.RecordGenThroughput(rec.Req.Model, float64(s.DecodeTokens)/(s.DecodeMS/1000))
+		}
+		// Tokens are recorded from the reported usage rather than the derived
+		// prefill/decode figures above, which exclude cached prompt tokens and
+		// drop out entirely when a backend reports no timings. What the window
+		// should show is what the request actually consumed.
+		if usage != nil {
+			h.Latency.RecordTokens(rec.Req.Model, usage.PromptTokens, usage.CompletionTokens)
 		}
 	}
 	if h.Perf != nil {

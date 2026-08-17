@@ -20,6 +20,7 @@ import (
 	"llmesh/router/internal/admin"
 	"llmesh/router/internal/api"
 	"llmesh/router/internal/correlation"
+	"llmesh/router/internal/health"
 	"llmesh/router/internal/hub"
 	"llmesh/router/internal/latency"
 	"llmesh/router/internal/logring"
@@ -187,9 +188,9 @@ func setupTestStack(t *testing.T) *testStack {
 		}
 		h.ServeWS(w, r, ct.Name, ct.Owner, token, ct.OwnerSlots)
 	})
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, `{"status":"ok","version":"e2e"}`+"\n")
-	})
+	mux.HandleFunc("/health", health.Handler("e2e", h, q.Len, reqStats, func() []health.UpstreamStatus {
+		return nil
+	}))
 
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
@@ -982,6 +983,97 @@ func TestE2E_HealthCheck(t *testing.T) {
 	if body["version"] != "e2e" {
 		t.Fatalf("unexpected version: %v", body["version"])
 	}
+	// No workers connected, so there is nothing to report but the key must exist
+	// rather than being absent or null.
+	if models, ok := body["models"].([]any); !ok || len(models) != 0 {
+		t.Fatalf("models: got %v, want an empty list", body["models"])
+	}
+}
+
+// The per-model detail has to survive the real stack: a client registers, serves
+// a request, and /health should then show the model idle again with that request
+// counted in both its window and its running totals.
+func TestE2E_HealthModelDetail(t *testing.T) {
+	routerURL, apiKey, clientToken, cleanup := setupTestRouter(t)
+	defer cleanup()
+
+	models := []types.ModelInfo{{Name: "health-llama", ContextSize: 4096, Modalities: []string{"text"}}}
+	conn := mockClientSimulator(t, routerURL, clientToken, models, func(reqID string) []types.ChunkMsg {
+		return []types.ChunkMsg{
+			{Type: "chunk", RequestID: reqID, Delta: "hi"},
+			{Type: "chunk", RequestID: reqID, Done: true, FinishReason: "stop",
+				Usage: &types.UsageInfo{PromptTokens: 11, CompletionTokens: 5}},
+		}
+	})
+	defer conn.Close()
+	waitForModel(t, routerURL, apiKey, "health-llama")
+
+	got, ok := healthModels(t, routerURL)["health-llama"]
+	if !ok {
+		t.Fatalf("model absent from /health")
+	}
+	if got["state"] != "idle" {
+		t.Errorf("state: got %v, want idle before any request", got["state"])
+	}
+	if got["context_window"].(float64) != 4096 {
+		t.Errorf("context_window: got %v, want 4096", got["context_window"])
+	}
+	if slots := got["slots"].(map[string]any); slots["total"].(float64) < 1 {
+		t.Errorf("slots: got %v, want at least one advertised", slots)
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"model": "health-llama", "stream": false,
+		"messages": []map[string]string{{"role": "user", "content": "hello"}},
+	})
+	resp, err := apiPost(routerURL+"/v1/chat/completions", apiKey, body)
+	if err != nil {
+		t.Fatalf("chat request: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("chat request: got %d, want 200", resp.StatusCode)
+	}
+
+	got = healthModels(t, routerURL)["health-llama"]
+	if got["state"] != "idle" {
+		t.Errorf("state after completion: got %v, want idle", got["state"])
+	}
+	recent := got["recent"].(map[string]any)
+	if recent["requests"].(float64) != 1 {
+		t.Errorf("recent.requests: got %v, want 1", recent["requests"])
+	}
+	if recent["prompt_tokens"].(float64) != 11 || recent["completion_tokens"].(float64) != 5 {
+		t.Errorf("recent tokens: got %v/%v, want 11/5", recent["prompt_tokens"], recent["completion_tokens"])
+	}
+	if recent["window_seconds"].(float64) != 600 {
+		t.Errorf("recent.window_seconds: got %v, want 600", recent["window_seconds"])
+	}
+	totals := got["totals"].(map[string]any)
+	if totals["requests"].(float64) != 1 || totals["prompt_tokens"].(float64) != 11 {
+		t.Errorf("totals: got %v, want 1 request and 11 prompt tokens", totals)
+	}
+}
+
+// healthModels fetches /health and returns its models keyed by model name.
+func healthModels(t *testing.T, routerURL string) map[string]map[string]any {
+	t.Helper()
+	resp, err := http.Get(routerURL + "/health")
+	if err != nil {
+		t.Fatalf("GET /health: %v", err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		Models []map[string]any `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode /health: %v", err)
+	}
+	out := make(map[string]map[string]any, len(body.Models))
+	for _, m := range body.Models {
+		out[m["model"].(string)] = m
+	}
+	return out
 }
 
 func TestE2E_ModelList(t *testing.T) {

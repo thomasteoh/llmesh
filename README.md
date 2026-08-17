@@ -529,7 +529,7 @@ Replace `[HOST]` and `[PORT]` with your router's address (port default: `53002`)
 | `POST /v1/responses` | OpenAI Responses API |
 | `GET /v1/models` | List available models (OpenAI-compatible) |
 | `GET /v1/models/slots` | llmesh-specific: models the key can currently get a slot on, with available slot counts |
-| `GET /health` | Health check |
+| `GET /health` | Health check, with per-model activity and throughput (no auth) |
 | `GET /metrics` | Prometheus metrics, including inference speed percentiles (no auth) |
 | `GET /portal` | Admin dashboard |
 
@@ -545,6 +545,43 @@ All `/v1/*` endpoints require `Authorization: Bearer <api-key>`.
   ]
 }
 ```
+
+`GET /health` needs no auth. Alongside the router-wide `status`, `version`, `clients`, `queue_depth`, `active_jobs` and `upstreams`, it reports every model the fleet is serving. Like `/metrics`, it names no client, owner, or API key.
+
+```json
+{
+  "status": "ok",
+  "models": [
+    {
+      "model": "llama3",
+      "state": "decoding",
+      "clients": 2,
+      "slots": { "total": 8, "busy": 3, "free": 5 },
+      "activity": { "prompt_processing": 1, "decoding": 2 },
+      "context_window": 32768,
+      "modalities": ["text", "vision"],
+      "totals": { "requests": 1204, "prompt_tokens": 982441, "completion_tokens": 76210 },
+      "recent": {
+        "window_seconds": 600,
+        "requests": 41,
+        "prompt_tokens": 33120,
+        "completion_tokens": 2610,
+        "prompt_tokens_per_sec": { "p50": 902.22, "p95": 1180.4, "p99": 1204.0 },
+        "gen_tokens_per_sec": { "p50": 42.67, "p95": 55.1, "p99": 58.9 },
+        "ttft_ms": { "p50": 420.0, "p95": 1800.0, "p99": 2100.0 },
+        "queue_ms": { "p50": 0.1, "p95": 12.4, "p99": 30.0 },
+        "duration_ms": { "p50": 4200.0, "p95": 9100.0, "p99": 11000.0 }
+      }
+    }
+  ]
+}
+```
+
+- `state` is `decoding` if any job is generating, else `prompt_processing` if any is still evaluating its prompt, else `idle`, else `offline` while a job briefly outlives the client that was running it.
+- `activity` splits in-flight jobs by phase; a job that has produced no output yet is still on the prompt.
+- `slots.total` is the combined concurrency of the clients advertising the model. Clients share one pool of slots across every model they serve, so the same capacity is counted for each and `busy` can exceed it.
+- `totals` is cumulative since the router started; `recent` covers the rolling `window_seconds` only, the same 10-minute window `/metrics` reports percentiles over.
+- The percentile blocks are omitted rather than zeroed when nothing was measured: batch requests never observe `ttft_ms`, and throughput needs a backend that reports timings.
 
 ---
 
