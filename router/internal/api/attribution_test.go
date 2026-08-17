@@ -80,31 +80,42 @@ func TestRecordStats_ResolvesAnyToTheConcreteModel(t *testing.T) {
 	}
 }
 
-// No chunk carried a model — a timeout or a shutdown drain. Accounting still has
-// to land somewhere, so it keeps the old first-target guess rather than dropping
-// the tokens or filing them under an alias no model answers to.
-func TestRecordStats_FallsBackToFirstAliasTargetWhenUnknown(t *testing.T) {
-	h, stats, _ := aliasHandler()
+// No chunk carried a model, so nothing observed which one ran. Naming one of the
+// alias targets anyway would be a guess, and a guess on a path this rare is one
+// nobody would catch: the tokens are recorded under the alias, where a zero
+// pricing match puts them in unpriced_requests instead of inflating a model.
+func TestRecordStats_DoesNotGuessAModelWhenNoneWasReported(t *testing.T) {
+	h, stats, usage := aliasHandler()
 
 	h.recordStats(aliasReq(), &types.UsageInfo{PromptTokens: 1, CompletionTokens: 2}, "")
 
-	if len(stats.got) != 1 || stats.got[0].model != "local-llama" {
-		t.Errorf("stats: got %+v, want the local-llama fallback", stats.got)
+	if len(stats.got) != 1 || stats.got[0].model != "chat" {
+		t.Errorf("stats: got %+v, want the alias chat rather than a guessed target", stats.got)
+	}
+	if len(usage.got) != 1 || usage.got[0].model != "chat" {
+		t.Errorf("usage: got %+v, want the alias chat rather than a guessed target", usage.got)
 	}
 }
 
-// A concrete request is unaffected either way, but the served name still wins:
-// it is the one the hub observed.
-func TestAttributedModel_ConcreteRequestPassesThrough(t *testing.T) {
-	h, _, _ := aliasHandler()
-	req := aliasReq()
-	req.Model = "local-llama"
-
-	if got := h.attributedModel(req, ""); got != "local-llama" {
-		t.Errorf("without a served name: got %q, want local-llama", got)
-	}
-	if got := h.attributedModel(req, "local-llama"); got != "local-llama" {
-		t.Errorf("with a served name: got %q, want local-llama", got)
+// What the hub reported wins when there is one; the caller's own name stands in
+// when there is not, whether that name is an alias or already concrete.
+func TestAttributedModel(t *testing.T) {
+	for _, tc := range []struct {
+		name, reqModel, served, want string
+	}{
+		{"served name wins over the alias", "chat", "gpt-4o", "gpt-4o"},
+		{"alias stands for itself when unreported", "chat", "", "chat"},
+		{"concrete request unaffected", "local-llama", "local-llama", "local-llama"},
+		{"concrete request unreported", "local-llama", "", "local-llama"},
+		{"any stands for itself when unreported", "any", "", "any"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := aliasReq()
+			req.Model = tc.reqModel
+			if got := attributedModel(req, tc.served); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

@@ -227,30 +227,31 @@ func (h *Handler) cancelRequest(reqID string) {
 	}
 }
 
-// attributedModel returns the model a completed request should be accounted to.
+// attributedModel returns the model a completed request is attributed to, for
+// both accounting and the completion log.
 //
 // served is the concrete name the hub stamped on the response chunks, and is
-// authoritative: it is the model the scheduler actually dispatched to, after
-// alias resolution, tier fallback, and any retries. It is empty only when no
-// chunk carried one — a timeout, a shutdown drain, or a terminal error chunk
-// synthesised by the router itself.
+// the only authority: it is the model the scheduler actually dispatched to,
+// after alias resolution, tier fallback, and any retries. It is empty only when
+// no chunk carried one — a timeout, a shutdown drain, a terminal error chunk the
+// router synthesised for itself, or a chunk from a client that no longer holds
+// the job.
 //
-// The fallback then guesses, by resolving an alias to its first target. That
-// guess is what this used to do unconditionally, and it is wrong whenever an
-// alias has more than one target: the scheduler picks by tier and availability,
-// so work that spilled over to a second-tier model was billed to whichever
-// model happened to sit at the head of the alias list.
-func (h *Handler) attributedModel(req *types.InferenceRequest, served string) string {
+// There is deliberately no fallback that resolves an alias to one of its
+// targets. Guessing that way is what misattributed alias usage in the first
+// place, and keeping the guess on the rare path would only make the same error
+// rarer without making it visible. Attributing to the name the caller used
+// instead leaves the tokens and request counted, prices them at zero (no
+// pricing row matches an alias), and surfaces them in unpriced_requests, where
+// a request nobody could attribute shows up as one.
+//
+// Takes no handler state on purpose: attribution consults nothing it could
+// disagree with.
+func attributedModel(req *types.InferenceRequest, served string) string {
 	if served != "" {
 		return served
 	}
-	model := req.Model
-	if h.Aliases != nil {
-		if targets := h.Aliases.AliasMap()[model]; len(targets) > 0 {
-			model = targets[0]
-		}
-	}
-	return model
+	return req.Model
 }
 
 // recordStats records token usage for a completed request against the model
@@ -259,7 +260,7 @@ func (h *Handler) recordStats(req *types.InferenceRequest, usage *types.UsageInf
 	if usage == nil {
 		return
 	}
-	model := h.attributedModel(req, served)
+	model := attributedModel(req, served)
 	if h.Stats != nil {
 		h.Stats.Record(model, req.Owner, usage.PromptTokens, usage.CompletionTokens)
 	}
@@ -1026,16 +1027,11 @@ func (h *Handler) writeStreamError(w io.Writer, flusher http.Flusher, req *types
 // logRequestDone emits the "api: request completed" structured log with timing and token stats.
 // For streaming requests, firstTokenAt is used to compute TTFT (queue wait + prompt eval + first token)
 // and tok_per_sec (completion tokens / generation time). Pass zero time for batch requests.
-// served is the concrete model the hub reported, or empty if none reached us;
-// unlike the accounting path this does not guess a substitute, since a log line
-// that names a model nobody ran is worse than one that names the alias.
+// served is the concrete model the hub reported, or empty if none reached us.
 func logRequestDone(req *types.InferenceRequest, usage *types.UsageInfo, firstTokenAt time.Time, stream bool, finishReason, served string) {
 	now := time.Now()
 	elapsed := now.Sub(req.EnqueuedAt)
-	model := served
-	if model == "" {
-		model = req.Model
-	}
+	model := attributedModel(req, served)
 	args := []any{
 		"request_id", req.ID,
 		"model", model,
