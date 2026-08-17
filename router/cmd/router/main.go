@@ -22,6 +22,7 @@ import (
 	"llmesh/router/internal/api"
 	"llmesh/router/internal/correlation"
 	"llmesh/router/internal/dedup"
+	"llmesh/router/internal/health"
 	"llmesh/router/internal/hub"
 	"llmesh/router/internal/latency"
 	"llmesh/router/internal/logring"
@@ -413,31 +414,18 @@ func main() {
 		// the connection registry or in-flight job records.
 		h.ServeWS(w, r, ct.Name, ct.Owner, ct.TokenHash, ct.OwnerSlots)
 	})
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/health", health.Handler(version, h, q.Len, reqStats, func() []health.UpstreamStatus {
 		upstreamRouters := adminHandler.State().GetUpstreamRouters()
-		type upstreamStatus struct {
-			URL       string `json:"url"`
-			Name      string `json:"name,omitempty"`
-			Connected bool   `json:"connected"`
-		}
-		upstreams := make([]upstreamStatus, len(upstreamRouters))
+		upstreams := make([]health.UpstreamStatus, len(upstreamRouters))
 		for i, u := range upstreamRouters {
-			upstreams[i] = upstreamStatus{
+			upstreams[i] = health.UpstreamStatus{
 				URL:       u.URL,
 				Name:      u.Name,
 				Connected: conn.Connected(u.URL),
 			}
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
-			"status":      "ok",
-			"version":     version,
-			"clients":     h.ActiveClientCount(),
-			"queue_depth": q.Len(),
-			"active_jobs": len(h.AllInFlightJobs()),
-			"upstreams":   upstreams,
-		})
-	})
+		return upstreams
+	}))
 	mux.HandleFunc("/metrics", metricsHandler(apiHandler, q, h, reqStats, h.Latency))
 	mux.Handle("/portal/", adminHandler)
 	mux.Handle("/portal", adminHandler)
