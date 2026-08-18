@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"sort"
@@ -154,41 +155,106 @@ type jobStatJSON struct {
 	DeltaCount      int64  `json:"delta_count"`              // tokens generated so far
 	TTFTMs          int64  `json:"ttft_ms,omitempty"`        // time-to-first-token in ms
 	FirstChunkAtISO string `json:"first_chunk_at,omitempty"` // RFC3339
+	// Conn is the connection serving this job, matching the data-conn-jobs
+	// attribute on the container it belongs in.
+	Conn string `json:"conn"`
+	// HTML is the job rendered through the same template the page used, so a job
+	// that starts after the page loaded is inserted rather than reconstructed.
+	// Only sent for a job the page does not already show.
+	HTML string `json:"html,omitempty"`
+}
+
+// connCapacityJSON is one connection's live slot usage.
+type connCapacityJSON struct {
+	Conn          string `json:"conn"`
+	InFlight      int    `json:"in_flight"`
+	MaxConcurrent int    `json:"max_concurrent"`
+}
+
+// jobsJSON is the Clients page's live payload: what is running, and how loaded
+// each connection is.
+type jobsJSON struct {
+	Jobs        []jobStatJSON      `json:"jobs"`
+	Connections []connCapacityJSON `json:"connections"`
 }
 
 // handleJobsJSON returns live stats for all in-flight jobs visible to the caller.
+//
+// The `known` query parameter lists the job IDs the page is already showing.
+// Anything not in it is returned with its markup attached, so the page can add a
+// job that started since it loaded; rendering every row every poll would be
+// wasted work on the common case where nothing has changed.
 func (a *Admin) handleJobsJSON(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	u := ctxGetUser(r)
-	recs := a.hub.AllInFlightJobs()
-	out := make([]jobStatJSON, 0, len(recs))
-	for _, rec := range recs {
-		if u.Role != "admin" && rec.Req.Owner != u.Username && rec.ClientOwner != u.Username {
+	known := make(map[string]bool)
+	for _, id := range strings.Split(r.URL.Query().Get("known"), ",") {
+		if id != "" {
+			known[id] = true
+		}
+	}
+	// Same session-scoped token the page was rendered with, so a cancel button on
+	// an inserted row posts exactly like one the server rendered.
+	var csrf string
+	if c, err := r.Cookie(sessionCookie); err == nil {
+		if token, ok := a.sessions.getCSRF(c.Value); ok {
+			csrf = token
+		}
+	}
+	isAdmin := u.Role == "admin"
+
+	out := jobsJSON{Jobs: []jobStatJSON{}, Connections: []connCapacityJSON{}}
+	for _, rec := range a.hub.AllInFlightJobs() {
+		if !isAdmin && rec.Req.Owner != u.Username && rec.ClientOwner != u.Username {
 			continue
 		}
+		row := buildInFlightJobRow(rec, csrf, isAdmin || rec.Req.Owner == u.Username || rec.ClientOwner == u.Username)
 		stat := jobStatJSON{
-			ID:         rec.Req.ID,
-			Phase:      "processing",
-			DeltaCount: rec.DeltaCount(),
+			ID:              row.ID,
+			Phase:           row.Phase,
+			DeltaCount:      int64(row.DeltaCount),
+			TTFTMs:          int64(row.TTFTMs),
+			FirstChunkAtISO: row.FirstChunkAtISO,
+			Conn:            rec.ClientName,
 		}
-		if fc := rec.FirstChunkAt(); fc != nil {
-			stat.Phase = "generating"
-			stat.FirstChunkAtISO = fc.UTC().Format("2006-01-02T15:04:05Z07:00")
+		if !known[row.ID] {
+			stat.HTML = a.renderJobRow(row)
 		}
-		// Output means generating either way, but only a streaming request has a
-		// first-token moment distinct from its completion, so only it has a TTFT to
-		// show — the same rule the histograms and hourly buckets follow.
-		if ft := rec.FirstTokenAt(); ft != nil {
-			stat.TTFTMs = ft.Sub(rec.DispatchedAt).Milliseconds()
-		}
-		out = append(out, stat)
+		out.Jobs = append(out.Jobs, stat)
 	}
+
+	for _, c := range a.hub.ConnectionsLoad() {
+		if !isAdmin && c.Owner != u.Username {
+			continue
+		}
+		out.Connections = append(out.Connections, connCapacityJSON{
+			Conn:          c.Name,
+			InFlight:      c.InFlight,
+			MaxConcurrent: c.MaxConcurrent,
+		})
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	json.NewEncoder(w).Encode(out)
+}
+
+// renderJobRow renders one job through the Clients page's job-row template.
+// Returns "" if rendering fails, which the page treats as "nothing to insert"
+// rather than showing a broken row.
+func (a *Admin) renderJobRow(row InFlightJobRow) string {
+	t := a.tmpls["clients"]
+	if t == nil {
+		return ""
+	}
+	var buf bytes.Buffer
+	if err := t.ExecuteTemplate(&buf, "job-row", row); err != nil {
+		return ""
+	}
+	return buf.String()
 }
 
 // ─── Usage API ────────────────────────────────────────────────────────────────

@@ -90,6 +90,28 @@
 {{end}}
 {{end}}
 
+{{- /* job-row: one in-flight job. Expects an InFlightJobRow as '.', carrying its
+       own CSRFToken so the jobs API can render a single row in isolation and the
+       page's script can insert it without assembling markup of its own. */ -}}
+{{define "job-row"}}
+<div class="job-row job-{{.Phase}}" data-job-id="{{.ID}}">
+  <div class="job-row-header">
+    <span class="job-phase-dot"></span>
+    <span class="job-model">{{.Model}}</span>
+    {{if eq .Priority "high"}}<span class="badge job-badge-priority high" title="high priority">high</span>{{end}}
+    {{if eq .Priority "low"}}<span class="badge job-badge-priority low" title="low priority">low</span>{{end}}
+    {{if gt .Attempts 1}}<span class="badge job-badge-retry" title="{{.Attempts}} dispatch attempts">&#x21BA;{{.Attempts}}</span>{{end}}
+    <span class="job-owner">{{if .APIKeyLabel}}{{.APIKeyLabel}}{{else}}{{.Owner}}{{end}}</span>
+    {{if .CanCancel}}
+    {{template "action-button" dict "Action" "/portal/jobs/cancel" "CSRF" .CSRFToken "Fields" (dict "request_id" .ID) "Confirm" "Cancel this job?" "Class" "btn-danger btn-xs icon-btn" "Label" "✕" "Title" "Cancel job"}}
+    {{end}}
+  </div>
+  <div class="job-row-stats">
+    {{if .DispatchedAtISO}}<span class="job-elapsed" data-since="{{.DispatchedAtISO}}" title="dispatched {{.EnqueuedAt}}">—</span>{{end}}<span class="job-stats-live"{{if .FirstChunkAtISO}} data-first-chunk="{{.FirstChunkAtISO}}"{{end}}{{if .WordCount}} data-words="{{.WordCount}}"{{end}}>{{.StatsStr}}</span>
+  </div>
+</div>
+{{end}}
+
 {{define "conn-subrow"}}
 {{/* Renders the connection detail sub-row for a connected token.
      Expects a ClientTokenRow as '.'; uses .CSRFToken for cancel forms. */}}
@@ -103,30 +125,14 @@
         {{if .IsRouter}}<span class="badge muted-badge" title="Downstream router — not a client binary">router</span>{{end}}
         {{if .Version}}<span class="conn-version">{{.Version}}</span>{{end}}
         <span class="conn-models" title="{{.Models}}">{{.Models}}</span>
-        <span class="conn-capacity">{{.InFlight}} / {{.MaxConcurrent}}</span>
+        <span class="conn-capacity" data-conn-capacity="{{.Name}}">{{.InFlight}} / {{.MaxConcurrent}}</span>
       </div>
-      {{if .Jobs}}
-      <div class="conn-jobs">
-        {{range .Jobs}}
-        <div class="job-row job-{{.Phase}}" data-job-id="{{.ID}}">
-          <div class="job-row-header">
-            <span class="job-phase-dot"></span>
-            <span class="job-model">{{.Model}}</span>
-            {{if eq .Priority "high"}}<span class="badge job-badge-priority high" title="high priority">high</span>{{end}}
-            {{if eq .Priority "low"}}<span class="badge job-badge-priority low" title="low priority">low</span>{{end}}
-            {{if gt .Attempts 1}}<span class="badge job-badge-retry" title="{{.Attempts}} dispatch attempts">&#x21BA;{{.Attempts}}</span>{{end}}
-            <span class="job-owner">{{if .APIKeyLabel}}{{.APIKeyLabel}}{{else}}{{.Owner}}{{end}}</span>
-            {{if .CanCancel}}
-            {{template "action-button" dict "Action" "/portal/jobs/cancel" "CSRF" $.CSRFToken "Fields" (dict "request_id" .ID) "Confirm" "Cancel this job?" "Class" "btn-danger btn-xs icon-btn" "Label" "✕" "Title" "Cancel job"}}
-            {{end}}
-          </div>
-          <div class="job-row-stats">
-            {{if .DispatchedAtISO}}<span class="job-elapsed" data-since="{{.DispatchedAtISO}}" title="dispatched {{.EnqueuedAt}}">—</span>{{end}}<span class="job-stats-live"{{if .FirstChunkAtISO}} data-first-chunk="{{.FirstChunkAtISO}}"{{end}}{{if .WordCount}} data-words="{{.WordCount}}"{{end}}>{{.StatsStr}}</span>
-          </div>
-        </div>
-        {{end}}
+      {{/* Rendered even when empty: it is the container the page's script drops
+           a job into when one starts, and there is nothing to drop it into if
+           the whole block only exists once a job is already running. */}}
+      <div class="conn-jobs" data-conn-jobs="{{.Name}}">
+        {{range .Jobs}}{{template "job-row" .}}{{end}}
       </div>
-      {{end}}
       {{end}}
     </div>
   </td>

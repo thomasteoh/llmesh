@@ -115,6 +115,8 @@ function toggleDocsNav() {
    while the browser tab is hidden. `url` may be a string or a function
    returning the current URL. Returns { tick, start, stop }. */
 
+var _pollers = [];
+
 function poll(url, intervalMs, onData) {
   var timer = null;
   function resolveUrl() { return typeof url === 'function' ? url() : url; }
@@ -126,11 +128,31 @@ function poll(url, intervalMs, onData) {
   }
   function start() { if (!timer) { tick(); timer = setInterval(tick, intervalMs); } }
   function stop() { if (timer) { clearInterval(timer); timer = null; } }
-  document.addEventListener('visibilitychange', function() {
-    if (document.hidden) stop(); else start();
-  });
+  function onVisibility() { if (document.hidden) stop(); else start(); }
+  document.addEventListener('visibilitychange', onVisibility);
+  // dispose is stop plus releasing the visibility listener, so a poller
+  // belonging to replaced content does not linger and restart itself the next
+  // time the tab is focused.
+  var handle = {
+    tick: tick, start: start, stop: stop,
+    dispose: function() {
+      stop();
+      document.removeEventListener('visibilitychange', onVisibility);
+    }
+  };
+  _pollers.push(handle);
   start();
-  return { tick: tick, start: start, stop: stop };
+  return handle;
+}
+
+/* stopPollers disposes every poller. Called before content is swapped, since
+   the elements the running ones were written against are about to go away. */
+function stopPollers() {
+  _pollers.forEach(function(p) { p.dispose(); });
+  _pollers = [];
+  // Cached separately so it survives tab switches; clear it too or the next
+  // visit to the logs tab restarts a poller that has been disposed.
+  _logsPoller = null;
 }
 
 /* ─── Log viewer ─────────────────────────────────────────────── */
@@ -347,7 +369,10 @@ function initDashboard() {
 /* ─── Live job stats polling ─────────────────────────────────── */
 
 function initJobStats() {
-  if (!document.querySelector('[data-job-id]')) return;
+  // Deliberately not gated on a job being present. Gating on the first render
+  // meant a page opened while the fleet was idle never started polling at all,
+  // so the first job to arrive was invisible until a manual reload.
+  if (!document.querySelector('[data-conn-jobs]')) return;
 
   function buildStats(j, liveEl) {
     var parts = [];
@@ -368,17 +393,58 @@ function initJobStats() {
     return parts.length ? ' · ' + parts.join(' · ') : '';
   }
 
-  poll('/portal/api/jobs', 2000, function(jobs) {
-    if (!jobs) return;
-    jobs.forEach(function(j) {
+  function knownIds() {
+    return Array.from(document.querySelectorAll('[data-job-id]'))
+      .map(function(el) { return el.getAttribute('data-job-id'); });
+  }
+
+  poll(function() {
+    // Telling the server what is already on screen keeps it from re-rendering
+    // markup for jobs that have not changed, which is nearly all of them.
+    return '/portal/api/jobs?known=' + encodeURIComponent(knownIds().join(','));
+  }, 2000, function(data) {
+    if (!data || !data.jobs) return;
+
+    var live = Object.create(null);
+    data.jobs.forEach(function(j) {
+      live[j.id] = true;
       var row = document.querySelector('[data-job-id="' + j.id + '"]');
-      if (!row) return;
+      if (!row) {
+        // A job that started after this page rendered. The server sends it as
+        // markup from the same template the page used, so there is one
+        // definition of a job row rather than a second one living here.
+        if (!j.html) return;
+        var container = document.querySelector('[data-conn-jobs="' + cssEscape(j.conn) + '"]');
+        if (!container) return;
+        container.insertAdjacentHTML('beforeend', j.html);
+        row = container.lastElementChild;
+        if (!row) return;
+      }
       row.classList.toggle('job-processing', j.phase === 'processing');
       row.classList.toggle('job-generating',  j.phase === 'generating');
       var liveEl = row.querySelector('.job-stats-live');
       if (liveEl) liveEl.textContent = buildStats(j, liveEl);
     });
+
+    // Drop rows for jobs that have finished. Without this the list only ever
+    // grew, and a page left open showed work that ended long ago.
+    document.querySelectorAll('[data-job-id]').forEach(function(row) {
+      if (!live[row.getAttribute('data-job-id')]) row.remove();
+    });
+
+    (data.connections || []).forEach(function(c) {
+      var el = document.querySelector('[data-conn-capacity="' + cssEscape(c.conn) + '"]');
+      if (el) el.textContent = c.in_flight + ' / ' + c.max_concurrent;
+    });
+
+    updateElapsed();
   });
+}
+
+/* cssEscape quotes a value for use inside an attribute selector. Client names
+   are user-chosen, so they can contain quotes and backslashes. */
+function cssEscape(v) {
+  return String(v == null ? '' : v).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
 /* ─── Usage & performance panel (dashboard) ──────────────────────
@@ -975,9 +1041,93 @@ function fallbackCopy(text) {
   document.body.removeChild(ta);
 }
 
+/* ─── Portal actions ─────────────────────────────────────────────
+   Every action in the portal is a real form posting to a real endpoint, and
+   still works with scripting off — the server answers those with the redirect
+   it always has. What follows upgrades them: the post goes out by fetch, the
+   server replies 204 with the destination, and only the page's content region
+   is pulled and swapped. The sidebar, stylesheet, and scripts stay put, and so
+   does the scroll position, which a reload threw away on every revoke. */
+
+/* swapContent replaces <main> with the same region from url, then re-runs the
+   page setup so the new markup gets its handlers and pollers. */
+function swapContent(url) {
+  return fetch(url, { headers: { 'X-Portal-Fetch': '1' }, credentials: 'same-origin' })
+    .then(function(r) {
+      if (!r.ok) throw new Error('non-ok');
+      return r.text();
+    })
+    .then(function(html) {
+      var doc = new DOMParser().parseFromString(html, 'text/html');
+      var next = doc.querySelector('main');
+      var current = document.querySelector('main');
+      if (!next || !current) throw new Error('no main');
+      stopPollers();
+      current.innerHTML = next.innerHTML;
+      var hash = url.indexOf('#') !== -1 ? url.slice(url.indexOf('#') + 1) : '';
+      initPage(hash);
+    });
+}
+
+/* submitAction posts a form without navigating. Anything unexpected — a
+   non-2xx, a network failure, a page that will not swap — falls back to
+   submitting the form normally, so a failure shows the server's own error page
+   rather than silently doing nothing. */
+function submitAction(form) {
+  var url = form.getAttribute('action') || window.location.pathname;
+  fetch(url, {
+    method: 'POST',
+    body: new FormData(form),
+    headers: { 'X-Portal-Fetch': '1' },
+    credentials: 'same-origin',
+    redirect: 'follow'
+  }).then(function(r) {
+    if (!r.ok && r.status !== 204) throw new Error('non-ok');
+    // Several actions finish somewhere other than where they started, and some
+    // carry a #tab the page has to re-select.
+    var dest = r.headers.get('X-Portal-Location') || window.location.pathname;
+    if (stripHash(dest) !== stripHash(window.location.pathname + window.location.search)) {
+      window.location.href = dest;
+      return;
+    }
+    return swapContent(dest);
+  }).catch(function() {
+    form.removeAttribute('data-enhanced');
+    form.submit();
+  });
+}
+
+function stripHash(u) {
+  var i = u.indexOf('#');
+  return i === -1 ? u : u.slice(0, i);
+}
+
+/* Delegated so it covers rows added after load. A form with an inline
+   onsubmit confirm that returns false never fires a submit event, so the
+   confirmation still gates the action exactly as before. */
+document.addEventListener('submit', function(e) {
+  var form = e.target;
+  if (!(form instanceof HTMLFormElement)) return;
+  if ((form.getAttribute('method') || '').toUpperCase() !== 'POST') return;
+  var action = form.getAttribute('action') || '';
+  // Only portal actions. Anything posting elsewhere is left alone.
+  if (action && action.charAt(0) !== '/') return;
+  if (action && action.indexOf('/portal/') !== 0) return;
+  // Logout must actually navigate: the session it is ending is the one the
+  // swapped-in content would be fetched with.
+  if (action.indexOf('/portal/logout') === 0) return;
+  if (form.getAttribute('data-no-enhance') !== null) return;
+  e.preventDefault();
+  submitAction(form);
+});
+
 /* ─── Init ──────────────────────────────────────────────────── */
 
-document.addEventListener('DOMContentLoaded', function() {
+/* initPage wires up whatever content is currently in <main>. Runs at load and
+   again after an action swaps the content in, so newly rendered markup gets the
+   same handlers and pollers the server-rendered markup got.
+   hash selects a settings tab or docs section, and defaults to the URL's. */
+function initPage(hash) {
   initDashboard();
   initUsage();
   initClientGroups();
@@ -993,7 +1143,7 @@ document.addEventListener('DOMContentLoaded', function() {
   });
 
   // Restore settings tab or docs section from URL hash.
-  var hash = window.location.hash.slice(1);
+  if (hash === undefined) hash = window.location.hash.slice(1);
   if (hash) {
     var hashSection = document.getElementById(hash);
     if (hashSection && hashSection.classList.contains('tab-panel')) {
@@ -1020,7 +1170,9 @@ document.addEventListener('DOMContentLoaded', function() {
     btn.title = 'Copy';
     wrap.appendChild(btn);
   });
-});
+}
+
+document.addEventListener('DOMContentLoaded', function() { initPage(); });
 
 /* ─── Elapsed time display ───────────────────────────────────── */
 
@@ -1041,7 +1193,8 @@ function updateElapsed() {
 }
 
 (function() {
-  if (!document.querySelector('[data-since]')) return;
+  // Runs unconditionally: rows arrive after load now, and gating on one being
+  // present at startup left their timers frozen at an em-dash.
   updateElapsed();
   setInterval(updateElapsed, 1000);
 })();
