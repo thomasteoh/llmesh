@@ -653,14 +653,28 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 				}
 			default: // "openai"
 				if chunk.Delta != "" || len(chunk.ToolCallsDelta) > 0 {
-					writeSSE(w, translate.OpenAISSEChunk(req.ID, req.Model, chunk))
+					// A worker may put content and Done on the same chunk, as the
+					// batch path does. Emit the content alone here and let the
+					// terminal write below carry finish_reason and usage, so
+					// neither the text nor the reason goes out twice. Chunks that
+					// are not Done already look like this, so nothing changes for
+					// a worker that streams content and completion separately.
+					content := chunk
+					content.Done = false
+					content.FinishReason = ""
+					content.Usage = nil
+					writeSSE(w, translate.OpenAISSEChunk(req.ID, req.Model, content))
 					flusher.Flush()
 				}
 				if chunk.Done {
 					logRequestDone(req, chunk.Usage, firstTokenAt, true, chunk.FinishReason, servedModel)
 					h.recordStats(req, chunk.Usage, servedModel)
-					// Emit final chunk with finish_reason and usage before [DONE]
-					writeSSE(w, translate.OpenAISSEChunk(req.ID, req.Model, chunk))
+					// Emit final chunk with finish_reason and usage before [DONE].
+					// Any content it carried went out above.
+					final := chunk
+					final.Delta = ""
+					final.ToolCallsDelta = nil
+					writeSSE(w, translate.OpenAISSEChunk(req.ID, req.Model, final))
 					flusher.Flush()
 					writeSSE(w, translate.OpenAISSEDone())
 					flusher.Flush()
@@ -717,22 +731,24 @@ func (h *Handler) batchResponse(w http.ResponseWriter, r *http.Request, req *typ
 			if chunk.Model != "" {
 				servedModel = chunk.Model
 			}
+			// Accumulate before testing Done: a worker answering a non-streaming
+			// request in one shot puts the whole response and the Done flag on the
+			// same chunk, which is what llama.cpp's readBatch and the shim's
+			// handleBatch both send. Finalising first dropped that content and
+			// returned an empty message with a full token count.
+			sb.WriteString(chunk.Delta)
+			if len(chunk.ToolCallsDelta) > 0 {
+				toolCalls = chunk.ToolCallsDelta
+			}
 			if chunk.Done {
 				if chunk.FinishReason != "" {
 					finishReason = chunk.FinishReason
-				}
-				if len(chunk.ToolCallsDelta) > 0 {
-					toolCalls = chunk.ToolCallsDelta
 				}
 				if chunk.Usage != nil {
 					usage = chunk.Usage
 				}
 				h.writeBatch(w, req, sb.String(), finishReason, toolCalls, usage, servedModel)
 				return
-			}
-			sb.WriteString(chunk.Delta)
-			if len(chunk.ToolCallsDelta) > 0 {
-				toolCalls = chunk.ToolCallsDelta
 			}
 		case <-timeout.C:
 			req.Attempts++
