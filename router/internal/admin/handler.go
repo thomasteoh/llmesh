@@ -319,6 +319,7 @@ func (a *Admin) registerRoutes() {
 
 	// Jobs JSON API — live stats for in-flight jobs
 	mux.HandleFunc("/portal/api/jobs", a.requireAuth(a.handleJobsJSON))
+	mux.HandleFunc("/portal/api/connections", a.requireAuth(a.handleConnectionsJSON))
 
 	// Usage JSON API — time-series token usage (members see their own only)
 	mux.HandleFunc("/portal/api/usage", a.requireAuth(a.handleUsageJSON))

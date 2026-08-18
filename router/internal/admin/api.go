@@ -242,6 +242,112 @@ func (a *Admin) handleJobsJSON(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(out)
 }
 
+// ─── Connections API ──────────────────────────────────────────────────────────
+
+// tokenConnsJSON is one client token's live connection state.
+type tokenConnsJSON struct {
+	TokenHash   string   `json:"token_hash"`
+	StatusClass string   `json:"status_class"`
+	StatusLabel string   `json:"status_label"`
+	LastSeen    string   `json:"last_seen"`
+	Conns       []string `json:"conns"` // names currently connected, in display order
+}
+
+// newConnJSON is a connection the page is not showing yet, with its markup.
+type newConnJSON struct {
+	TokenHash string `json:"token_hash"`
+	Name      string `json:"name"`
+	HTML      string `json:"html"`
+}
+
+type connectionsJSON struct {
+	Tokens []tokenConnsJSON `json:"tokens"`
+	New    []newConnJSON    `json:"new"`
+}
+
+// handleConnectionsJSON reports which clients are connected, so the Clients page
+// can show one arriving or dropping without being reloaded.
+//
+// Deliberately narrow: it reads the hub and the token list and nothing else. The
+// page itself also renders each machine's 24-hour performance summary, which
+// costs a query per client and describes a window far too long to be worth
+// re-reading every few seconds, so none of that is here.
+//
+// `known` lists the connection names already on the page; markup is returned
+// only for the rest.
+func (a *Admin) handleConnectionsJSON(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	u := ctxGetUser(r)
+	known := make(map[string]bool)
+	for _, n := range strings.Split(r.URL.Query().Get("known"), ",") {
+		if n != "" {
+			known[n] = true
+		}
+	}
+
+	var csrf string
+	if c, err := r.Cookie(sessionCookie); err == nil {
+		if token, ok := a.sessions.getCSRF(c.Value); ok {
+			csrf = token
+		}
+	}
+
+	owner := ""
+	if u.Role != "admin" {
+		owner = u.Username // non-admins only ever see their own tokens
+	}
+	out := connectionsJSON{Tokens: []tokenConnsJSON{}, New: []newConnJSON{}}
+	for _, t := range a.state.ClientTokensFor(owner, u.Role == "admin") {
+		infos := a.hub.ConnectedClientsByToken(t.TokenHash)
+		ls := a.hub.LastSeenTime(t.TokenHash)
+		_, class, label := clientStatusBadge(len(infos), !ls.IsZero())
+		tc := tokenConnsJSON{
+			TokenHash:   t.TokenHash,
+			StatusClass: class,
+			StatusLabel: label,
+			Conns:       []string{},
+		}
+		if len(infos) == 0 && !ls.IsZero() {
+			tc.LastSeen = humanTime(ls)
+		}
+		for _, ci := range infos {
+			tc.Conns = append(tc.Conns, ci.Name)
+			if !known[ci.Name] {
+				if html := a.renderConnRow(a.buildConnRow(ci, u, t, csrf)); html != "" {
+					out.New = append(out.New, newConnJSON{
+						TokenHash: t.TokenHash,
+						Name:      ci.Name,
+						HTML:      html,
+					})
+				}
+			}
+		}
+		out.Tokens = append(out.Tokens, tc)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	json.NewEncoder(w).Encode(out)
+}
+
+// renderConnRow renders one connection through the Clients page's conn-row
+// template. Returns "" if rendering fails, which the page treats as nothing to
+// insert rather than showing a broken row.
+func (a *Admin) renderConnRow(row ConnectedClientRow) string {
+	t := a.tmpls["clients"]
+	if t == nil {
+		return ""
+	}
+	var buf bytes.Buffer
+	if err := t.ExecuteTemplate(&buf, "conn-row", row); err != nil {
+		return ""
+	}
+	return buf.String()
+}
+
 // renderJobRow renders one job through the Clients page's job-row template.
 // Returns "" if rendering fails, which the page treats as "nothing to insert"
 // rather than showing a broken row.

@@ -112,32 +112,40 @@
 </div>
 {{end}}
 
+{{- /* conn-row: one live connection and the jobs it is running. Expects a
+       ConnectedClientRow as '.'. Defined on its own so the connections API can
+       render a single connection for a client that has just appeared, using the
+       same markup the page was built from. */ -}}
+{{define "conn-row"}}
+<div class="conn-row{{if .IsRouter}} conn-row-router{{end}}" data-conn-row="{{.Name}}">
+  <span class="conn-name">{{.Name}}</span>
+  {{if .IsRouter}}<span class="badge muted-badge" title="Downstream router — not a client binary">router</span>{{end}}
+  {{if .Version}}<span class="conn-version">{{.Version}}</span>{{end}}
+  <span class="conn-models" title="{{.Models}}">{{.Models}}</span>
+  <span class="conn-capacity" data-conn-capacity="{{.Name}}">{{.InFlight}} / {{.MaxConcurrent}}</span>
+</div>
+{{/* Rendered even when empty: it is the container the page's script drops
+     a job into when one starts, and there is nothing to drop it into if
+     the whole block only exists once a job is already running. */}}
+<div class="conn-jobs" data-conn-jobs="{{.Name}}">
+  {{range .Jobs}}{{template "job-row" .}}{{end}}
+</div>
+{{end}}
+
 {{define "conn-subrow"}}
-{{/* Renders the connection detail sub-row for a connected token.
-     Expects a ClientTokenRow as '.'; uses .CSRFToken for cancel forms. */}}
-{{if .Connections}}
-<tr>
+{{/* Renders the connection detail sub-row for a token.
+     Expects a ClientTokenRow as '.'; uses .CSRFToken for cancel forms.
+     Rendered whether or not the token has connections, for the same reason the
+     jobs container is: it is where a client that connects later gets inserted,
+     and a row that only exists once a client is already connected can never
+     show the first one arriving. Empty, it collapses to nothing via CSS. */}}
+<tr class="conn-subrow">
   <td colspan="4" style="padding:0;">
-    <div class="client-connections">
-      {{range .Connections}}
-      <div class="conn-row{{if .IsRouter}} conn-row-router{{end}}">
-        <span class="conn-name">{{.Name}}</span>
-        {{if .IsRouter}}<span class="badge muted-badge" title="Downstream router — not a client binary">router</span>{{end}}
-        {{if .Version}}<span class="conn-version">{{.Version}}</span>{{end}}
-        <span class="conn-models" title="{{.Models}}">{{.Models}}</span>
-        <span class="conn-capacity" data-conn-capacity="{{.Name}}">{{.InFlight}} / {{.MaxConcurrent}}</span>
-      </div>
-      {{/* Rendered even when empty: it is the container the page's script drops
-           a job into when one starts, and there is nothing to drop it into if
-           the whole block only exists once a job is already running. */}}
-      <div class="conn-jobs" data-conn-jobs="{{.Name}}">
-        {{range .Jobs}}{{template "job-row" .}}{{end}}
-      </div>
-      {{end}}
+    <div class="client-connections" data-token-conns="{{.TokenHash}}">
+      {{range .Connections}}{{template "conn-row" .}}{{end}}
     </div>
   </td>
 </tr>
-{{end}}
 {{end}}
 
 {{define "content"}}
@@ -206,8 +214,8 @@
           {{range .Tokens}}
           <tr>
             <td data-label="Client">{{.Name}} <span class="muted text-mono text-xs">{{.TokenPrefix}}</span></td>
-            <td data-label="Status">{{template "status-badge" dict "Class" .StatusClass "Label" .StatusLabel}}</td>
-            <td data-label="Last seen" class="muted">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
+            <td data-label="Status" data-token-status="{{.TokenHash}}">{{template "status-badge" dict "Class" .StatusClass "Label" .StatusLabel}}</td>
+            <td data-label="Last seen" class="muted" data-token-lastseen="{{.TokenHash}}">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
             <td class="cell-actions">
               <div class="flex gap-1 justify-end items-center">
                 {{if .IsRouter}}
@@ -247,8 +255,8 @@
       {{range .Tokens}}
       <tr>
         <td data-label="Name">{{.Name}} <span class="muted text-mono text-xs">{{.TokenPrefix}}</span></td>
-        <td data-label="Status">{{template "status-badge" dict "Class" .StatusClass "Label" .StatusLabel}}</td>
-        <td data-label="Last seen" class="muted">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
+        <td data-label="Status" data-token-status="{{.TokenHash}}">{{template "status-badge" dict "Class" .StatusClass "Label" .StatusLabel}}</td>
+        <td data-label="Last seen" class="muted" data-token-lastseen="{{.TokenHash}}">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
         <td class="cell-actions">
           <div class="flex gap-1 justify-end items-center">
             {{if .IsRouter}}

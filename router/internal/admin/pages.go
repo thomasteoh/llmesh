@@ -192,6 +192,29 @@ type ClientTokenRow struct {
 	Perf *ClientPerfRow
 }
 
+// buildConnRow assembles one live connection and the jobs it is running. Shared
+// by the Clients page and the connections API so a connection inserted by the
+// page's script carries the same fields, and the same cancel permissions, as one
+// the server rendered.
+func (a *Admin) buildConnRow(ci hub.ConnectedClientInfo, u User, t ClientToken, csrf string) ConnectedClientRow {
+	isAdmin := u.Role == "admin"
+	isTokenOwner := t.Owner == u.Username
+	var jobs []InFlightJobRow
+	for _, rec := range a.hub.InFlightJobsByClientID(ci.ID) {
+		canCancel := isAdmin || rec.Req.Owner == u.Username || isTokenOwner
+		jobs = append(jobs, buildInFlightJobRow(rec, csrf, canCancel))
+	}
+	return ConnectedClientRow{
+		Name:          ci.Name,
+		Version:       ci.Version,
+		IsRouter:      strings.HasPrefix(ci.Version, "router/"),
+		Models:        strings.Join(ci.Models, ", "),
+		InFlight:      ci.InFlight,
+		MaxConcurrent: ci.MaxConcurrent,
+		Jobs:          jobs,
+	}
+}
+
 // buildInFlightJobRow renders one live job for display. Shared by the Clients
 // page and the jobs API so a row inserted by the page's script is built from the
 // same fields, and by the same rules, as one the server rendered — the API hands
@@ -712,27 +735,12 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, r *http.Request, u Use
 					Aliases: modelAliases[m],
 				})
 			}
-			isAdmin := u.Role == "admin"
-			isTokenOwner := t.Owner == u.Username
 			for _, ci := range connInfos {
-				var jobs []InFlightJobRow
-				for _, rec := range a.hub.InFlightJobsByClientID(ci.ID) {
-					canCancel := isAdmin || rec.Req.Owner == u.Username || isTokenOwner
-					jobs = append(jobs, buildInFlightJobRow(rec, bp.CSRFToken, canCancel))
-				}
-				isRouter := strings.HasPrefix(ci.Version, "router/")
-				if isRouter {
+				conn := a.buildConnRow(ci, u, t, bp.CSRFToken)
+				if conn.IsRouter {
 					row.IsRouter = true
 				}
-				row.Connections = append(row.Connections, ConnectedClientRow{
-					Name:          ci.Name,
-					Version:       ci.Version,
-					IsRouter:      isRouter,
-					Models:        strings.Join(ci.Models, ", "),
-					InFlight:      ci.InFlight,
-					MaxConcurrent: ci.MaxConcurrent,
-					Jobs:          jobs,
-				})
+				row.Connections = append(row.Connections, conn)
 			}
 		} else if ls := a.hub.LastSeenTime(t.TokenHash); !ls.IsZero() {
 			row.Status, row.StatusClass, row.StatusLabel = clientStatusBadge(0, true)

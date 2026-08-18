@@ -441,6 +441,67 @@ function initJobStats() {
   });
 }
 
+/* ─── Live connections (clients page) ────────────────────────────
+   Which clients are connected, so one starting or dropping shows without a
+   reload. Separate from the jobs poll and slower, because connecting is a rarer
+   event than a token arriving, and separate from the page render because that
+   also summarises 24 hours of performance per machine — a query per client,
+   over a window far too long to be worth re-reading every few seconds. */
+
+function initConnections() {
+  var container = document.getElementById('groups-container') ||
+                  document.querySelector('[data-token-conns]');
+  if (!container && !document.querySelector('[data-token-status]')) return;
+
+  function knownConns() {
+    return Array.from(document.querySelectorAll('[data-conn-row]'))
+      .map(function(el) { return el.getAttribute('data-conn-row'); });
+  }
+
+  poll(function() {
+    return '/portal/api/connections?known=' + encodeURIComponent(knownConns().join(','));
+  }, 5000, function(data) {
+    if (!data || !data.tokens) return;
+
+    // Insert connections that appeared. Markup comes from the same conn-row
+    // template the page was built from, so there is one definition of it.
+    (data.new || []).forEach(function(c) {
+      var conns = document.querySelector('[data-token-conns="' + cssEscape(c.token_hash) + '"]');
+      if (!conns || conns.querySelector('[data-conn-row="' + cssEscape(c.name) + '"]')) return;
+      conns.insertAdjacentHTML('beforeend', c.html);
+    });
+
+    data.tokens.forEach(function(t) {
+      var live = Object.create(null);
+      t.conns.forEach(function(n) { live[n] = true; });
+
+      var conns = document.querySelector('[data-token-conns="' + cssEscape(t.token_hash) + '"]');
+      if (conns) {
+        // Drop connections that went away, and the jobs container that trails
+        // each one — they are siblings, not nested.
+        conns.querySelectorAll('[data-conn-row]').forEach(function(row) {
+          if (live[row.getAttribute('data-conn-row')]) return;
+          var jobs = conns.querySelector(
+            '[data-conn-jobs="' + cssEscape(row.getAttribute('data-conn-row')) + '"]');
+          if (jobs) jobs.remove();
+          row.remove();
+        });
+      }
+
+      var status = document.querySelector('[data-token-status="' + cssEscape(t.token_hash) + '"]');
+      if (status) {
+        var badge = status.querySelector('.badge');
+        if (badge) {
+          badge.className = 'badge ' + (t.status_class || '');
+          badge.textContent = t.status_label || '';
+        }
+      }
+      var seen = document.querySelector('[data-token-lastseen="' + cssEscape(t.token_hash) + '"]');
+      if (seen) seen.textContent = t.last_seen || '—';
+    });
+  });
+}
+
 /* cssEscape quotes a value for use inside an attribute selector. Client names
    are user-chosen, so they can contain quotes and backslashes. */
 function cssEscape(v) {
@@ -1132,6 +1193,7 @@ function initPage(hash) {
   initUsage();
   initClientGroups();
   initJobStats();
+  initConnections();
 
   // Restore OS download tab selection from localStorage.
   document.querySelectorAll('.tab-btn[data-tab-store]').forEach(function(btn) {
