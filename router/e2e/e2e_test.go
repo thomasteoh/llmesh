@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1911,5 +1912,98 @@ func TestE2E_TranslateStatsVerification(t *testing.T) {
 	}
 	if byUser[0].Requests != 1 {
 		t.Errorf("wrong request count: %d", byUser[0].Requests)
+	}
+}
+
+// A worker that answers a non-streaming request in one shot sends a single chunk
+// carrying both the content and Done — llama.cpp's readBatch and the shim's
+// handleBatch both do exactly this. The router must not discard that content.
+func TestE2E_BatchSingleChunkCarriesContent(t *testing.T) {
+	routerURL, apiKey, clientToken, cleanup := setupTestRouter(t)
+	defer cleanup()
+
+	models := []types.ModelInfo{{Name: "oneshot"}}
+	conn := mockClientSimulator(t, routerURL, clientToken, models, func(reqID string) []types.ChunkMsg {
+		return []types.ChunkMsg{{
+			Type: "chunk", RequestID: reqID,
+			Delta: "hello", Done: true, FinishReason: "stop",
+			Usage: &types.UsageInfo{PromptTokens: 26, CompletionTokens: 16},
+		}}
+	})
+	defer conn.Close()
+	waitForModel(t, routerURL, apiKey, "oneshot")
+
+	body, _ := json.Marshal(map[string]any{
+		"model": "oneshot", "stream": false,
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	resp, err := apiPost(routerURL+"/v1/chat/completions", apiKey, body)
+	if err != nil {
+		t.Fatalf("chat request: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+
+	content, _ := parseOpenAIChatResponse(t, raw)
+	if content != "hello" {
+		t.Errorf("content: got %q, want %q\nbody: %s", content, "hello", raw)
+	}
+}
+
+// The same one-shot chunk over a streaming request must yield the content once,
+// not twice: the terminal SSE chunk carries only finish_reason and usage.
+func TestE2E_StreamSingleChunkEmitsContentOnce(t *testing.T) {
+	routerURL, apiKey, clientToken, cleanup := setupTestRouter(t)
+	defer cleanup()
+
+	models := []types.ModelInfo{{Name: "oneshot-stream"}}
+	conn := mockClientSimulator(t, routerURL, clientToken, models, func(reqID string) []types.ChunkMsg {
+		return []types.ChunkMsg{{
+			Type: "chunk", RequestID: reqID,
+			Delta: "hello", Done: true, FinishReason: "stop",
+			Usage: &types.UsageInfo{PromptTokens: 26, CompletionTokens: 16},
+		}}
+	})
+	defer conn.Close()
+	waitForModel(t, routerURL, apiKey, "oneshot-stream")
+
+	body, _ := json.Marshal(map[string]any{
+		"model": "oneshot-stream", "stream": true,
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	resp, err := apiPost(routerURL+"/v1/chat/completions", apiKey, body)
+	if err != nil {
+		t.Fatalf("chat request: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+
+	var content string
+	var finishReasons int
+	for _, line := range strings.Split(string(raw), "\n") {
+		data, ok := strings.CutPrefix(line, "data: ")
+		if !ok || data == "[DONE]" {
+			continue
+		}
+		var chunk struct {
+			Choices []struct {
+				Delta        struct{ Content string } `json:"delta"`
+				FinishReason *string                  `json:"finish_reason"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil || len(chunk.Choices) == 0 {
+			continue
+		}
+		content += chunk.Choices[0].Delta.Content
+		if chunk.Choices[0].FinishReason != nil {
+			finishReasons++
+		}
+	}
+
+	if content != "hello" {
+		t.Errorf("content: got %q, want %q\nbody: %s", content, "hello", raw)
+	}
+	if finishReasons != 1 {
+		t.Errorf("finish_reason appeared %d times, want 1\nbody: %s", finishReasons, raw)
 	}
 }
