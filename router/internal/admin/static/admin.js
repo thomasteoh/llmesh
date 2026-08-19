@@ -408,12 +408,15 @@ function initJobStats() {
     var live = Object.create(null);
     data.jobs.forEach(function(j) {
       live[j.id] = true;
-      var row = document.querySelector('[data-job-id="' + j.id + '"]');
+      var row = document.querySelector('[data-job-id="' + cssEscape(j.id) + '"]');
       if (!row) {
         // A job that started after this page rendered. The server sends it as
         // markup from the same template the page used, so there is one
         // definition of a job row rather than a second one living here.
         if (!j.html) return;
+        // j.conn is the connection's ID, so this document-wide lookup lands on
+        // exactly one container. Keyed on the name it would land on whichever
+        // same-named machine happened to render first.
         var container = document.querySelector('[data-conn-jobs="' + cssEscape(j.conn) + '"]');
         if (!container) return;
         container.insertAdjacentHTML('beforeend', j.html);
@@ -467,7 +470,7 @@ function initConnections() {
     // template the page was built from, so there is one definition of it.
     (data.new || []).forEach(function(c) {
       var conns = document.querySelector('[data-token-conns="' + cssEscape(c.token_hash) + '"]');
-      if (!conns || conns.querySelector('[data-conn-row="' + cssEscape(c.name) + '"]')) return;
+      if (!conns || conns.querySelector('[data-conn-row="' + cssEscape(c.id) + '"]')) return;
       conns.insertAdjacentHTML('beforeend', c.html);
     });
 

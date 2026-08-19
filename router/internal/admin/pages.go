@@ -128,6 +128,10 @@ type ClientTokensPage struct {
 }
 
 type ConnectedClientRow struct {
+	// ID identifies this connection in the rendered markup. Name is what the
+	// page shows, but it is only unique within an owner, so the page's script
+	// keys everything it patches on ID instead.
+	ID            string
 	Name          string
 	Version       string
 	IsRouter      bool // true when Version starts with "router/" (downstream router, not a genuine client)
@@ -205,6 +209,7 @@ func (a *Admin) buildConnRow(ci hub.ConnectedClientInfo, u User, t ClientToken, 
 		jobs = append(jobs, buildInFlightJobRow(rec, csrf, canCancel))
 	}
 	return ConnectedClientRow{
+		ID:            ci.ID,
 		Name:          ci.Name,
 		Version:       ci.Version,
 		IsRouter:      strings.HasPrefix(ci.Version, "router/"),

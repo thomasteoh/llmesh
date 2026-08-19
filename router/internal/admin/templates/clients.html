@@ -117,17 +117,17 @@
        render a single connection for a client that has just appeared, using the
        same markup the page was built from. */ -}}
 {{define "conn-row"}}
-<div class="conn-row{{if .IsRouter}} conn-row-router{{end}}" data-conn-row="{{.Name}}">
+<div class="conn-row{{if .IsRouter}} conn-row-router{{end}}" data-conn-row="{{.ID}}">
   <span class="conn-name">{{.Name}}</span>
   {{if .IsRouter}}<span class="badge muted-badge" title="Downstream router — not a client binary">router</span>{{end}}
   {{if .Version}}<span class="conn-version">{{.Version}}</span>{{end}}
   <span class="conn-models" title="{{.Models}}">{{.Models}}</span>
-  <span class="conn-capacity" data-conn-capacity="{{.Name}}">{{.InFlight}} / {{.MaxConcurrent}}</span>
+  <span class="conn-capacity" data-conn-capacity="{{.ID}}">{{.InFlight}} / {{.MaxConcurrent}}</span>
 </div>
 {{/* Rendered even when empty: it is the container the page's script drops
      a job into when one starts, and there is nothing to drop it into if
      the whole block only exists once a job is already running. */}}
-<div class="conn-jobs" data-conn-jobs="{{.Name}}">
+<div class="conn-jobs" data-conn-jobs="{{.ID}}">
   {{range .Jobs}}{{template "job-row" .}}{{end}}
 </div>
 {{end}}
@@ -138,11 +138,13 @@
      Rendered whether or not the token has connections, for the same reason the
      jobs container is: it is where a client that connects later gets inserted,
      and a row that only exists once a client is already connected can never
-     show the first one arriving. Empty, it collapses to nothing via CSS. */}}
+     show the first one arriving. Empty, it collapses to nothing via CSS —
+     which is why the div below is closed with no whitespace inside it: a
+     newline is a text node, and a text node stops :empty matching. */}}
 <tr class="conn-subrow">
   <td colspan="4" style="padding:0;">
     <div class="client-connections" data-token-conns="{{.TokenHash}}">
-      {{range .Connections}}{{template "conn-row" .}}{{end}}
+      {{- range .Connections}}{{template "conn-row" .}}{{end -}}
     </div>
   </td>
 </tr>
