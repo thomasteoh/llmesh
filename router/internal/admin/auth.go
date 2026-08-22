@@ -115,6 +115,15 @@ func (a *Admin) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u, ok := a.sessionUser(r)
 		if !ok {
+			// A script-issued request follows redirects transparently, so a 302
+			// here would arrive as a perfectly good 200 holding the login page
+			// and the action would look like it worked while doing nothing.
+			// Answer those with a status the page cannot mistake for success.
+			if r.Header.Get(portalFetchHeader) != "" {
+				w.Header().Set("X-Portal-Location", "/portal/login")
+				http.Error(w, "session expired", http.StatusUnauthorized)
+				return
+			}
 			http.Redirect(w, r, "/portal/login", http.StatusFound)
 			return
 		}

@@ -118,13 +118,22 @@ function toggleDocsNav() {
 var _pollers = [];
 
 function poll(url, intervalMs, onData) {
-  var timer = null;
+  var timer = null, busy = false, disposed = false;
   function resolveUrl() { return typeof url === 'function' ? url() : url; }
   function tick() {
+    // One request at a time. setInterval does not wait, so a response slower
+    // than the interval would otherwise overlap the next and the two could be
+    // applied out of order, reviving rows the later one had already dropped.
+    if (busy || disposed) return;
+    busy = true;
     fetch(resolveUrl())
       .then(function(r) { if (!r.ok) throw new Error('non-ok'); return r.json(); })
-      .then(onData)
-      .catch(function() {});
+      // A response can land after the content it was written against has been
+      // swapped out. Clearing the interval does not cancel a request already in
+      // flight, so the callback has to check for itself.
+      .then(function(d) { if (!disposed) onData(d); })
+      .catch(function() {})
+      .then(function() { busy = false; });
   }
   function start() { if (!timer) { tick(); timer = setInterval(tick, intervalMs); } }
   function stop() { if (timer) { clearInterval(timer); timer = null; } }
@@ -136,6 +145,7 @@ function poll(url, intervalMs, onData) {
   var handle = {
     tick: tick, start: start, stop: stop,
     dispose: function() {
+      disposed = true;
       stop();
       document.removeEventListener('visibilitychange', onVisibility);
     }
@@ -408,12 +418,15 @@ function initJobStats() {
     var live = Object.create(null);
     data.jobs.forEach(function(j) {
       live[j.id] = true;
-      var row = document.querySelector('[data-job-id="' + j.id + '"]');
+      var row = document.querySelector('[data-job-id="' + cssEscape(j.id) + '"]');
       if (!row) {
         // A job that started after this page rendered. The server sends it as
         // markup from the same template the page used, so there is one
         // definition of a job row rather than a second one living here.
         if (!j.html) return;
+        // j.conn is the connection's ID, so this document-wide lookup lands on
+        // exactly one container. Keyed on the name it would land on whichever
+        // same-named machine happened to render first.
         var container = document.querySelector('[data-conn-jobs="' + cssEscape(j.conn) + '"]');
         if (!container) return;
         container.insertAdjacentHTML('beforeend', j.html);
@@ -467,7 +480,7 @@ function initConnections() {
     // template the page was built from, so there is one definition of it.
     (data.new || []).forEach(function(c) {
       var conns = document.querySelector('[data-token-conns="' + cssEscape(c.token_hash) + '"]');
-      if (!conns || conns.querySelector('[data-conn-row="' + cssEscape(c.name) + '"]')) return;
+      if (!conns || conns.querySelector('[data-conn-row="' + cssEscape(c.id) + '"]')) return;
       conns.insertAdjacentHTML('beforeend', c.html);
     });
 
@@ -1143,18 +1156,26 @@ function submitAction(form) {
     credentials: 'same-origin',
     redirect: 'follow'
   }).then(function(r) {
-    if (!r.ok && r.status !== 204) throw new Error('non-ok');
+    if (!r.ok && r.status !== 204) throw new Error('action failed');
     // Several actions finish somewhere other than where they started, and some
     // carry a #tab the page has to re-select.
-    var dest = r.headers.get('X-Portal-Location') || window.location.pathname;
+    return r.headers.get('X-Portal-Location') || window.location.pathname;
+  }, function() {
+    // Only this branch means the action did not go through. Re-run it as a
+    // plain form post so the browser shows whatever the server has to say,
+    // including a login page if the session expired underneath us.
+    form.submit();
+    return null;
+  }).then(function(dest) {
+    if (dest === null) return; // already resubmitted
     if (stripHash(dest) !== stripHash(window.location.pathname + window.location.search)) {
       window.location.href = dest;
       return;
     }
-    return swapContent(dest);
-  }).catch(function() {
-    form.removeAttribute('data-enhanced');
-    form.submit();
+    // Past this point the action has already been applied. If refreshing the
+    // content fails, reload — never re-post, or a failed refresh turns one
+    // "create key" into two.
+    return swapContent(dest).catch(function() { window.location.href = dest; });
   });
 }
 

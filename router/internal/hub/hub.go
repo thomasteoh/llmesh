@@ -1547,12 +1547,26 @@ func (h *Hub) ConnectedClientsByToken(token string) []ConnectedClientInfo {
 			})
 		}
 	}
+	// One token can hold several connections, so this is a list whose order the
+	// page renders in. Map iteration would reshuffle it on every render; sort so
+	// a reload does not appear to move machines around.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].ID < out[j].ID
+	})
 	return out
 }
 
 // ConnectionLoad is one connected client's live slot usage, without anything
 // that identifies who is behind it beyond the owner the caller is filtered on.
 type ConnectionLoad struct {
+	// ID is the connection's unique identity. Name is only unique within an
+	// owner (client_tokens is UNIQUE(owner, name)) and not even that while a
+	// reconnecting client's old socket is still being reaped, so anything
+	// addressing one connection out of many has to key on this.
+	ID            string
 	Name          string
 	Owner         string
 	InFlight      int
@@ -1571,12 +1585,21 @@ func (h *Hub) ConnectionsLoad() []ConnectionLoad {
 			continue // connected but not yet registered
 		}
 		out = append(out, ConnectionLoad{
+			ID:            c.ID,
 			Name:          c.Name,
 			Owner:         c.Owner,
 			InFlight:      int(c.InFlight()),
 			MaxConcurrent: c.MaxConcurrent,
 		})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	// Name ties are real (two machines on one token, or a reconnect racing the
+	// reap of its own dead socket), so break them on ID to keep the order stable
+	// between polls rather than letting map iteration decide.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].ID < out[j].ID
+	})
 	return out
 }

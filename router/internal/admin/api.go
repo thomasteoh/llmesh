@@ -156,7 +156,9 @@ type jobStatJSON struct {
 	TTFTMs          int64  `json:"ttft_ms,omitempty"`        // time-to-first-token in ms
 	FirstChunkAtISO string `json:"first_chunk_at,omitempty"` // RFC3339
 	// Conn is the connection serving this job, matching the data-conn-jobs
-	// attribute on the container it belongs in.
+	// attribute on the container it belongs in. The connection's ID, not its
+	// name: names repeat across owners, and a job inserted under a same-named
+	// machine belonging to someone else is worse than one that fails to appear.
 	Conn string `json:"conn"`
 	// HTML is the job rendered through the same template the page used, so a job
 	// that starts after the page loaded is inserted rather than reconstructed.
@@ -218,7 +220,7 @@ func (a *Admin) handleJobsJSON(w http.ResponseWriter, r *http.Request) {
 			DeltaCount:      int64(row.DeltaCount),
 			TTFTMs:          int64(row.TTFTMs),
 			FirstChunkAtISO: row.FirstChunkAtISO,
-			Conn:            rec.ClientName,
+			Conn:            rec.ClientID,
 		}
 		if !known[row.ID] {
 			stat.HTML = a.renderJobRow(row)
@@ -231,7 +233,7 @@ func (a *Admin) handleJobsJSON(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		out.Connections = append(out.Connections, connCapacityJSON{
-			Conn:          c.Name,
+			Conn:          c.ID,
 			InFlight:      c.InFlight,
 			MaxConcurrent: c.MaxConcurrent,
 		})
@@ -246,17 +248,20 @@ func (a *Admin) handleJobsJSON(w http.ResponseWriter, r *http.Request) {
 
 // tokenConnsJSON is one client token's live connection state.
 type tokenConnsJSON struct {
-	TokenHash   string   `json:"token_hash"`
-	StatusClass string   `json:"status_class"`
-	StatusLabel string   `json:"status_label"`
-	LastSeen    string   `json:"last_seen"`
-	Conns       []string `json:"conns"` // names currently connected, in display order
+	TokenHash   string `json:"token_hash"`
+	StatusClass string `json:"status_class"`
+	StatusLabel string `json:"status_label"`
+	LastSeen    string `json:"last_seen"`
+	// Conns holds the IDs currently connected, in display order. IDs rather
+	// than names because the page uses this as the set of connections still
+	// alive, and a name shared by two machines cannot say which one dropped.
+	Conns []string `json:"conns"`
 }
 
 // newConnJSON is a connection the page is not showing yet, with its markup.
 type newConnJSON struct {
 	TokenHash string `json:"token_hash"`
-	Name      string `json:"name"`
+	ID        string `json:"id"`
 	HTML      string `json:"html"`
 }
 
@@ -273,8 +278,10 @@ type connectionsJSON struct {
 // costs a query per client and describes a window far too long to be worth
 // re-reading every few seconds, so none of that is here.
 //
-// `known` lists the connection names already on the page; markup is returned
-// only for the rest.
+// `known` lists the connection IDs already on the page; markup is returned only
+// for the rest. Keyed on ID because client token names are only unique within an
+// owner, so a name-keyed set would suppress the markup for a second owner's
+// same-named machine and leave it invisible until a manual reload.
 func (a *Admin) handleConnectionsJSON(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -314,12 +321,12 @@ func (a *Admin) handleConnectionsJSON(w http.ResponseWriter, r *http.Request) {
 			tc.LastSeen = humanTime(ls)
 		}
 		for _, ci := range infos {
-			tc.Conns = append(tc.Conns, ci.Name)
-			if !known[ci.Name] {
+			tc.Conns = append(tc.Conns, ci.ID)
+			if !known[ci.ID] {
 				if html := a.renderConnRow(a.buildConnRow(ci, u, t, csrf)); html != "" {
 					out.New = append(out.New, newConnJSON{
 						TokenHash: t.TokenHash,
-						Name:      ci.Name,
+						ID:        ci.ID,
 						HTML:      html,
 					})
 				}
