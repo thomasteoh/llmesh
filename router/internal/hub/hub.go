@@ -1549,3 +1549,34 @@ func (h *Hub) ConnectedClientsByToken(token string) []ConnectedClientInfo {
 	}
 	return out
 }
+
+// ConnectionLoad is one connected client's live slot usage, without anything
+// that identifies who is behind it beyond the owner the caller is filtered on.
+type ConnectionLoad struct {
+	Name          string
+	Owner         string
+	InFlight      int
+	MaxConcurrent int
+}
+
+// ConnectionsLoad reports current slot usage per connected client, for the
+// portal's live capacity display. Read under one lock so a client's in-flight
+// count cannot be paired with a concurrency limit it no longer has.
+func (h *Hub) ConnectionsLoad() []ConnectionLoad {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	out := make([]ConnectionLoad, 0, len(h.clients))
+	for _, c := range h.clients {
+		if c.Models == nil {
+			continue // connected but not yet registered
+		}
+		out = append(out, ConnectionLoad{
+			Name:          c.Name,
+			Owner:         c.Owner,
+			InFlight:      int(c.InFlight()),
+			MaxConcurrent: c.MaxConcurrent,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}

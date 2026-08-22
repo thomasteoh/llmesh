@@ -319,6 +319,7 @@ func (a *Admin) registerRoutes() {
 
 	// Jobs JSON API — live stats for in-flight jobs
 	mux.HandleFunc("/portal/api/jobs", a.requireAuth(a.handleJobsJSON))
+	mux.HandleFunc("/portal/api/connections", a.requireAuth(a.handleConnectionsJSON))
 
 	// Usage JSON API — time-series token usage (members see their own only)
 	mux.HandleFunc("/portal/api/usage", a.requireAuth(a.handleUsageJSON))
@@ -365,6 +366,30 @@ func (a *Admin) render(w http.ResponseWriter, name string, data any) {
 
 func (a *Admin) renderStandalone(w http.ResponseWriter, name string, data any) {
 	a.render(w, name, data)
+}
+
+// portalFetchHeader marks a portal action submitted by the page's own script
+// rather than by a browser form navigation.
+const portalFetchHeader = "X-Portal-Fetch"
+
+// redirectOrRefresh completes a portal action.
+//
+// A browser form post gets the redirect it has always got, so every page keeps
+// working with scripting disabled — the forms stay real forms and this stays a
+// real POST-redirect-GET. A script-submitted post instead gets 204 and the
+// destination in a header, and the page pulls just the content it needs rather
+// than reloading the document, its stylesheet, and its scripts to show one new
+// table row.
+//
+// The destination matters: several actions finish somewhere other than where
+// they started, and some carry a #tab the page must re-select.
+func redirectOrRefresh(w http.ResponseWriter, r *http.Request, url string) {
+	if r.Header.Get(portalFetchHeader) == "" {
+		http.Redirect(w, r, url, http.StatusFound)
+		return
+	}
+	w.Header().Set("X-Portal-Location", url)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // postWithCSRF returns an http.HandlerFunc that only accepts POST requests

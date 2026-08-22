@@ -11,6 +11,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 	"llmesh/pkg/types"
+	"llmesh/router/internal/hub"
 	"llmesh/router/internal/stats"
 )
 
@@ -153,6 +154,7 @@ type InFlightJobRow struct {
 	StatsStr        string // pre-rendered static stats for initial display
 	Phase           string // "processing" | "generating"
 	CanCancel       bool
+	CSRFToken       string // for the cancel form when this row is rendered on its own
 }
 
 // QueuedJobRow is a single queued (waiting) job for display on the dashboard.
@@ -188,6 +190,88 @@ type ClientTokenRow struct {
 	// Perf is this machine's recent inference performance, or nil when it has
 	// served no requests in the window.
 	Perf *ClientPerfRow
+}
+
+// buildConnRow assembles one live connection and the jobs it is running. Shared
+// by the Clients page and the connections API so a connection inserted by the
+// page's script carries the same fields, and the same cancel permissions, as one
+// the server rendered.
+func (a *Admin) buildConnRow(ci hub.ConnectedClientInfo, u User, t ClientToken, csrf string) ConnectedClientRow {
+	isAdmin := u.Role == "admin"
+	isTokenOwner := t.Owner == u.Username
+	var jobs []InFlightJobRow
+	for _, rec := range a.hub.InFlightJobsByClientID(ci.ID) {
+		canCancel := isAdmin || rec.Req.Owner == u.Username || isTokenOwner
+		jobs = append(jobs, buildInFlightJobRow(rec, csrf, canCancel))
+	}
+	return ConnectedClientRow{
+		Name:          ci.Name,
+		Version:       ci.Version,
+		IsRouter:      strings.HasPrefix(ci.Version, "router/"),
+		Models:        strings.Join(ci.Models, ", "),
+		InFlight:      ci.InFlight,
+		MaxConcurrent: ci.MaxConcurrent,
+		Jobs:          jobs,
+	}
+}
+
+// buildInFlightJobRow renders one live job for display. Shared by the Clients
+// page and the jobs API so a row inserted by the page's script is built from the
+// same fields, and by the same rules, as one the server rendered — the API hands
+// back this row run through the job-row template rather than letting the script
+// assemble its own markup.
+func buildInFlightJobRow(rec hub.InFlightRecord, csrf string, canCancel bool) InFlightJobRow {
+	phase := "processing"
+	var firstChunkAtISO string
+	var ttftMs int
+	if fc := rec.FirstChunkAt(); fc != nil {
+		phase = "generating"
+		firstChunkAtISO = fc.UTC().Format(time.RFC3339)
+	}
+	// Output means generating either way, but only a streaming request
+	// has a TTFT to show; see hub.InFlightRecord.FirstTokenAt.
+	if ft := rec.FirstTokenAt(); ft != nil {
+		ttftMs = int(ft.Sub(rec.DispatchedAt).Milliseconds())
+	}
+	var statParts []string
+	if ttftMs > 0 {
+		statParts = append(statParts, fmt.Sprintf("ttft %.1fs", float64(ttftMs)/1000))
+	}
+	if dc := rec.DeltaCount(); dc > 0 {
+		statParts = append(statParts, fmt.Sprintf("%d tok", dc))
+	}
+	if rec.Req.WordCount > 0 {
+		statParts = append(statParts, fmt.Sprintf("%dw in", rec.Req.WordCount))
+	}
+	statsStr := ""
+	if len(statParts) > 0 {
+		statsStr = " · " + strings.Join(statParts, " · ")
+	}
+	priority := ""
+	switch rec.Req.Priority {
+	case types.PriorityHigh:
+		priority = "high"
+	case types.PriorityLow:
+		priority = "low"
+	}
+	return InFlightJobRow{
+		ID:              rec.Req.ID,
+		Owner:           rec.Req.Owner,
+		APIKeyLabel:     rec.Req.APIKeyLabel,
+		Model:           rec.Req.Model,
+		EnqueuedAt:      humanTime(rec.Req.EnqueuedAt),
+		DispatchedAtISO: rec.DispatchedAt.UTC().Format(time.RFC3339),
+		FirstChunkAtISO: firstChunkAtISO,
+		TTFTMs:          ttftMs,
+		DeltaCount:      int(rec.DeltaCount()),
+		WordCount:       rec.Req.WordCount,
+		Priority:        priority,
+		Attempts:        rec.Req.Attempts,
+		StatsStr:        statsStr,
+		Phase:           phase,
+		CanCancel:       canCancel,
+		CSRFToken:       csrf,
+	}
 }
 
 // clientPerfWindow is how far back the Clients page summarises each machine's
@@ -597,7 +681,7 @@ func (a *Admin) handleAPIKeyRevoke(w http.ResponseWriter, r *http.Request) {
 	} else {
 		a.state.RecordAudit(u.Username, "api_key.revoke", target, a.clientIP(r))
 	}
-	http.Redirect(w, r, "/portal/api-keys", http.StatusFound)
+	redirectOrRefresh(w, r, "/portal/api-keys")
 }
 
 // --- Clients ---
@@ -651,75 +735,12 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, r *http.Request, u Use
 					Aliases: modelAliases[m],
 				})
 			}
-			isAdmin := u.Role == "admin"
-			isTokenOwner := t.Owner == u.Username
 			for _, ci := range connInfos {
-				var jobs []InFlightJobRow
-				for _, rec := range a.hub.InFlightJobsByClientID(ci.ID) {
-					phase := "processing"
-					var firstChunkAtISO string
-					var ttftMs int
-					if fc := rec.FirstChunkAt(); fc != nil {
-						phase = "generating"
-						firstChunkAtISO = fc.UTC().Format(time.RFC3339)
-					}
-					// Output means generating either way, but only a streaming request
-					// has a TTFT to show; see hub.InFlightRecord.FirstTokenAt.
-					if ft := rec.FirstTokenAt(); ft != nil {
-						ttftMs = int(ft.Sub(rec.DispatchedAt).Milliseconds())
-					}
-					var statParts []string
-					if ttftMs > 0 {
-						statParts = append(statParts, fmt.Sprintf("ttft %.1fs", float64(ttftMs)/1000))
-					}
-					if dc := rec.DeltaCount(); dc > 0 {
-						statParts = append(statParts, fmt.Sprintf("%d tok", dc))
-					}
-					if rec.Req.WordCount > 0 {
-						statParts = append(statParts, fmt.Sprintf("%dw in", rec.Req.WordCount))
-					}
-					statsStr := ""
-					if len(statParts) > 0 {
-						statsStr = " · " + strings.Join(statParts, " · ")
-					}
-					priority := ""
-					switch rec.Req.Priority {
-					case types.PriorityHigh:
-						priority = "high"
-					case types.PriorityLow:
-						priority = "low"
-					}
-					jobs = append(jobs, InFlightJobRow{
-						ID:              rec.Req.ID,
-						Owner:           rec.Req.Owner,
-						APIKeyLabel:     rec.Req.APIKeyLabel,
-						Model:           rec.Req.Model,
-						EnqueuedAt:      humanTime(rec.Req.EnqueuedAt),
-						DispatchedAtISO: rec.DispatchedAt.UTC().Format(time.RFC3339),
-						FirstChunkAtISO: firstChunkAtISO,
-						TTFTMs:          ttftMs,
-						DeltaCount:      int(rec.DeltaCount()),
-						WordCount:       rec.Req.WordCount,
-						Priority:        priority,
-						Attempts:        rec.Req.Attempts,
-						StatsStr:        statsStr,
-						Phase:           phase,
-						CanCancel:       isAdmin || rec.Req.Owner == u.Username || isTokenOwner,
-					})
-				}
-				isRouter := strings.HasPrefix(ci.Version, "router/")
-				if isRouter {
+				conn := a.buildConnRow(ci, u, t, bp.CSRFToken)
+				if conn.IsRouter {
 					row.IsRouter = true
 				}
-				row.Connections = append(row.Connections, ConnectedClientRow{
-					Name:          ci.Name,
-					Version:       ci.Version,
-					IsRouter:      isRouter,
-					Models:        strings.Join(ci.Models, ", "),
-					InFlight:      ci.InFlight,
-					MaxConcurrent: ci.MaxConcurrent,
-					Jobs:          jobs,
-				})
+				row.Connections = append(row.Connections, conn)
 			}
 		} else if ls := a.hub.LastSeenTime(t.TokenHash); !ls.IsZero() {
 			row.Status, row.StatusClass, row.StatusLabel = clientStatusBadge(0, true)
@@ -822,7 +843,7 @@ func (a *Admin) handleClientTokenRevoke(w http.ResponseWriter, r *http.Request) 
 		a.hub.CloseByToken(tokenHash)
 		a.state.RecordAudit(u.Username, "client_token.revoke", target, a.clientIP(r))
 	}
-	http.Redirect(w, r, "/portal/clients", http.StatusFound)
+	redirectOrRefresh(w, r, "/portal/clients")
 }
 
 func (a *Admin) handleClientUpdate(w http.ResponseWriter, r *http.Request) {
@@ -847,7 +868,7 @@ func (a *Admin) handleClientUpdate(w http.ResponseWriter, r *http.Request) {
 	} else {
 		a.log.Info("admin: triggered client update", "actor", u.Username, "clients", n)
 	}
-	http.Redirect(w, r, "/portal/clients", http.StatusFound)
+	redirectOrRefresh(w, r, "/portal/clients")
 }
 
 func (a *Admin) handleClientTokenOwnerSlots(w http.ResponseWriter, r *http.Request) {
@@ -874,11 +895,11 @@ func (a *Admin) handleClientTokenOwnerSlots(w http.ResponseWriter, r *http.Reque
 	}
 	if err := a.state.SetClientTokenOwnerSlots(u.Username, tokenHash, model, slots, u.Role == "admin"); err != nil {
 		a.log.Warn("admin: owner slots update rejected", "actor", u.Username, "error", err)
-		http.Redirect(w, r, "/portal/clients", http.StatusFound)
+		redirectOrRefresh(w, r, "/portal/clients")
 		return
 	}
 	a.hub.SetClientOwnerSlots(tokenHash, model, slots)
-	http.Redirect(w, r, "/portal/clients", http.StatusFound)
+	redirectOrRefresh(w, r, "/portal/clients")
 }
 
 // handleClientTokenConfig serves a pre-filled config.yaml for the given token.
@@ -986,7 +1007,7 @@ func (a *Admin) handleModelAliasCreate(w http.ResponseWriter, r *http.Request) {
 		a.state.RecordAudit(u.Username, "alias.create",
 			fmt.Sprintf("%s=%s@%d", alias, model, tier), a.clientIP(r))
 	}
-	http.Redirect(w, r, "/portal/", http.StatusFound)
+	redirectOrRefresh(w, r, "/portal/")
 }
 
 // handleModelAliasReorder promotes or demotes one target within its alias's
@@ -1019,7 +1040,7 @@ func (a *Admin) handleModelAliasReorder(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	a.state.RecordAudit(u.Username, "alias.reorder", alias+"="+model+" "+dir, a.clientIP(r))
-	http.Redirect(w, r, "/portal/", http.StatusFound)
+	redirectOrRefresh(w, r, "/portal/")
 }
 
 func (a *Admin) handleModelAliasDelete(w http.ResponseWriter, r *http.Request) {
@@ -1046,10 +1067,10 @@ func (a *Admin) handleModelAliasDelete(w http.ResponseWriter, r *http.Request) {
 	// Redirect back to the originating page (dashboard or clients)
 	ref := r.FormValue("ref")
 	if ref == "clients" {
-		http.Redirect(w, r, "/portal/clients", http.StatusFound)
+		redirectOrRefresh(w, r, "/portal/clients")
 		return
 	}
-	http.Redirect(w, r, "/portal/", http.StatusFound)
+	redirectOrRefresh(w, r, "/portal/")
 }
 
 // --- Help ---
@@ -1192,7 +1213,7 @@ func (a *Admin) handleUpstreamAdd(w http.ResponseWriter, r *http.Request) {
 	if a.upstreamReload != nil {
 		a.upstreamReload()
 	}
-	http.Redirect(w, r, "/portal/settings#tab-upstreams", http.StatusFound)
+	redirectOrRefresh(w, r, "/portal/settings#tab-upstreams")
 }
 
 func (a *Admin) handleUpstreamRemove(w http.ResponseWriter, r *http.Request) {
@@ -1211,7 +1232,7 @@ func (a *Admin) handleUpstreamRemove(w http.ResponseWriter, r *http.Request) {
 	if a.upstreamReload != nil {
 		a.upstreamReload()
 	}
-	http.Redirect(w, r, "/portal/settings#tab-upstreams", http.StatusFound)
+	redirectOrRefresh(w, r, "/portal/settings#tab-upstreams")
 }
 
 // optFormKeys lists the request-optimization settings keys in the order they
@@ -1239,7 +1260,7 @@ func (a *Admin) handleOptimizationUpdate(w http.ResponseWriter, r *http.Request)
 	}
 	a.state.RecordAudit(u.Username, "settings.optimization", "", a.clientIP(r))
 	a.log.Info("admin: request-optimization settings updated", "actor", u.Username)
-	http.Redirect(w, r, "/portal/settings#tab-optimization", http.StatusFound)
+	redirectOrRefresh(w, r, "/portal/settings#tab-optimization")
 }
 
 // hostPattern matches a bare hostname or IP with an optional port. It rejects a
@@ -1370,7 +1391,7 @@ func (a *Admin) handleUserDisable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.state.RecordAudit(u.Username, "user.disable", target, a.clientIP(r))
-	http.Redirect(w, r, "/portal/settings", http.StatusFound)
+	redirectOrRefresh(w, r, "/portal/settings")
 }
 
 func (a *Admin) handleUserEnable(w http.ResponseWriter, r *http.Request) {
@@ -1385,7 +1406,7 @@ func (a *Admin) handleUserEnable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.state.RecordAudit(u.Username, "user.enable", target, a.clientIP(r))
-	http.Redirect(w, r, "/portal/settings", http.StatusFound)
+	redirectOrRefresh(w, r, "/portal/settings")
 }
 
 func (a *Admin) handleUserPromote(w http.ResponseWriter, r *http.Request) {
@@ -1400,7 +1421,7 @@ func (a *Admin) handleUserPromote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.state.RecordAudit(u.Username, "user.promote", target, a.clientIP(r))
-	http.Redirect(w, r, "/portal/settings", http.StatusFound)
+	redirectOrRefresh(w, r, "/portal/settings")
 }
 
 func (a *Admin) handleUserDemote(w http.ResponseWriter, r *http.Request) {
@@ -1415,7 +1436,7 @@ func (a *Admin) handleUserDemote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.state.RecordAudit(u.Username, "user.demote", target, a.clientIP(r))
-	http.Redirect(w, r, "/portal/settings", http.StatusFound)
+	redirectOrRefresh(w, r, "/portal/settings")
 }
 
 func (a *Admin) handleUserResetPassword(w http.ResponseWriter, r *http.Request) {
@@ -1498,7 +1519,7 @@ func (a *Admin) handleUserIsolation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.state.RecordAudit(u.Username, "user.isolation", fmt.Sprintf("%s %s=%t", target, field, enabled), a.clientIP(r))
-	http.Redirect(w, r, "/portal/settings#tab-users", http.StatusFound)
+	redirectOrRefresh(w, r, "/portal/settings#tab-users")
 }
 
 // statsRows converts stats.Stats rows to StatRow slices sorted by total tokens desc.
@@ -1543,7 +1564,7 @@ func (a *Admin) handleAPIKeyPriority(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not update priority: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	http.Redirect(w, r, "/portal/api-keys", http.StatusFound)
+	redirectOrRefresh(w, r, "/portal/api-keys")
 }
 
 // --- API Key max concurrent ---
@@ -1568,7 +1589,7 @@ func (a *Admin) handleAPIKeyMaxConcurrent(w http.ResponseWriter, r *http.Request
 		http.Error(w, "could not update max_concurrent: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	http.Redirect(w, r, "/portal/api-keys", http.StatusFound)
+	redirectOrRefresh(w, r, "/portal/api-keys")
 }
 
 // buildClientGroups groups ClientTokenRows by owner, sorted: live users first, then alpha.
@@ -1615,7 +1636,7 @@ func (a *Admin) handleJobCancel(w http.ResponseWriter, r *http.Request) {
 		}
 		a.hub.CancelRequest(reqID)
 	}
-	http.Redirect(w, r, "/portal/clients", http.StatusFound)
+	redirectOrRefresh(w, r, "/portal/clients")
 }
 
 func (a *Admin) handleQueueCancel(w http.ResponseWriter, r *http.Request) {
@@ -1624,7 +1645,7 @@ func (a *Admin) handleQueueCancel(w http.ResponseWriter, r *http.Request) {
 	if a.queue != nil {
 		a.queue.PopByID(reqID)
 	}
-	http.Redirect(w, r, "/portal/", http.StatusFound)
+	redirectOrRefresh(w, r, "/portal/")
 }
 
 // priorityName converts a types.Priority value to its display string.

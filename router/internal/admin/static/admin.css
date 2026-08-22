@@ -883,6 +883,12 @@ label { font-size: 12.5px; font-weight: 600; color: var(--text-muted); display: 
   border-top: 1px solid var(--border);
   padding: 8px 14px;
 }
+/* The connections row is always rendered so a client connecting later has
+   somewhere to be inserted. With nothing in it there is nothing to show, and
+   its padding and border would otherwise read as an empty band under every
+   disconnected token. */
+.client-connections:empty { display: none; }
+.conn-subrow:has(.client-connections:empty) { display: none; }
 .conn-row {
   display: flex;
   align-items: center;
