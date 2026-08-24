@@ -899,7 +899,7 @@ label { font-size: 12.5px; font-weight: 600; color: var(--text-muted); display: 
 }
 .conn-row-router { opacity: .8; }
 .conn-name { font-weight: 600; }
-.conn-version, .conn-models, .conn-capacity { color: var(--text-muted); }
+.conn-version, .conn-capacity { color: var(--text-muted); }
 .conn-jobs { width: 100%; padding-left: 12px; }
 
 /* Performance tiles sit inside a card, which already provides the bottom gap. */
@@ -938,27 +938,37 @@ label { font-size: 12.5px; font-weight: 600; color: var(--text-muted); display: 
   font-variant-numeric: tabular-nums;
 }
 .perf-metric-label { color: var(--text-faint); font-size: 11px; }
-.perf-model-table {
+.client-model-table {
   width: 100%;
   margin-top: 8px;
   border-collapse: collapse;
   font-size: 11.5px;
 }
-.perf-model-table th {
+.client-model-table th {
   text-align: left;
   color: var(--text-faint);
   font-weight: 600;
   padding: 3px 8px 3px 0;
   border-bottom: 1px solid var(--border);
 }
-.perf-model-table td {
+.client-model-table td {
   padding: 3px 8px 3px 0;
   font-variant-numeric: tabular-nums;
 }
-.perf-model-table td:first-child {
+.client-model-table td:first-child {
   font-family: ui-monospace, Menlo, Consolas, monospace;
   color: var(--text-muted);
 }
+
+/* ─── Client models sub-row ──────────────────────────────────── */
+
+/* The table used to sit inside the performance block and borrow its padding.
+   It is its own sub-row now, so it carries its own. */
+.client-models-block { padding: 6px 14px 10px; }
+.client-models-block .client-model-table { margin-top: 0; }
+/* Each row's slot control is a form in a cell; keep it from adding row height. */
+.client-model-table .form-inline { margin: 0; gap: 4px; }
+.client-model-table td { vertical-align: middle; }
 
 .job-row { display: flex; flex-direction: column; gap: 1px; padding: 4px 0; font-size: 12px; }
 .job-row-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

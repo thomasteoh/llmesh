@@ -135,7 +135,6 @@ type ConnectedClientRow struct {
 	Name          string
 	Version       string
 	IsRouter      bool // true when Version starts with "router/" (downstream router, not a genuine client)
-	Models        string
 	InFlight      int
 	MaxConcurrent int
 	Jobs          []InFlightJobRow
@@ -174,10 +173,33 @@ type QueuedJobRow struct {
 	CanCancel     bool // true only for admins
 }
 
-// ModelSlotRow holds per-model owner-slot data for display and the owner-slots form.
-type ModelSlotRow struct {
-	Name       string
+// ClientModelRow is everything the Clients page shows about one model on one
+// client token: whether it is being served right now, the slot policy for it,
+// and how it has recently performed.
+//
+// These three used to be three stacked lists, each enumerating model names
+// independently — so a machine serving three models printed nine model names,
+// and a reader had to match them up by eye across the lists. They are one row
+// per model instead. The three sources do not cover the same models, which is
+// why this is a union rather than a join: a model can be live with no traffic
+// yet, carry a slot limit after the client stopped advertising it, or appear in
+// the performance window having since been removed. Columns that do not apply
+// are left blank.
+type ClientModelRow struct {
+	Name string
+	// Live is false for a model that appears only because it has a slot limit
+	// or recent traffic; no connected client currently offers it.
+	Live bool
+	// ServedBy names the connections offering this model, and is populated only
+	// when the token has more than one connection. With a single connection it
+	// would repeat that connection's name on every row.
+	ServedBy   string
 	OwnerSlots int // 0 = fully shared
+	// Recent performance, empty when the model saw no traffic in the window.
+	Requests  int64
+	GenTPS    string
+	PromptTPS string
+	AvgTTFT   string
 }
 
 type ClientTokenRow struct {
@@ -186,8 +208,8 @@ type ClientTokenRow struct {
 	StatusClass string // CSS badge class
 	StatusLabel string // display label with symbol
 	LastSeen    string
-	IsRouter    bool           // true when any live connection is a downstream router (version "router/…")
-	ModelSlots  []ModelSlotRow // per-model owner-slot configuration
+	IsRouter    bool             // true when any live connection is a downstream router (version "router/…")
+	Models      []ClientModelRow // one row per model: liveness, slot policy and recent performance
 	Connections []ConnectedClientRow
 	CSRFToken   string // for use in named sub-templates
 	// Perf is this machine's recent inference performance, or nil when it has
@@ -212,11 +234,72 @@ func (a *Admin) buildConnRow(ci hub.ConnectedClientInfo, u User, t ClientToken, 
 		Name:          ci.Name,
 		Version:       ci.Version,
 		IsRouter:      strings.HasPrefix(ci.Version, "router/"),
-		Models:        strings.Join(ci.Models, ", "),
 		InFlight:      ci.InFlight,
 		MaxConcurrent: ci.MaxConcurrent,
 		Jobs:          jobs,
 	}
+}
+
+// buildClientModelRows merges what a token serves now, what slot policy applies
+// to it, and how it has recently performed into one row per model.
+//
+// Liveness comes from the connections rather than a separate hub lookup: the
+// union of their models is the same set, and it saves taking the hub lock twice
+// for one page row.
+func buildClientModelRows(conns []hub.ConnectedClientInfo, ownerSlots map[string]int, perf *ClientPerfRow) []ClientModelRow {
+	rows := make(map[string]*ClientModelRow)
+	row := func(name string) *ClientModelRow {
+		if r, ok := rows[name]; ok {
+			return r
+		}
+		r := &ClientModelRow{Name: name}
+		rows[name] = r
+		return r
+	}
+
+	// Naming connections per model only tells the reader something when there is
+	// more than one to tell apart; with one it repeats that name on every row.
+	// Deduplicated because connection names are unique only within an owner, and
+	// the same name twice in one cell reads as a rendering fault.
+	served := make(map[string]map[string]bool)
+	nameConns := len(conns) > 1
+	for _, ci := range conns {
+		for _, m := range ci.Models {
+			row(m).Live = true
+			if !nameConns {
+				continue
+			}
+			if served[m] == nil {
+				served[m] = make(map[string]bool)
+			}
+			served[m][ci.Name] = true
+		}
+	}
+	for m, slots := range ownerSlots {
+		row(m).OwnerSlots = slots
+	}
+	if perf != nil {
+		for _, pm := range perf.ByModel {
+			r := row(pm.Name)
+			r.Requests = pm.Requests
+			r.GenTPS = pm.GenTPS
+			r.PromptTPS = pm.PromptTPS
+			r.AvgTTFT = pm.AvgTTFT
+		}
+	}
+
+	out := make([]ClientModelRow, 0, len(rows))
+	for name, r := range rows {
+		names := make([]string, 0, len(served[name]))
+		for conn := range served[name] {
+			names = append(names, conn)
+		}
+		sort.Strings(names)
+		r.ServedBy = strings.Join(names, ", ")
+		out = append(out, *r)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 // buildInFlightJobRow renders one live job for display. Shared by the Clients
@@ -722,10 +805,8 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, r *http.Request, u Use
 		clientLabel := t.Owner + "/" + t.Name
 		row.Perf = newClientPerfRow(perfByClient[clientLabel], perfByClientModel[clientLabel])
 		connInfos := a.hub.ConnectedClientsByToken(t.TokenHash)
-		var liveModels []string
 		if len(connInfos) > 0 {
 			row.Status, row.StatusClass, row.StatusLabel = clientStatusBadge(len(connInfos), false)
-			liveModels = a.hub.ConnectedModels(t.TokenHash)
 			for _, ci := range connInfos {
 				conn := a.buildConnRow(ci, u, t, bp.CSRFToken)
 				if conn.IsRouter {
@@ -739,24 +820,7 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, r *http.Request, u Use
 		} else {
 			row.Status, row.StatusClass, row.StatusLabel = clientStatusBadge(0, false)
 		}
-		// Build ModelSlots: union of live model names and OwnerSlots keys (offline
-		// tokens may have limits on models they no longer advertise).
-		modelSet := make(map[string]bool)
-		for _, m := range liveModels {
-			modelSet[m] = true
-		}
-		for m := range t.OwnerSlots {
-			modelSet[m] = true
-		}
-		for m := range modelSet {
-			row.ModelSlots = append(row.ModelSlots, ModelSlotRow{
-				Name:       m,
-				OwnerSlots: t.OwnerSlots[m],
-			})
-		}
-		sort.Slice(row.ModelSlots, func(i, j int) bool {
-			return row.ModelSlots[i].Name < row.ModelSlots[j].Name
-		})
+		row.Models = buildClientModelRows(connInfos, t.OwnerSlots, row.Perf)
 		rows = append(rows, row)
 	}
 	page := ClientTokensPage{
