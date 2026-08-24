@@ -19,6 +19,10 @@ import (
 type subscriber struct {
 	ch       chan types.ChunkMsg
 	overflow bool
+	// delivered records that at least one chunk has been handed to this
+	// subscriber, so Reset can tell who has already seen output of an attempt
+	// that is about to be abandoned.
+	delivered bool
 }
 
 // Entry tracks an in-flight request and any coalesced subscribers.
@@ -59,9 +63,15 @@ func (r *Registry) RegisterOrSubscribe(hash string) (isOriginal bool, buffer []t
 		return true, nil, nil
 	}
 
-	// Subscribing: hold r.mu while acquiring e.mu to prevent a race where
-	// Unregister deletes the entry between our lookup and our subscribe.
+	// Take e.mu before releasing r.mu so Unregister cannot delete the entry
+	// between the lookup and the subscribe. r.mu is released immediately after,
+	// rather than being held across the buffer copy: Forward takes r.mu for
+	// every chunk of every in-flight request, so copying a long backlog under
+	// it stalled chunk delivery router-wide, not just for this hash.
 	e.mu.Lock()
+	r.mu.Unlock()
+	defer e.mu.Unlock()
+
 	buf := make([]types.ChunkMsg, len(e.chunks))
 	copy(buf, e.chunks)
 	var ch chan types.ChunkMsg
@@ -69,8 +79,6 @@ func (r *Registry) RegisterOrSubscribe(hash string) (isOriginal bool, buffer []t
 		ch = make(chan types.ChunkMsg, 256)
 		e.subs = append(e.subs, &subscriber{ch: ch})
 	}
-	e.mu.Unlock()
-	r.mu.Unlock()
 
 	return false, buf, ch
 }
@@ -94,6 +102,7 @@ func (r *Registry) Forward(hash string, chunk types.ChunkMsg) {
 		}
 		select {
 		case sub.ch <- chunk:
+			sub.delivered = true
 		default:
 			// Follower is too slow; mark it so it is closed without a Done
 			// chunk, turning a silent gap into a signalled error downstream.
@@ -107,6 +116,52 @@ func (r *Registry) Forward(hash string, chunk types.ChunkMsg) {
 		}
 		e.subs = nil
 	}
+}
+
+// Reset discards the chunks buffered for hash, and marks every live subscriber
+// as having lost data so none of them is handed a stitched-together answer.
+//
+// The original's handler calls this when it abandons an attempt and re-queues:
+// its own accumulator is reset at the same moment, but the chunks it already
+// forwarded are still in the entry, so without this a follower would receive
+// the abandoned attempt's partial output followed by the retry's full output —
+// as a well-formed 200, which is worse than an error.
+func (r *Registry) Reset(hash string) {
+	r.mu.Lock()
+	e, ok := r.entries[hash]
+	r.mu.Unlock()
+	if !ok {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.done {
+		return
+	}
+	e.chunks = nil
+	// A subscriber that already saw the abandoned attempt's output cannot be
+	// rewound, so it is failed rather than silently corrupted. One that has not
+	// yet been sent anything is untouched and rides the retry normally.
+	for _, sub := range e.subs {
+		if len(sub.ch) > 0 || sub.delivered {
+			sub.overflow = true
+		}
+	}
+}
+
+// HasSubscribers reports whether hash still has coalesced followers waiting on
+// a response. Used to decide whether the original leaving means the work should
+// stop, or whether someone is still owed the answer.
+func (r *Registry) HasSubscribers(hash string) bool {
+	r.mu.Lock()
+	e, ok := r.entries[hash]
+	r.mu.Unlock()
+	if !ok {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return !e.done && len(e.subs) > 0
 }
 
 // Unregister removes hash from the registry and closes any remaining subscriber

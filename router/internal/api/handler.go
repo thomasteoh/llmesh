@@ -469,14 +469,20 @@ func (h *Handler) enqueue(
 			apiLogger().Info("api: request coalesced", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "key_label", req.APIKeyLabel, "ip", clientIP(r))
 			subCh := dedup.MakeSubscriberChan(r.Context(), buf, live)
 			if req.Stream {
-				h.streamResponse(w, r, req, subCh, "")
+				h.streamResponse(w, r, req, subCh, "", nil)
 			} else {
-				h.batchResponse(w, r, req, subCh, "")
+				h.batchResponse(w, r, req, subCh, "", nil)
 			}
 			return
 		}
-		// Original: must unregister when done (success or failure).
-		defer h.Dedup.Unregister(hash)
+		// Original: must unregister when done (success or failure) — unless it
+		// hands the stream to a background pump, which then owns the cleanup.
+		detached := false
+		defer func() {
+			if !detached {
+				h.Dedup.Unregister(hash)
+			}
+		}()
 		// Store hash for forwarding chunks to subscribers below.
 		req.ID = uuid.New().String()
 		req.Priority = h.Keys.PriorityFor(key)
@@ -487,7 +493,11 @@ func (h *Handler) enqueue(
 		req.EnqueuedAt = time.Now()
 
 		ch := h.Correlation.Create(req.ID)
-		defer h.Correlation.Delete(req.ID)
+		defer func() {
+			if !detached {
+				h.Correlation.Delete(req.ID)
+			}
+		}()
 
 		if !h.Queue.TryPush(*req) {
 			apiLogger().Warn("api: queue full, rejecting request", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "queue_depth", h.Queue.Len())
@@ -500,10 +510,23 @@ func (h *Handler) enqueue(
 		apiLogger().Info("api: request enqueued", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "key_label", req.APIKeyLabel, "priority", priorityName(int(req.Priority)), "stream", req.Stream, "word_count", req.WordCount, "ip", clientIP(r), "queue_depth", h.Queue.Len())
 		h.Scheduler.Wake()
 
+		// This caller going away must not cancel an answer other callers were
+		// coalesced onto. When followers remain, a pump takes over the stream
+		// and this handler leaves the request, the registry entry and the
+		// correlation channel to it.
+		onDisconnect := func() bool {
+			if !h.Dedup.HasSubscribers(hash) {
+				return false
+			}
+			detached = true
+			go h.pumpForFollowers(req.ID, hash, ch)
+			return true
+		}
+
 		if req.Stream {
-			h.streamResponse(w, r, req, ch, hash)
+			h.streamResponse(w, r, req, ch, hash, onDisconnect)
 		} else {
-			h.batchResponse(w, r, req, ch, hash)
+			h.batchResponse(w, r, req, ch, hash, onDisconnect)
 		}
 		return
 	}
@@ -531,13 +554,71 @@ func (h *Handler) enqueue(
 	h.Scheduler.Wake()
 
 	if req.Stream {
-		h.streamResponse(w, r, req, ch, "")
+		h.streamResponse(w, r, req, ch, "", nil)
 	} else {
-		h.batchResponse(w, r, req, ch, "")
+		h.batchResponse(w, r, req, ch, "", nil)
 	}
 }
 
-func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *types.InferenceRequest, ch <-chan types.ChunkMsg, dedupHash string) {
+// pumpForFollowers finishes a coalesced request whose original caller has gone
+// away, forwarding the remaining chunks to the followers still waiting on it.
+// It owns reqID's correlation entry and hash's registry entry from the moment
+// it starts, and releases both on return.
+//
+// Without it, one caller closing its connection cancelled the inference and
+// closed every follower's channel without a terminal chunk, so all of them
+// reported a failure for work that was progressing normally. Coalescing is
+// always on and hashes ignore the caller's identity, so those followers can be
+// entirely unrelated clients.
+func (h *Handler) pumpForFollowers(reqID, hash string, ch <-chan types.ChunkMsg) {
+	defer h.Dedup.Unregister(hash)
+	defer h.Correlation.Delete(reqID)
+
+	activity := h.activityTimeout()
+	idle := time.NewTimer(activity)
+	defer idle.Stop()
+
+	apiLogger().Info("api: original disconnected, finishing for coalesced followers", "request_id", reqID)
+
+	for {
+		select {
+		case chunk, open := <-ch:
+			if !open {
+				// Unregister closes the followers without a terminal chunk, so
+				// they report the truncation rather than a silent short answer.
+				apiLogger().Warn("api: coalesced stream ended without completion", "request_id", reqID)
+				return
+			}
+			h.Dedup.Forward(hash, chunk)
+			if chunk.Done {
+				return
+			}
+			// Every follower may leave too; there is then nobody left to
+			// finish for, and the worker should stop.
+			if !h.Dedup.HasSubscribers(hash) {
+				apiLogger().Info("api: all coalesced followers gone, cancelling", "request_id", reqID)
+				h.cancelRequest(reqID)
+				return
+			}
+			if !idle.Stop() {
+				select {
+				case <-idle.C:
+				default:
+				}
+			}
+			idle.Reset(activity)
+		case <-idle.C:
+			apiLogger().Warn("api: coalesced worker silent, cancelling", "request_id", reqID, "timeout", activity.String())
+			h.cancelRequest(reqID)
+			return
+		}
+	}
+}
+
+// onDisconnect, when non-nil, is called if the caller's connection drops while
+// the response is still in flight. Returning true means ownership of ch has
+// passed to a background pump, so this handler must not cancel the request.
+func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *types.InferenceRequest, ch <-chan types.ChunkMsg, dedupHash string, onDisconnect func() bool) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -696,6 +777,9 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 			h.writeStreamError(w, flusher, req, "worker stopped responding")
 			return
 		case <-r.Context().Done():
+			if onDisconnect != nil && onDisconnect() {
+				return // a pump owns the stream now; it will cancel if it needs to
+			}
 			apiLogger().Info("api: stream client disconnected", "request_id", req.ID)
 			h.cancelRequest(req.ID)
 			return
@@ -703,7 +787,8 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 	}
 }
 
-func (h *Handler) batchResponse(w http.ResponseWriter, r *http.Request, req *types.InferenceRequest, ch <-chan types.ChunkMsg, dedupHash string) {
+// onDisconnect carries the same contract as in streamResponse.
+func (h *Handler) batchResponse(w http.ResponseWriter, r *http.Request, req *types.InferenceRequest, ch <-chan types.ChunkMsg, dedupHash string, onDisconnect func() bool) {
 	batch := h.batchTimeout()
 	timeout := time.NewTimer(batch)
 	defer timeout.Stop()
@@ -771,6 +856,12 @@ func (h *Handler) batchResponse(w http.ResponseWriter, r *http.Request, req *typ
 				usage = nil
 				finishReason = "stop"
 				servedModel = ""
+				// Coalesced followers were forwarded this attempt's partial
+				// output as it arrived; drop it so the retry's response does
+				// not arrive appended to it.
+				if dedupHash != "" && h.Dedup != nil {
+					h.Dedup.Reset(dedupHash)
+				}
 				h.Queue.Push(*req)
 				h.Scheduler.Wake()
 				timeout.Reset(batch)
@@ -781,6 +872,9 @@ func (h *Handler) batchResponse(w http.ResponseWriter, r *http.Request, req *typ
 			h.cancelRequest(req.ID)
 			return
 		case <-r.Context().Done():
+			if onDisconnect != nil && onDisconnect() {
+				return // a pump owns the stream now; it will cancel if it needs to
+			}
 			apiLogger().Info("api: batch client disconnected", "request_id", req.ID)
 			h.cancelRequest(req.ID)
 			return
