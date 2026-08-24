@@ -47,12 +47,25 @@ type Spec struct {
 	Command    string // type=command only
 }
 
+// Chunk is one unit of streamed output from a backend. ToolCalls carries any
+// tool-call payload (OpenAI tool_calls JSON); Usage is non-nil only on the
+// final chunk, and only when the upstream provides token counts.
+type Chunk struct {
+	Delta string
+	// Reasoning is chain-of-thought emitted separately from the answer, which
+	// upstreams that expose it put in reasoning_content. It stays distinct from
+	// Delta so a caller cannot mistake the model's scratchpad for its reply.
+	Reasoning    string
+	ToolCalls    json.RawMessage
+	FinishReason string
+	Done         bool
+	Usage        *types.UsageInfo
+}
+
 // ChunkFunc is called for each streaming chunk. On normal completion it is
-// called exactly once with done=true; on a mid-stream failure the caller
-// returns an error instead of synthesising a done chunk. toolCalls carries any
-// tool-call payload for that chunk (OpenAI tool_calls JSON); usage is non-nil
-// only on the final chunk, and only when the upstream provides token counts.
-type ChunkFunc func(delta string, toolCalls json.RawMessage, finishReason string, done bool, usage *types.UsageInfo)
+// called exactly once with Done=true; on a mid-stream failure the caller
+// returns an error instead of synthesising a done chunk.
+type ChunkFunc func(Chunk)
 
 // adapterResponse is what shell command adapters write to stdout (one JSON line per chunk).
 //
@@ -64,6 +77,7 @@ type ChunkFunc func(delta string, toolCalls json.RawMessage, finishReason string
 type adapterResponse struct {
 	Content      string           `json:"content"`
 	Delta        string           `json:"delta"`
+	Reasoning    string           `json:"reasoning_content,omitempty"`
 	ToolCalls    json.RawMessage  `json:"tool_calls,omitempty"`
 	Done         bool             `json:"done"`
 	FinishReason string           `json:"finish_reason"`
@@ -73,6 +87,7 @@ type adapterResponse struct {
 // BatchResult is the full non-streaming response from a backend.
 type BatchResult struct {
 	Content      string
+	Reasoning    string
 	ToolCalls    json.RawMessage
 	FinishReason string
 }
@@ -197,7 +212,7 @@ func runCommandStream(ctx context.Context, spec *Spec, req *types.InferenceReque
 		if chunk.FinishReason != "" {
 			finishReason = chunk.FinishReason
 		}
-		fn(chunk.Delta, chunk.ToolCalls, finishReason, chunk.Done, chunk.Usage)
+		fn(Chunk{Delta: chunk.Delta, Reasoning: chunk.Reasoning, ToolCalls: chunk.ToolCalls, FinishReason: finishReason, Done: chunk.Done, Usage: chunk.Usage})
 		if chunk.Done {
 			doneEmitted = true
 			break

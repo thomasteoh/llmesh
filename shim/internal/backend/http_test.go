@@ -29,8 +29,8 @@ func TestReadOpenAIStream_UsageAfterFinish(t *testing.T) {
 	}, "\n")
 
 	var got []chunkRecord
-	err := readOpenAIStream(strings.NewReader(sse), func(delta string, tc json.RawMessage, finish string, done bool, usage *types.UsageInfo) {
-		got = append(got, chunkRecord{delta, tc, finish, done, usage})
+	err := readOpenAIStream(strings.NewReader(sse), func(c Chunk) {
+		got = append(got, chunkRecord{c.Delta, c.ToolCalls, c.FinishReason, c.Done, c.Usage})
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -51,7 +51,7 @@ func TestReadOpenAIStream_PrematureEOFIsError(t *testing.T) {
 	// A stream that stops mid-generation with no finish_reason and no [DONE]
 	// must surface as an error, not a silently-truncated success.
 	sse := "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n"
-	err := readOpenAIStream(strings.NewReader(sse), func(string, json.RawMessage, string, bool, *types.UsageInfo) {})
+	err := readOpenAIStream(strings.NewReader(sse), func(Chunk) {})
 	if err == nil {
 		t.Fatal("expected error on premature EOF, got nil")
 	}
@@ -65,8 +65,8 @@ func TestReadOpenAIStream_ToolCalls(t *testing.T) {
 		"",
 	}, "\n")
 	var sawTool bool
-	err := readOpenAIStream(strings.NewReader(sse), func(delta string, tc json.RawMessage, finish string, done bool, usage *types.UsageInfo) {
-		if len(tc) > 0 {
+	err := readOpenAIStream(strings.NewReader(sse), func(c Chunk) {
+		if len(c.ToolCalls) > 0 {
 			sawTool = true
 		}
 	})
@@ -105,7 +105,7 @@ func TestReadAnthropicStream_PrematureEOFIsError(t *testing.T) {
 		`data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}`,
 		"", // ends without message_stop
 	}, "\n")
-	err := readAnthropicStream(strings.NewReader(sse), func(string, json.RawMessage, string, bool, *types.UsageInfo) {})
+	err := readAnthropicStream(strings.NewReader(sse), func(Chunk) {})
 	if err == nil {
 		t.Fatal("expected error on stream ending before message_stop")
 	}
