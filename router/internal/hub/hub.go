@@ -2,8 +2,10 @@ package hub
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"sort"
 	"sync"
@@ -27,6 +29,20 @@ const MaxAttempts = types.MaxAttempts
 // maxReadBytes caps incoming WebSocket frame size to prevent a malicious client
 // from sending a single oversized message that OOMs the router process.
 const maxReadBytes = 16 << 20 // 16 MiB
+
+const (
+	// writeWait bounds a single frame written to a client. A job frame carrying
+	// a 100k-token prompt is hundreds of kilobytes, and without a deadline a
+	// stalled send window holds gorilla's write mutex forever — which also
+	// blocks the pong replies the client needs to keep the link up, so one
+	// congested dispatch could silently kill every job on that connection.
+	writeWait = 30 * time.Second
+	// pongWait is how long a client may go without any frame reaching us before
+	// the connection is treated as dead. Generous relative to the client's
+	// 30-second ping interval: a pong lost to write contention should cost a
+	// retry, not the connection and every generation running on it.
+	pongWait = 150 * time.Second
+)
 
 // isValidOrigin validates the Origin header against the Host header.
 // It allows empty origin (non-browser clients) and host-based matching
@@ -131,6 +147,16 @@ func (c *Client) closeSend() {
 type jobLiveStats struct {
 	firstChunkAt atomic.Pointer[time.Time]
 	deltaCount   atomic.Int64
+	// lastActivity is the UnixNano of the most recent chunk from the worker,
+	// keep-alives included. Atomic rather than a field on the record because
+	// the record is stored by value and rewriting it would need the hub write
+	// lock once per token. See InFlightRecord.LeaseDeadline.
+	lastActivity atomic.Int64
+	// producedOutput records that the worker has emitted something the caller
+	// can see — a text delta, a tool-call delta, or a terminal chunk. Distinct
+	// from firstChunkAt, which counts text only and carries retry semantics
+	// the lease must not disturb.
+	producedOutput atomic.Bool
 }
 
 // InFlightRecord is a snapshot of a job currently being processed by a client.
@@ -141,8 +167,39 @@ type InFlightRecord struct {
 	ClientName   string // name of the client connection that holds this job
 	Req          types.InferenceRequest
 	DispatchedAt time.Time // when the job was dispatched to this client
-	LeaseExpiry  time.Time // DispatchedAt + LeaseDuration; slot reclaimed after this
+	LeaseExpiry  time.Time // DispatchedAt + LeaseDuration; the floor for LeaseDeadline
 	live         *jobLiveStats
+}
+
+// LeaseDeadline returns the instant after which the reaper may reclaim this
+// job's slot.
+//
+// The lease exists to reclaim slots held by workers that have died silently, so
+// once a worker is demonstrably producing an answer the deadline has to measure
+// silence rather than elapsed time. A fixed deadline from dispatch doubles as a
+// cap on how long any single request may run: on slow local hardware a
+// large-context generation that is streaming happily can pass 20 minutes, and
+// reclaiming there cancels a healthy job mid-answer. The caller sees that as a
+// stream that stops without a finish_reason, and then — once the cancelled
+// worker's keep-alives stop too — as "worker stopped responding" one activity
+// timeout later.
+//
+// Before the first output the fixed deadline still applies. A worker sends
+// keep-alive chunks throughout prompt evaluation, so extending the lease on
+// those alone would let a job that never generates anything hold its slot
+// forever.
+func (r InFlightRecord) LeaseDeadline() time.Time {
+	if r.live == nil || !r.live.producedOutput.Load() {
+		return r.LeaseExpiry
+	}
+	last := r.live.lastActivity.Load()
+	if last == 0 {
+		return r.LeaseExpiry
+	}
+	if d := time.Unix(0, last).Add(LeaseDuration); d.After(r.LeaseExpiry) {
+		return d
+	}
+	return r.LeaseExpiry
 }
 
 // ClientLabel returns the "owner/name" identity of the client holding this job,
@@ -361,11 +418,36 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token
 func (h *Hub) readLoop(client *Client) {
 	defer client.wg.Done()
 	defer client.close()
+	// Without a read deadline the router cannot tell a working connection from
+	// one silently blackholed by a NAT or firewall timeout, and it holds that
+	// client's jobs until their leases expire. Clients ping every 30s and send
+	// keep-alive chunks while working, and both refresh this.
+	client.conn.SetReadDeadline(time.Now().Add(pongWait))
+	client.conn.SetPongHandler(func(string) error {
+		client.conn.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
+	client.conn.SetPingHandler(func(appData string) error {
+		client.conn.SetReadDeadline(time.Now().Add(pongWait))
+		// Reply on the write loop's behalf. Gorilla's default handler would do
+		// this too, but with a 1-second deadline that a large job frame in
+		// flight can easily exhaust, dropping the pong without a trace.
+		err := client.conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(writeWait))
+		if err == nil || errors.Is(err, websocket.ErrCloseSent) {
+			return nil
+		}
+		var netErr net.Error
+		if errors.As(err, &netErr) {
+			return nil // transient write contention; the next ping will retry
+		}
+		return err
+	})
 	for {
 		_, data, err := client.conn.ReadMessage()
 		if err != nil {
 			return
 		}
+		client.conn.SetReadDeadline(time.Now().Add(pongWait))
 		h.dispatch(client, data)
 	}
 }
@@ -373,6 +455,7 @@ func (h *Hub) readLoop(client *Client) {
 func (h *Hub) writeLoop(client *Client) {
 	defer client.wg.Done()
 	for msg := range client.send {
+		client.conn.SetWriteDeadline(time.Now().Add(writeWait))
 		if err := client.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
 			h.log.Error("hub: write error", "id", client.ID, "error", err)
 			client.close() // force readLoop to exit immediately
@@ -394,6 +477,7 @@ type inboundMsg struct {
 	// chunk
 	RequestID      string           `json:"request_id"`
 	Delta          string           `json:"delta"`
+	ReasoningDelta string           `json:"reasoning_delta"`
 	ToolCallsDelta json.RawMessage  `json:"tool_calls_delta"`
 	Done           bool             `json:"done"`
 	FinishReason   string           `json:"finish_reason"`
@@ -449,6 +533,7 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 			Type:           in.Type,
 			RequestID:      in.RequestID,
 			Delta:          in.Delta,
+			ReasoningDelta: in.ReasoningDelta,
 			ToolCallsDelta: in.ToolCallsDelta,
 			Done:           in.Done,
 			FinishReason:   in.FinishReason,
@@ -464,6 +549,15 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 		// attempt cannot relabel the live one.
 		if ok && rec.ClientID == client.ID {
 			msg.Model = rec.Req.Model
+			// Any chunk from the holding client proves the worker is alive, so
+			// it renews the lease — keep-alives included, since those are how a
+			// worker reports progress it has no output token for yet.
+			if rec.live != nil {
+				rec.live.lastActivity.Store(time.Now().UnixNano())
+				if msg.Delta != "" || msg.ReasoningDelta != "" || len(msg.ToolCallsDelta) > 0 || msg.Done {
+					rec.live.producedOutput.Store(true)
+				}
+			}
 		}
 		if msg.Delta != "" {
 			if ok && rec.live != nil {
@@ -1440,15 +1534,15 @@ func (h *Hub) OwnerInFlight(owner string) int {
 }
 
 // handleExpiredLeases scans all tracked jobs and reclaims slots for any whose
-// LeaseExpiry has passed. Called by the lease reaper goroutine; also exposed for
-// testing so tests can trigger it directly without waiting for the ticker.
+// LeaseDeadline has passed. Called by the lease reaper goroutine; also exposed
+// for testing so tests can trigger it directly without waiting for the ticker.
 func (h *Hub) handleExpiredLeases() {
 	now := time.Now()
 
 	h.mu.Lock()
 	var expired []InFlightRecord
 	for id, rec := range h.jobs {
-		if rec.LeaseExpiry.Before(now) {
+		if rec.LeaseDeadline().Before(now) {
 			expired = append(expired, rec)
 			delete(h.jobs, id)
 			delete(h.jobsByClient[rec.ClientID], id)
@@ -1465,6 +1559,7 @@ func (h *Hub) handleExpiredLeases() {
 			"request_id", rec.Req.ID,
 			"client_id", rec.ClientID,
 			"dispatched_at", rec.DispatchedAt,
+			"silent_for", now.Sub(rec.LeaseDeadline().Add(-LeaseDuration)).String(),
 		)
 		h.DecrInFlight(rec.ClientID)
 		// Cancel the job on the client (it may still be processing).

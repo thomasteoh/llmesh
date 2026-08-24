@@ -9,8 +9,10 @@ package wsclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"math/rand"
+	"net"
 	"sync"
 	"time"
 
@@ -23,6 +25,13 @@ const (
 	pongWait       = 60 * time.Second
 	initialBackoff = time.Second
 	maxBackoff     = 60 * time.Second
+	// writeWait bounds a single data-frame write. Without it a stalled TCP send
+	// window holds gorilla's write mutex indefinitely, which blocks the pings
+	// that keep the router's side of this connection alive.
+	writeWait = 30 * time.Second
+	// pingWriteWait bounds a ping write. Short, because a ping that cannot go
+	// out within it is better retried on the next tick than left queued.
+	pingWriteWait = 10 * time.Second
 )
 
 // jitter returns d perturbed by ±20% to avoid a thundering herd of workers all
@@ -204,6 +213,10 @@ func (c *Conn) connect(outerCtx context.Context) (registered bool, err error) {
 		if c.ws != conn {
 			return nil // connection replaced; drop stale write
 		}
+		// Bound the write. A blocked send window would otherwise park this call
+		// forever holding both c.mu and gorilla's write mutex, silently starving
+		// the keepalive ping and the router's pong replies.
+		conn.SetWriteDeadline(time.Now().Add(writeWait))
 		return conn.WriteMessage(websocket.TextMessage, data)
 	}
 
@@ -214,22 +227,33 @@ func (c *Conn) connect(outerCtx context.Context) (registered bool, err error) {
 		return nil
 	})
 
-	// Ping goroutine.
+	// Ping goroutine. It writes to conn directly rather than taking c.mu to read
+	// c.ws: gorilla permits a control write concurrent with a data write, so
+	// sharing the send mutex would only let a stalled chunk write block the
+	// pings. connCtx bounds this goroutine to the current connection, so conn is
+	// never a stale one.
 	go func() {
 		ticker := time.NewTicker(pingInterval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				c.mu.Lock()
-				ws := c.ws
-				c.mu.Unlock()
-				if ws == nil {
-					return
+				err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(pingWriteWait))
+				if err == nil {
+					continue
 				}
-				if err := ws.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
-					return
+				// A ping that timed out competing for the write mutex, or against
+				// a briefly stalled socket, says nothing about the connection's
+				// health — retry on the next tick. Returning here stopped
+				// keepalive for the rest of the connection's life; the read
+				// deadline then expired one pongWait later and killed a working
+				// connection, taking every in-flight generation on it down.
+				var netErr net.Error
+				if errors.As(err, &netErr) {
+					c.log.Debug("ws: ping deferred", "error", err)
+					continue
 				}
+				return
 			case <-connCtx.Done():
 				return
 			}
@@ -290,6 +314,14 @@ func (c *Conn) connect(outerCtx context.Context) (registered bool, err error) {
 	registered = true
 	c.st.SetConnected(true)
 	c.log.Info("ws: registered with router", "models", models, "max_concurrent", maxConc)
+
+	// Re-arm the read deadline now that probing is behind us. It was armed
+	// before Models(), which issues unbounded HTTP probes to the backend — a
+	// llama.cpp still loading a large model, or busy prefilling a long prompt,
+	// can hold those past pongWait, and the first read below would then fail
+	// instantly against an already-expired deadline. That looked like a worker
+	// that registers and drops in a tight reconnect loop.
+	conn.SetReadDeadline(time.Now().Add(pongWait))
 
 	// Read loop.
 	for {
