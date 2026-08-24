@@ -8,8 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"llmesh/router/internal/logring"
 )
 
 type statRowJSON struct {
@@ -78,7 +76,7 @@ func (a *Admin) handleLogsJSON(w http.ResponseWriter, r *http.Request) {
 	}
 	category := r.URL.Query().Get("category")
 	valid := false
-	for _, c := range logring.Categories() {
+	for _, c := range a.sink.Categories() {
 		if c == category {
 			valid = true
 			break

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"sync"
 	"time"
 )
@@ -14,7 +15,10 @@ import (
 // DefaultCap is the default ring-buffer capacity per category.
 const DefaultCap = 500
 
-var validCategories = []string{"router", "hub", "scheduler", "api", "admin"}
+// knownCategories are the categories every Sink starts with, so the admin UI
+// can offer them before the subsystem has logged anything. A category outside
+// this list is not rejected — see add — it simply has no ring until first use.
+var knownCategories = []string{"router", "hub", "scheduler", "api", "correlation", "upstream", "admin"}
 
 // Entry is a single captured log record.
 type Entry struct {
@@ -36,24 +40,32 @@ type Sink struct {
 // New creates a Sink with the given capacity per category.
 func New(capacity int) *Sink {
 	s := &Sink{
-		rings: make(map[string][]Entry, len(validCategories)),
-		pos:   make(map[string]int, len(validCategories)),
-		lens:  make(map[string]int, len(validCategories)),
+		rings: make(map[string][]Entry, len(knownCategories)),
+		pos:   make(map[string]int, len(knownCategories)),
+		lens:  make(map[string]int, len(knownCategories)),
 		cap:   capacity,
 	}
-	for _, cat := range validCategories {
+	for _, cat := range knownCategories {
 		s.rings[cat] = make([]Entry, capacity)
 	}
 	return s
 }
 
-// add appends an entry to the named category ring. Unknown categories are dropped.
+// add appends an entry to the named category ring, allocating the ring if this
+// is the category's first record.
+//
+// Categories used to be dropped unless they appeared in a hardcoded list, which
+// meant a subsystem whose category was never added to that list logged into
+// nothing: its records reached stderr and silently never reached the admin UI.
+// Allocating on demand makes the list a presentation detail rather than a
+// filter, so the failure cannot recur.
 func (s *Sink) add(category string, e Entry) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ring, ok := s.rings[category]
 	if !ok {
-		return
+		ring = make([]Entry, s.cap)
+		s.rings[category] = ring
 	}
 	idx := s.pos[category]
 	ring[idx] = e
@@ -84,11 +96,27 @@ func (s *Sink) Query(category string, limit int) []Entry {
 	return out
 }
 
-// Categories returns the list of known category names.
-func Categories() []string {
-	out := make([]string, len(validCategories))
-	copy(out, validCategories)
-	return out
+// Categories returns the categories this Sink can serve: the known ones in
+// their canonical display order, followed by any others that have logged,
+// sorted by name.
+func (s *Sink) Categories() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	out := make([]string, 0, len(s.rings))
+	seen := make(map[string]bool, len(s.rings))
+	for _, cat := range knownCategories {
+		out = append(out, cat)
+		seen[cat] = true
+	}
+	extra := make([]string, 0, len(s.rings)-len(seen))
+	for cat := range s.rings {
+		if !seen[cat] {
+			extra = append(extra, cat)
+		}
+	}
+	sort.Strings(extra)
+	return append(out, extra...)
 }
 
 // ─── slog.Handler ────────────────────────────────────────────────────────────
