@@ -15,7 +15,13 @@ import (
 // resumes. prefixAffinityMax caps the map so a flood of unique prefixes cannot
 // grow it without bound.
 const (
-	prefixAffinityTTL = 10 * time.Minute
+	// prefixAffinityTTL is measured from dispatch, not from completion, so it
+	// has to outlast the longest single turn as well as the user's thinking
+	// time between turns. At 10 minutes a large-context turn on slow hardware
+	// outlived its own affinity entry: the follow-up turn then load-spread to a
+	// client without the warm KV cache, and that cold prefill of the whole
+	// conversation had to fit inside the TTFT budget or the request failed.
+	prefixAffinityTTL = 45 * time.Minute
 	prefixAffinityMax = 4096
 )
 
@@ -162,12 +168,26 @@ func (s *Scheduler) Stop() {
 	s.stopOnce.Do(func() { close(s.stopCh) })
 }
 
+// retryInterval is the scheduler's safety-net tick. The loop is otherwise
+// edge-triggered, and a drain that abandons itself after re-queueing a request
+// (client disconnected mid-dispatch, or its send buffer was momentarily full)
+// leaves that request with no pending edge to wake it. On a small mesh whose
+// only worker is part-way through a long generation, the next natural edge can
+// be many minutes away — long enough for the request to expire at TTFT without
+// ever having been offered to a client. Re-waking immediately instead would
+// spin hot against a persistently full buffer.
+const retryInterval = 5 * time.Second
+
 func (s *Scheduler) loop() {
+	ticker := time.NewTicker(retryInterval)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-s.stopCh:
 			return
 		case <-s.signal:
+			s.drainQueue()
+		case <-ticker.C:
 			s.drainQueue()
 		}
 	}

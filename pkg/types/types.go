@@ -258,9 +258,16 @@ type ChunkMsg struct {
 	RequestID      string          `json:"request_id"`
 	Delta          string          `json:"delta"`
 	ToolCallsDelta json.RawMessage `json:"tool_calls_delta,omitempty"`
-	Done           bool            `json:"done"`
-	FinishReason   string          `json:"finish_reason,omitempty"`
-	Usage          *UsageInfo      `json:"usage,omitempty"`
+	// ReasoningDelta carries chain-of-thought text for models that separate it
+	// from the answer. llama.cpp puts it in the delta's reasoning_content when
+	// started with a --reasoning-format that parses thinking out of the token
+	// stream, and leaves content empty for the whole thinking phase. Dropping
+	// it loses most of a reasoning model's output, which reads to the caller
+	// like a response that stopped early.
+	ReasoningDelta string     `json:"reasoning_delta,omitempty"`
+	Done           bool       `json:"done"`
+	FinishReason   string     `json:"finish_reason,omitempty"`
+	Usage          *UsageInfo `json:"usage,omitempty"`
 	// Model is the concrete model that produced this chunk, stamped by the hub
 	// from the in-flight job record on the way to the HTTP handler. The handler
 	// holds its own copy of the request, still carrying the name the caller

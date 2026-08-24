@@ -2,7 +2,6 @@ package worker
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"os"
 	"time"
@@ -57,18 +56,19 @@ func Handle(ctx context.Context, job types.JobMsg, cfg *clientPkg.Config, send S
 
 	llmClient := llamacpp.New(endpoint, cfg.HeadersFor(req.Model))
 	chatTemplate := cfg.ChatTemplateFor(req.Model)
-	err := llmClient.Infer(ctx, req, chatTemplate, func(delta string, toolCallsDelta json.RawMessage, done bool, finishReason string, usage *types.UsageInfo) {
-		if done && usage != nil {
-			st.TotalTokens.Add(int64(usage.CompletionTokens))
+	err := llmClient.Infer(ctx, req, chatTemplate, func(c llamacpp.Chunk) {
+		if c.Done && c.Usage != nil {
+			st.TotalTokens.Add(int64(c.Usage.CompletionTokens))
 		}
 		chunk := types.ChunkMsg{
 			Type:           "chunk",
 			RequestID:      req.ID,
-			Delta:          delta,
-			ToolCallsDelta: toolCallsDelta,
-			Done:           done,
-			FinishReason:   finishReason,
-			Usage:          usage,
+			Delta:          c.Delta,
+			ReasoningDelta: c.ReasoningDelta,
+			ToolCallsDelta: c.ToolCallsDelta,
+			Done:           c.Done,
+			FinishReason:   c.FinishReason,
+			Usage:          c.Usage,
 		}
 		if sendErr := send(chunk); sendErr != nil {
 			if ctx.Err() == nil {

@@ -652,7 +652,7 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 					return
 				}
 			default: // "openai"
-				if chunk.Delta != "" || len(chunk.ToolCallsDelta) > 0 {
+				if chunk.Delta != "" || chunk.ReasoningDelta != "" || len(chunk.ToolCallsDelta) > 0 {
 					// A worker may put content and Done on the same chunk, as the
 					// batch path does. Emit the content alone here and let the
 					// terminal write below carry finish_reason and usage, so
@@ -673,6 +673,7 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 					// Any content it carried went out above.
 					final := chunk
 					final.Delta = ""
+					final.ReasoningDelta = ""
 					final.ToolCallsDelta = nil
 					writeSSE(w, translate.OpenAISSEChunk(req.ID, req.Model, final))
 					flusher.Flush()

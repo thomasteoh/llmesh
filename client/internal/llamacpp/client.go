@@ -19,17 +19,33 @@ const (
 	// (healthCheckInterval) detect a hung llamacpp process instead.
 	idleTimeout = 5 * time.Minute
 
+	// healthCheckTimeout is the per-probe deadline for /health requests.
+	healthCheckTimeout = 10 * time.Second
+
+	// healthCheckFailures is how many probes in a row must fail before the
+	// inference is abandoned. A box saturated by a long prefill can miss a
+	// single 10-second probe without being hung, and treating that as fatal
+	// killed exactly the large-context requests this timeout exists to protect.
+	healthCheckFailures = 3
+
 	// healthCheckInterval is how often to probe /health while waiting for the
 	// first token. Detects a crashed or hung llamacpp before inference begins.
 	healthCheckInterval = 30 * time.Second
-
-	// healthCheckTimeout is the per-probe deadline for /health requests.
-	healthCheckTimeout = 10 * time.Second
 )
 
+// Chunk is one unit of streamed output handed to a ChunkCallback.
+type Chunk struct {
+	Delta          string
+	ReasoningDelta string
+	ToolCallsDelta json.RawMessage
+	Done           bool
+	FinishReason   string
+	Usage          *types.UsageInfo
+}
+
 // ChunkCallback is called for each token chunk received from llama.cpp.
-// done=true signals the end of the stream. usage is non-nil on the final call.
-type ChunkCallback func(delta string, toolCallsDelta json.RawMessage, done bool, finishReason string, usage *types.UsageInfo)
+// Done=true signals the end of the stream. Usage is non-nil on the final call.
+type ChunkCallback func(Chunk)
 
 // Client is an OpenAI-compatible HTTP client for a llama.cpp server.
 type Client struct {
@@ -160,6 +176,12 @@ func attachTimings(usage *types.UsageInfo, t *types.Timings) *types.UsageInfo {
 type inferChunkDelta struct {
 	Content   string          `json:"content"`
 	ToolCalls json.RawMessage `json:"tool_calls"`
+	// ReasoningContent is llama.cpp's field for thinking emitted separately
+	// from the answer. Under a --reasoning-format that parses it out, a
+	// reasoning model fills this and leaves Content empty until it starts
+	// answering, so a reader that only watches Content sees nothing at all
+	// for what can be several minutes of real work on slow hardware.
+	ReasoningContent string `json:"reasoning_content"`
 }
 
 type inferChunk struct {
@@ -320,18 +342,19 @@ func (c *Client) Infer(ctx context.Context, req types.InferenceRequest, chatTemp
 		// The health-check goroutine below uses it to stop polling once inference
 		// is confirmed to be producing output.
 		firstToken := make(chan struct{})
-		go c.watchHealth(inferCtx, inferCancel, firstToken)
+		go c.watchHealth(inferCtx, inferCancel, firstToken, healthCheckInterval)
 		return c.readStream(inferCtx, inferCancel, resp, cb, firstToken)
 	}
 	return c.readBatch(resp, cb)
 }
 
-// watchHealth polls /health every healthCheckInterval until firstToken is closed
-// (first content token received) or ctx is done. If a health check fails, it
-// calls cancel to abort the in-flight inference request immediately.
-func (c *Client) watchHealth(ctx context.Context, cancel context.CancelFunc, firstToken <-chan struct{}) {
-	ticker := time.NewTicker(healthCheckInterval)
+// watchHealth polls /health every interval until firstToken is closed (first
+// content token received) or ctx is done. It calls cancel to abort the
+// in-flight inference once healthCheckFailures probes have failed in a row.
+func (c *Client) watchHealth(ctx context.Context, cancel context.CancelFunc, firstToken <-chan struct{}, interval time.Duration) {
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	failures := 0
 	for {
 		select {
 		case <-ticker.C:
@@ -340,9 +363,14 @@ func (c *Client) watchHealth(ctx context.Context, cancel context.CancelFunc, fir
 				return
 			}
 			if err := c.checkHealth(ctx); err != nil {
+				failures++
+				if failures < healthCheckFailures {
+					continue
+				}
 				cancel()
 				return
 			}
+			failures = 0
 		case <-firstToken:
 			return
 		case <-ctx.Done():
@@ -427,7 +455,7 @@ func (c *Client) readStream(ctx context.Context, cancel context.CancelFunc, resp
 				if finishReason == "" {
 					return fmt.Errorf("llama.cpp stream ended before completion")
 				}
-				cb("", nil, true, finishReason, attachTimings(pendingUsage, pendingTimings))
+				cb(Chunk{Done: true, FinishReason: finishReason, Usage: attachTimings(pendingUsage, pendingTimings)})
 				return nil
 			}
 			if result.err != nil {
@@ -452,7 +480,7 @@ func (c *Client) readStream(ctx context.Context, cancel context.CancelFunc, resp
 			}
 			payload := strings.TrimPrefix(line, "data: ")
 			if payload == "[DONE]" {
-				cb("", nil, true, finishReason, attachTimings(pendingUsage, pendingTimings))
+				cb(Chunk{Done: true, FinishReason: finishReason, Usage: attachTimings(pendingUsage, pendingTimings)})
 				// Drain remaining lines so the scanner goroutine can exit.
 				for range lines {
 				}
@@ -480,13 +508,19 @@ func (c *Client) readStream(ctx context.Context, cancel context.CancelFunc, resp
 				finishReason = *choice.FinishReason
 			}
 			delta := choice.Delta
-			if delta.Content != "" || len(delta.ToolCalls) > 0 {
+			// Reasoning text counts as output: it proves generation has begun,
+			// and for a thinking model it is most of what the model produces.
+			if delta.Content != "" || delta.ReasoningContent != "" || len(delta.ToolCalls) > 0 {
 				if !firstContent {
 					firstContent = true
 					close(firstToken) // stop health-check polling
 					idleTimer.Reset(idleTimeout)
 				}
-				cb(delta.Content, delta.ToolCalls, false, "", nil)
+				cb(Chunk{
+					Delta:          delta.Content,
+					ReasoningDelta: delta.ReasoningContent,
+					ToolCallsDelta: delta.ToolCalls,
+				})
 			}
 
 		case <-idleTimer.C:
@@ -503,8 +537,9 @@ func (c *Client) readBatch(resp *http.Response, cb ChunkCallback) error {
 	var result struct {
 		Choices []struct {
 			Message struct {
-				Content   string          `json:"content"`
-				ToolCalls json.RawMessage `json:"tool_calls"`
+				Content          string          `json:"content"`
+				ReasoningContent string          `json:"reasoning_content"`
+				ToolCalls        json.RawMessage `json:"tool_calls"`
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
@@ -524,6 +559,13 @@ func (c *Client) readBatch(resp *http.Response, cb ChunkCallback) error {
 	// Non-streaming is where backend timings matter most: the router sees a single
 	// chunk at the end, so without these it cannot separate prefill from decode.
 	usage := attachTimings(result.Usage.toUsageInfo(), result.Timings.toTimings())
-	cb(choice.Message.Content, choice.Message.ToolCalls, true, choice.FinishReason, usage)
+	cb(Chunk{
+		Delta:          choice.Message.Content,
+		ReasoningDelta: choice.Message.ReasoningContent,
+		ToolCallsDelta: choice.Message.ToolCalls,
+		Done:           true,
+		FinishReason:   choice.FinishReason,
+		Usage:          usage,
+	})
 	return nil
 }
