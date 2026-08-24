@@ -22,8 +22,28 @@ func New() *Queue {
 	return q
 }
 
-// pushLocked appends req and records its index. Caller must hold q.mu.
+// pushLocked appends req and records its index, or replaces the queued request
+// that already carries this ID. Caller must hold q.mu.
+//
+// Replacing rather than appending keeps one entry per ID, which the byID index
+// requires: appending a second entry would leave byID pointing at only one of
+// them, and removing that one would delete the sole index entry and strand the
+// other. The stranded copy stays visible to PeekBestForClient, which scans
+// items directly, but PopByID can never remove it — so the scheduler selects
+// it, fails to pop it, and selects it again forever.
+//
+// Superseding is also the right semantic for the callers that can collide: a
+// re-queue after a client disconnect or a retry re-pushes the same request, and
+// the newer copy carries the current attempt count.
+// An empty ID is not an identity, so such requests are always appended rather
+// than collapsed onto one another.
 func (q *Queue) pushLocked(req types.InferenceRequest) {
+	if req.ID != "" {
+		if i, ok := q.byID[req.ID]; ok {
+			q.items[i] = req
+			return
+		}
+	}
 	q.byID[req.ID] = len(q.items)
 	q.items = append(q.items, req)
 }
@@ -32,15 +52,20 @@ func (q *Queue) pushLocked(req types.InferenceRequest) {
 // Caller must hold q.mu. The slice order is not preserved, but all
 // selection methods (PeekBestForClient, popBestLocked) scan the whole
 // slice and pick by priority+FIFO, so order is irrelevant for correctness.
+// The index entry is dropped before the moved item is re-indexed, so that a
+// moved item sharing the removed item's ID keeps a valid index instead of
+// having it deleted straight afterwards. IDs are unique in practice — see
+// pushLocked — but this is the ordering that makes the byID invariant hold
+// regardless, including for the empty IDs a misbehaving upstream can send.
 func (q *Queue) removeAt(i int) types.InferenceRequest {
 	req := q.items[i]
 	last := len(q.items) - 1
+	delete(q.byID, req.ID)
 	if i != last {
 		q.items[i] = q.items[last]
 		q.byID[q.items[i].ID] = i
 	}
 	q.items = q.items[:last]
-	delete(q.byID, req.ID)
 	return req
 }
 

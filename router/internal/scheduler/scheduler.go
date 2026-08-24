@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"llmesh/pkg/types"
-	"llmesh/router/internal/queue"
 	"llmesh/router/internal/reqopt"
 )
 
@@ -62,6 +61,16 @@ type candidate struct {
 	tier int
 }
 
+// JobQueue is satisfied by *queue.Queue. Naming the three methods the dispatch
+// loop uses lets a test stand in a queue that misbehaves — notably one whose
+// selection and removal disagree, which is what the drain loop's termination
+// guard exists to survive.
+type JobQueue interface {
+	PeekBestForClient(models map[string]bool, aliases map[string][]string, preferOwner string, eligible func(reqOwner string) bool) *types.InferenceRequest
+	PopByID(id string) *types.InferenceRequest
+	Push(req types.InferenceRequest)
+}
+
 // Dispatcher is satisfied by *hub.Hub. It exposes only the methods the scheduler
 // needs to dispatch jobs, so the scheduler package does not import hub.
 type Dispatcher interface {
@@ -76,7 +85,7 @@ type Dispatcher interface {
 
 // Scheduler dispatches queued InferenceRequests to available hub clients.
 type Scheduler struct {
-	queue    *queue.Queue
+	queue    JobQueue
 	hub      Dispatcher
 	aliases  AliasProvider
 	opts     OptProvider
@@ -94,7 +103,7 @@ type Scheduler struct {
 }
 
 // New creates a Scheduler wired to the given queue, hub, and alias provider.
-func New(q *queue.Queue, h Dispatcher, aliases AliasProvider, logger *slog.Logger) *Scheduler {
+func New(q JobQueue, h Dispatcher, aliases AliasProvider, logger *slog.Logger) *Scheduler {
 	s := &Scheduler{
 		queue:     q,
 		hub:       h,
@@ -242,6 +251,10 @@ func (s *Scheduler) drainQueue() {
 		return v
 	}
 
+	// IDs selected for dispatch that the queue then refused to hand over. See
+	// the PopByID failure below for why one repeat is fatal to the drain.
+	var unpoppable map[string]bool
+
 	for {
 		var best *candidate
 		for _, c := range clients {
@@ -351,8 +364,25 @@ func (s *Scheduler) drainQueue() {
 
 		req := s.queue.PopByID(best.req.ID)
 		if req == nil {
-			// Request was already consumed by another iteration.
-			// Continue to check remaining clients — they may have their own best request.
+			// Normally this means the request was consumed concurrently (the
+			// caller cancelled it, say). It is gone from the queue, so the next
+			// iteration selects something else and the drain makes progress.
+			//
+			// If selection hands back the same ID a second time, though, the
+			// queue is returning a request it cannot remove, and continuing
+			// would spin this loop at full tilt on the single scheduler
+			// goroutine — no request would ever dispatch again, and the burnt
+			// CPU would slow the very inference workers we schedule onto.
+			// Abandon the drain instead; the next wake starts clean.
+			if unpoppable[best.req.ID] {
+				s.log.Error("scheduler: queue returned a request it cannot remove, abandoning drain",
+					"request_id", best.req.ID)
+				return
+			}
+			if unpoppable == nil {
+				unpoppable = make(map[string]bool)
+			}
+			unpoppable[best.req.ID] = true
 			s.log.Debug("scheduler: request already consumed by another client", "request_id", best.req.ID)
 			continue
 		}
