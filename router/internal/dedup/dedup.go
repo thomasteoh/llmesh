@@ -25,12 +25,46 @@ type subscriber struct {
 	delivered bool
 }
 
+// maxReplayChunks caps the per-entry replay buffer. A follower has to be given
+// everything emitted before it arrived, so an entry retains its chunks for as
+// long as it is registered — for every request, whether or not a follower ever
+// turns up, which for most requests is never. A 20-minute generation is tens of
+// thousands of chunks, so on a router built to run many concurrent long
+// generations the buffer is a real per-request memory multiplier that competes
+// with the inference process for RAM.
+//
+// Coalescing exists for requests that arrive near-simultaneously, and those
+// join within seconds. Past this many chunks the buffer is dropped and later
+// arrivals run as ordinary requests instead, which the backend's prompt cache
+// makes cheap. Roughly 400 KB per entry at the observed ~200 bytes per chunk.
+const maxReplayChunks = 2048
+
+// Role describes how a caller relates to an in-flight entry.
+type Role int
+
+const (
+	// RoleOriginal means the caller owns the entry: it must Forward its chunks
+	// and Unregister when done.
+	RoleOriginal Role = iota
+	// RoleFollower means the caller is coalesced onto an existing entry and
+	// should read the replay buffer followed by the live channel.
+	RoleFollower
+	// RoleIndependent means an entry exists but can no longer be replayed, so
+	// the caller must run as an ordinary uncoalesced request. It owns nothing:
+	// it must not Forward and must not Unregister.
+	RoleIndependent
+)
+
 // Entry tracks an in-flight request and any coalesced subscribers.
 type Entry struct {
 	mu     sync.Mutex
-	chunks []types.ChunkMsg // buffer of all chunks received so far
+	chunks []types.ChunkMsg // buffer of chunks received so far, capped
 	subs   []*subscriber    // live subscribers
 	done   bool
+	// replayDropped records that the buffer outgrew maxReplayChunks and was
+	// released. Existing followers are unaffected — they hold live channels —
+	// but no new one can be given a faithful replay.
+	replayDropped bool
 }
 
 // Registry deduplicates concurrent requests with identical content.
@@ -47,20 +81,21 @@ func New() *Registry {
 	return &Registry{entries: make(map[string]*Entry)}
 }
 
-// RegisterOrSubscribe atomically either registers hash as a new in-flight entry
-// (returning isOriginal=true) or subscribes to the existing entry (returning
-// isOriginal=false with a buffered replay + live channel).
+// RegisterOrSubscribe atomically registers hash as a new in-flight entry
+// (RoleOriginal), subscribes to an existing one (RoleFollower, with a buffered
+// replay plus a live channel), or reports that the existing entry can no longer
+// be replayed (RoleIndependent, with no buffer and no channel).
 //
-// When isOriginal=false and live==nil, the original has already finished;
-// buffer contains the complete response. When live!=nil, buffer contains
-// chunks emitted so far and live receives future chunks.
-func (r *Registry) RegisterOrSubscribe(hash string) (isOriginal bool, buffer []types.ChunkMsg, live <-chan types.ChunkMsg) {
+// For RoleFollower with live==nil, the original has already finished and buffer
+// holds the complete response. With live!=nil, buffer holds the chunks emitted
+// so far and live carries the rest.
+func (r *Registry) RegisterOrSubscribe(hash string) (role Role, buffer []types.ChunkMsg, live <-chan types.ChunkMsg) {
 	r.mu.Lock()
 	e, exists := r.entries[hash]
 	if !exists {
 		r.entries[hash] = &Entry{}
 		r.mu.Unlock()
-		return true, nil, nil
+		return RoleOriginal, nil, nil
 	}
 
 	// Take e.mu before releasing r.mu so Unregister cannot delete the entry
@@ -72,6 +107,12 @@ func (r *Registry) RegisterOrSubscribe(hash string) (isOriginal bool, buffer []t
 	r.mu.Unlock()
 	defer e.mu.Unlock()
 
+	if e.replayDropped {
+		// The earlier part of the answer is gone, so this caller cannot be
+		// served from the entry. It runs on its own.
+		return RoleIndependent, nil, nil
+	}
+
 	buf := make([]types.ChunkMsg, len(e.chunks))
 	copy(buf, e.chunks)
 	var ch chan types.ChunkMsg
@@ -80,7 +121,7 @@ func (r *Registry) RegisterOrSubscribe(hash string) (isOriginal bool, buffer []t
 		e.subs = append(e.subs, &subscriber{ch: ch})
 	}
 
-	return false, buf, ch
+	return RoleFollower, buf, ch
 }
 
 // Forward buffers chunk and delivers it to all current subscribers.
@@ -95,7 +136,15 @@ func (r *Registry) Forward(hash string, chunk types.ChunkMsg) {
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.chunks = append(e.chunks, chunk)
+	switch {
+	case e.replayDropped:
+		// Buffer already released; live followers are served below.
+	case len(e.chunks) >= maxReplayChunks:
+		e.replayDropped = true
+		e.chunks = nil
+	default:
+		e.chunks = append(e.chunks, chunk)
+	}
 	for _, sub := range e.subs {
 		if sub.overflow {
 			continue // already lost data; will be closed without Done

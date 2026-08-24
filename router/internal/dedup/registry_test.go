@@ -38,8 +38,8 @@ func drain(t *testing.T, ch <-chan types.ChunkMsg) (text string, sawDone bool) {
 
 func TestHasSubscribers(t *testing.T) {
 	r := New()
-	if isOriginal, _, _ := r.RegisterOrSubscribe("h"); !isOriginal {
-		t.Fatal("first caller should be the original")
+	if role, _, _ := r.RegisterOrSubscribe("h"); role != RoleOriginal {
+		t.Fatalf("first caller role = %v, want RoleOriginal", role)
 	}
 	if r.HasSubscribers("h") {
 		t.Error("a fresh entry reports subscribers")
