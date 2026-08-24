@@ -140,6 +140,17 @@ func (r *Registry) RegisterOrSubscribe(hash string) (role Role, buffer []types.C
 
 // Forward buffers chunk and delivers it to all current subscribers.
 // Called by the original request's handler for every chunk it receives.
+//
+// This is the only per-chunk path in the router that takes a registry-wide
+// lock, and it holds the entry lock across the fan-out, both of which look
+// worth avoiding. BenchmarkForward says otherwise: tens of nanoseconds per
+// chunk with followers attached, and a few hundred with several goroutines
+// contending over hundreds of concurrent entries. Saturating that needs
+// millions of chunks a second, against the low thousands a machine running
+// local inference produces. Leave it simple; re-run the benchmark before
+// rewriting it, and on the hardware in question — the figures move by several
+// times across machines, though not by the orders of magnitude that would
+// change the conclusion.
 func (r *Registry) Forward(hash string, chunk types.ChunkMsg) {
 	r.mu.Lock()
 	e, ok := r.entries[hash]
