@@ -186,8 +186,7 @@ type ClientTokenRow struct {
 	StatusClass string // CSS badge class
 	StatusLabel string // display label with symbol
 	LastSeen    string
-	IsRouter    bool // true when any live connection is a downstream router (version "router/…")
-	Models      []ModelWithAliases
+	IsRouter    bool           // true when any live connection is a downstream router (version "router/…")
 	ModelSlots  []ModelSlotRow // per-model owner-slot configuration
 	Connections []ConnectedClientRow
 	CSRFToken   string // for use in named sub-templates
@@ -371,11 +370,6 @@ func newClientPerfRow(p PerfStats, byModel map[string]PerfStats) *ClientPerfRow 
 	}
 	sort.Slice(row.ByModel, func(i, j int) bool { return row.ByModel[i].Name < row.ByModel[j].Name })
 	return row
-}
-
-type ModelWithAliases struct {
-	Name    string
-	Aliases []string
 }
 
 type UpstreamRouterRow struct {
@@ -701,8 +695,6 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, r *http.Request, u Use
 
 	rawTokens := a.state.ClientTokensFor(u.Username, u.Role == "admin")
 
-	modelAliases := invertAliasMap(a.state.AliasMap())
-
 	// Recent performance per machine, fetched once for the whole page rather than
 	// per row. Members see only the speed of their own requests; admins see the
 	// machine's aggregate across every caller. A query failure degrades to a page
@@ -730,16 +722,10 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, r *http.Request, u Use
 		clientLabel := t.Owner + "/" + t.Name
 		row.Perf = newClientPerfRow(perfByClient[clientLabel], perfByClientModel[clientLabel])
 		connInfos := a.hub.ConnectedClientsByToken(t.TokenHash)
+		var liveModels []string
 		if len(connInfos) > 0 {
 			row.Status, row.StatusClass, row.StatusLabel = clientStatusBadge(len(connInfos), false)
-			mods := a.hub.ConnectedModels(t.TokenHash)
-			sort.Strings(mods)
-			for _, m := range mods {
-				row.Models = append(row.Models, ModelWithAliases{
-					Name:    m,
-					Aliases: modelAliases[m],
-				})
-			}
+			liveModels = a.hub.ConnectedModels(t.TokenHash)
 			for _, ci := range connInfos {
 				conn := a.buildConnRow(ci, u, t, bp.CSRFToken)
 				if conn.IsRouter {
@@ -756,8 +742,8 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, r *http.Request, u Use
 		// Build ModelSlots: union of live model names and OwnerSlots keys (offline
 		// tokens may have limits on models they no longer advertise).
 		modelSet := make(map[string]bool)
-		for _, mwa := range row.Models {
-			modelSet[mwa.Name] = true
+		for _, m := range liveModels {
+			modelSet[m] = true
 		}
 		for m := range t.OwnerSlots {
 			modelSet[m] = true
