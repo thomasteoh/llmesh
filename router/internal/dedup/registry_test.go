@@ -37,7 +37,7 @@ func drain(t *testing.T, ch <-chan types.ChunkMsg) (text string, sawDone bool) {
 }
 
 func TestHasSubscribers(t *testing.T) {
-	r := New()
+	r := New(nil)
 	if role, _, _ := r.RegisterOrSubscribe("h"); role != RoleOriginal {
 		t.Fatalf("first caller role = %v, want RoleOriginal", role)
 	}
@@ -62,7 +62,7 @@ func TestHasSubscribers(t *testing.T) {
 // A follower must receive the whole response when the original runs to
 // completion — the baseline the rest of these tests deviate from.
 func TestForward_FollowerGetsFullResponse(t *testing.T) {
-	r := New()
+	r := New(nil)
 	r.RegisterOrSubscribe("h")
 	r.Forward("h", chunk("one "))
 	_, buf, live := r.RegisterOrSubscribe("h")
@@ -84,7 +84,7 @@ func TestForward_FollowerGetsFullResponse(t *testing.T) {
 // appended to it. A follower that already saw some of the abandoned attempt
 // cannot be rewound, so it is failed rather than handed a stitched answer.
 func TestReset_FailsFollowersThatSawTheAbandonedAttempt(t *testing.T) {
-	r := New()
+	r := New(nil)
 	r.RegisterOrSubscribe("h")
 	_, buf, live := r.RegisterOrSubscribe("h")
 	sub := MakeSubscriberChan(context.Background(), buf, live)
@@ -106,7 +106,7 @@ func TestReset_FailsFollowersThatSawTheAbandonedAttempt(t *testing.T) {
 // Reset must clear the replay buffer, so a follower arriving after the retry
 // gets only the retry's output.
 func TestReset_ClearsBufferForLaterFollowers(t *testing.T) {
-	r := New()
+	r := New(nil)
 	r.RegisterOrSubscribe("h")
 	r.Forward("h", chunk("partial from attempt one"))
 	r.Reset("h")
@@ -128,7 +128,7 @@ func TestReset_ClearsBufferForLaterFollowers(t *testing.T) {
 
 // A completed entry must not be disturbed by a late Reset.
 func TestReset_IgnoresCompletedEntry(t *testing.T) {
-	r := New()
+	r := New(nil)
 	r.RegisterOrSubscribe("h")
 	r.Forward("h", chunk("all done"))
 	r.Forward("h", doneChunk())
@@ -147,7 +147,7 @@ func TestReset_IgnoresCompletedEntry(t *testing.T) {
 // Unregister before completion closes followers without a terminal chunk, so
 // their handlers report the truncation instead of a short success.
 func TestUnregister_ClosesFollowersWithoutDone(t *testing.T) {
-	r := New()
+	r := New(nil)
 	r.RegisterOrSubscribe("h")
 	_, buf, live := r.RegisterOrSubscribe("h")
 	sub := MakeSubscriberChan(context.Background(), buf, live)

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"sync"
 
@@ -74,11 +75,24 @@ type Entry struct {
 type Registry struct {
 	mu      sync.Mutex
 	entries map[string]*Entry
+	log     *slog.Logger
 }
 
-// New creates a Registry.
-func New() *Registry {
-	return &Registry{entries: make(map[string]*Entry)}
+// New creates a Registry. A nil log falls back to slog.Default().
+func New(log *slog.Logger) *Registry {
+	if log == nil {
+		log = slog.Default()
+	}
+	return &Registry{entries: make(map[string]*Entry), log: log}
+}
+
+// shortHash trims a content hash to something readable in a log line while
+// staying long enough to correlate entries for the same request.
+func shortHash(hash string) string {
+	if len(hash) > 12 {
+		return hash[:12]
+	}
+	return hash
 }
 
 // RegisterOrSubscribe atomically registers hash as a new in-flight entry
@@ -135,13 +149,17 @@ func (r *Registry) Forward(hash string, chunk types.ChunkMsg) {
 	}
 
 	e.mu.Lock()
-	defer e.mu.Unlock()
+	// Counted under the lock and reported after it, so a log write never sits
+	// on the path every chunk of every coalesced request takes.
+	justDroppedReplay := false
+	overflowed := 0
 	switch {
 	case e.replayDropped:
 		// Buffer already released; live followers are served below.
 	case len(e.chunks) >= maxReplayChunks:
 		e.replayDropped = true
 		e.chunks = nil
+		justDroppedReplay = true
 	default:
 		e.chunks = append(e.chunks, chunk)
 	}
@@ -156,14 +174,29 @@ func (r *Registry) Forward(hash string, chunk types.ChunkMsg) {
 			// Follower is too slow; mark it so it is closed without a Done
 			// chunk, turning a silent gap into a signalled error downstream.
 			sub.overflow = true
+			overflowed++
 		}
 	}
+	subs := len(e.subs)
 	if chunk.Done {
 		e.done = true
 		for _, sub := range e.subs {
 			close(sub.ch)
 		}
 		e.subs = nil
+	}
+	e.mu.Unlock()
+
+	if justDroppedReplay {
+		r.log.Info("dedup: replay buffer released, later duplicates will run on their own",
+			"hash", shortHash(hash), "chunks", maxReplayChunks, "subscribers", subs)
+	}
+	if overflowed > 0 {
+		// The follower is now guaranteed to fail. Without this the only trace
+		// was the follower's own truncated-stream error, which reads as a
+		// worker problem and gives no hint that its own read rate caused it.
+		r.log.Warn("dedup: coalesced follower fell behind and will be failed",
+			"hash", shortHash(hash), "followers_failed", overflowed, "subscribers", subs)
 	}
 }
 
@@ -183,18 +216,30 @@ func (r *Registry) Reset(hash string) {
 		return
 	}
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	if e.done {
+		e.mu.Unlock()
 		return
 	}
 	e.chunks = nil
 	// A subscriber that already saw the abandoned attempt's output cannot be
 	// rewound, so it is failed rather than silently corrupted. One that has not
 	// yet been sent anything is untouched and rides the retry normally.
+	failed := 0
 	for _, sub := range e.subs {
+		if sub.overflow {
+			continue
+		}
 		if len(sub.ch) > 0 || sub.delivered {
 			sub.overflow = true
+			failed++
 		}
+	}
+	subs := len(e.subs)
+	e.mu.Unlock()
+
+	if failed > 0 {
+		r.log.Warn("dedup: retry cost coalesced followers their partial answer",
+			"hash", shortHash(hash), "followers_failed", failed, "subscribers", subs)
 	}
 }
 
@@ -224,7 +269,7 @@ func (r *Registry) Unregister(hash string) {
 		return
 	}
 	e.mu.Lock()
-	defer e.mu.Unlock()
+	abandoned := 0
 	if !e.done {
 		// Original ended without a Done chunk (cancel/timeout/error). Closing
 		// the subscriber channels without a Done makes each follower's handler
@@ -232,7 +277,16 @@ func (r *Registry) Unregister(hash string) {
 		for _, sub := range e.subs {
 			close(sub.ch)
 		}
+		abandoned = len(e.subs)
 		e.subs = nil
+	}
+	e.mu.Unlock()
+
+	if abandoned > 0 {
+		// Says how many callers one failed inference took down with it, which
+		// the failing callers' own logs cannot show.
+		r.log.Warn("dedup: entry ended without completion, failing coalesced followers",
+			"hash", shortHash(hash), "followers_failed", abandoned)
 	}
 }
 

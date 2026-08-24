@@ -55,7 +55,7 @@ func (fakeQueue) PopByID(string) *types.InferenceRequest { return nil }
 func (fakeQueue) Len() int                               { return 0 }
 
 func pumpHandler(activity time.Duration) (*Handler, *dedup.Registry, *fakeCorrelation, *fakeCanceller) {
-	reg := dedup.New()
+	reg := dedup.New(nil)
 	corr := &fakeCorrelation{}
 	canc := &fakeCanceller{}
 	h := &Handler{

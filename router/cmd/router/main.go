@@ -325,7 +325,7 @@ func main() {
 		Modalities:        h,
 		InFlight:          h,
 		Limits:            adminHandler.State(),
-		Dedup:             dedup.New(),
+		Dedup:             dedup.New(logring.NewLogger(sink, "dedup", slog.LevelInfo)),
 		MaxRequestBytes:   cfg.MaxRequestBytes(),
 		TTFTTimeout:       timeouts.TTFT,
 		ActivityTimeout:   timeouts.Activity,
