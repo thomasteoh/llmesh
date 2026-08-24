@@ -75,6 +75,26 @@
     {{end}}
 {{end}}
 
+{{- /* client-rows: the body of the Clients table. Named so the poll that
+       refreshes it every ten seconds re-renders from this definition instead of
+       rebuilding the same five cells in JavaScript, which is what it used to
+       do: the status badge's classes, the em-dash fallbacks and the models
+       tooltip were each written twice, in two languages, and only one of the
+       two got updated when the column changed. Expects Clients. */ -}}
+{{define "client-rows"}}
+      {{range .Clients}}
+      <tr>
+        <td data-label="Client">{{.Name}}</td>
+        <td data-label="Status">{{template "status-badge" dict "Class" .StatusClass "Label" .StatusLabel}}</td>
+        <td data-label="Last seen" class="muted">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
+        <td data-label="Models" class="muted"{{if .ModelsTitle}} title="{{.ModelsTitle}}"{{end}}>{{if .Models}}{{.Models}}{{else}}&mdash;{{end}}</td>
+        <td data-label="Version" class="muted">{{if .Version}}{{.Version}}{{else}}&mdash;{{end}}</td>
+      </tr>
+      {{else}}
+      <tr class="empty-row"><td colspan="5">No client tokens registered.</td></tr>
+      {{end}}
+{{end}}
+
 {{define "content"}}
 <div class="page-head">
   <div class="page-title">Dashboard</div>
@@ -176,17 +196,7 @@
   <table class="data-table">
     <thead><tr><th>Client</th><th>Status</th><th>Last seen</th><th>Models</th><th>Version</th></tr></thead>
     <tbody id="client-tbody">
-      {{range .Clients}}
-      <tr>
-        <td data-label="Client">{{.Name}}</td>
-        <td data-label="Status">{{template "status-badge" dict "Class" .StatusClass "Label" .StatusLabel}}</td>
-        <td data-label="Last seen" class="muted">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
-        <td data-label="Models" class="muted"{{if .ModelsTitle}} title="{{.ModelsTitle}}"{{end}}>{{if .Models}}{{.Models}}{{else}}&mdash;{{end}}</td>
-        <td data-label="Version" class="muted">{{if .Version}}{{.Version}}{{else}}&mdash;{{end}}</td>
-      </tr>
-      {{else}}
-      <tr class="empty-row"><td colspan="5">No client tokens registered.</td></tr>
-      {{end}}
+      {{template "client-rows" .}}
     </tbody>
   </table>
 </div>

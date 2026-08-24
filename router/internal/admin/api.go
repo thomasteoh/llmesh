@@ -20,36 +20,26 @@ type statRowJSON struct {
 }
 
 type dashboardJSON struct {
-	TotalRequests int64        `json:"total_requests"`
-	ActiveClients int          `json:"active_clients"`
-	APIKeyCount   int          `json:"api_key_count"`
-	TokenCount    int          `json:"token_count"`
-	Clients       []clientJSON `json:"clients"`
-	// ActiveModelsHTML and AliasChainsHTML are the two model cards rendered
-	// through the page's own templates, so the script swaps in markup it did not
-	// have to know how to build — the alias badges carry admin forms and CSRF
-	// tokens, which belong to the server.
+	TotalRequests int64 `json:"total_requests"`
+	ActiveClients int   `json:"active_clients"`
+	APIKeyCount   int   `json:"api_key_count"`
+	TokenCount    int   `json:"token_count"`
+	// The three refreshed regions, each rendered through the page's own
+	// templates, so the script swaps in markup it did not have to know how to
+	// build. The alias badges carry admin forms and CSRF tokens, which belong to
+	// the server; the client rows carry status-badge classes and fallbacks that
+	// were previously spelled out a second time in JavaScript.
 	//
-	// This replaces an active_models list and an active_aliases map that were
-	// sent on every poll and read by nothing, leaving both cards frozen at
-	// whatever was true when the page loaded while the client table beside them
-	// updated. The map was also keyed the wrong way round for the card it would
-	// have fed: alias→models, where the card needs model→aliases.
+	// active_models_html and alias_chains_html replace an active_models list and
+	// an active_aliases map that were sent on every poll and read by nothing,
+	// leaving both cards frozen at whatever was true when the page loaded. The
+	// map was also keyed the wrong way round for the card it would have fed:
+	// alias→models, where the card needs model→aliases.
+	ClientRowsHTML   string        `json:"client_rows_html"`
 	ActiveModelsHTML string        `json:"active_models_html"`
 	AliasChainsHTML  string        `json:"alias_chains_html"`
 	StatsByModel     []statRowJSON `json:"stats_by_model,omitempty"`
 	StatsByUser      []statRowJSON `json:"stats_by_user,omitempty"`
-}
-
-type clientJSON struct {
-	Name        string `json:"name"`
-	Status      string `json:"status"`
-	StatusClass string `json:"status_class"`
-	StatusLabel string `json:"status_label"`
-	LastSeen    string `json:"last_seen,omitempty"`
-	Models      string `json:"models,omitempty"`
-	ModelsTitle string `json:"models_title,omitempty"`
-	Version     string `json:"version,omitempty"`
 }
 
 func toStatRowJSON(rows []StatRow) []statRowJSON {
@@ -122,23 +112,6 @@ func (a *Admin) handleLogsJSON(w http.ResponseWriter, r *http.Request) {
 // ─── Dashboard API ────────────────────────────────────────────────────────────
 
 func (a *Admin) handleDashboardJSON(w http.ResponseWriter, r *http.Request) {
-	// Built by the same function the page uses, so a row inserted by the poll
-	// describes the fleet exactly as a rendered one does.
-	rows := a.dashboardClientRows()
-	clients := make([]clientJSON, 0, len(rows))
-	for _, row := range rows {
-		clients = append(clients, clientJSON{
-			Name:        row.Name,
-			Status:      row.Status,
-			StatusClass: row.StatusClass,
-			StatusLabel: row.StatusLabel,
-			LastSeen:    row.LastSeen,
-			Models:      row.Models,
-			ModelsTitle: row.ModelsTitle,
-			Version:     row.Version,
-		})
-	}
-
 	activeModels := a.hub.ActiveModels()
 	sort.Strings(activeModels)
 
@@ -151,7 +124,10 @@ func (a *Admin) handleDashboardJSON(w http.ResponseWriter, r *http.Request) {
 			csrf = token
 		}
 	}
-	cards := modelCardData{
+	frag := dashboardFragmentData{
+		// Built by the same function the page uses, so a row the poll swaps in
+		// describes the fleet exactly as a rendered one does.
+		Clients:      a.dashboardClientRows(),
 		ActiveModels: activeModels,
 		ModelAliases: invertAliasMap(a.state.AliasMap()),
 		AliasChains:  aliasChainRows(a.state.AliasTargets(), activeModels),
@@ -164,9 +140,9 @@ func (a *Admin) handleDashboardJSON(w http.ResponseWriter, r *http.Request) {
 		ActiveClients:    a.hub.ActiveClientCount(),
 		APIKeyCount:      a.state.APIKeyCount(),
 		TokenCount:       a.state.ClientTokenCount(),
-		Clients:          clients,
-		ActiveModelsHTML: a.renderDashboardFragment("active-models-list", cards),
-		AliasChainsHTML:  a.renderDashboardFragment("alias-chain-list", cards),
+		ClientRowsHTML:   a.renderDashboardFragment("client-rows", frag),
+		ActiveModelsHTML: a.renderDashboardFragment("active-models-list", frag),
+		AliasChainsHTML:  a.renderDashboardFragment("alias-chain-list", frag),
 		StatsByModel:     toStatRowJSON(statsRows(a.stats, true)),
 		StatsByUser:      toStatRowJSON(statsRows(a.stats, false)),
 	}
@@ -174,9 +150,10 @@ func (a *Admin) handleDashboardJSON(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-// modelCardData is the subset of DashboardPage the two model-card templates
+// dashboardFragmentData is the subset of DashboardPage the refreshed templates
 // read, so the poll can render them without assembling a whole page.
-type modelCardData struct {
+type dashboardFragmentData struct {
+	Clients      []ClientRow
 	ActiveModels []string
 	ModelAliases map[string][]string
 	AliasChains  []AliasChainRow
@@ -187,7 +164,7 @@ type modelCardData struct {
 // renderDashboardFragment renders one of the Dashboard's named list templates.
 // Returns "" if rendering fails, which the page treats as "leave what is on
 // screen alone" rather than blanking a card.
-func (a *Admin) renderDashboardFragment(name string, data modelCardData) string {
+func (a *Admin) renderDashboardFragment(name string, data dashboardFragmentData) string {
 	t := a.tmpls["dashboard"]
 	if t == nil {
 		return ""

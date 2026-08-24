@@ -307,66 +307,21 @@ function initDashboard() {
   var tbody = document.getElementById('client-tbody');
   if (!tbody) return;
 
-  function buildRow(c) {
-    var tr = document.createElement('tr');
+  /* swapRegion replaces a region's contents with server-rendered markup.
+     Skipped when nothing changed, which is the usual case — a fleet that has
+     not altered between polls costs no DOM work at all, where rebuilding the
+     rows every ten seconds discarded and recreated the whole table each time.
+     Skipped too while the region holds input the user has started: the model
+     cards carry the alias editor, and swapping it out mid-word would eat what
+     was typed or move the caret out from under them.
 
-    var tdName = document.createElement('td');
-    tdName.setAttribute('data-label', 'Client');
-    tdName.textContent = c.name || '';
-    tr.appendChild(tdName);
-
-    // Status class + label come straight from the server (single source of truth).
-    var tdStatus = document.createElement('td');
-    tdStatus.setAttribute('data-label', 'Status');
-    var span = document.createElement('span');
-    span.className = 'badge ' + (c.status_class || '');
-    span.textContent = c.status_label || c.status || '';
-    tdStatus.appendChild(span);
-    tr.appendChild(tdStatus);
-
-    var tdLast = document.createElement('td');
-    tdLast.className = 'muted';
-    tdLast.setAttribute('data-label', 'Last seen');
-    tdLast.textContent = c.last_seen || '—';
-    tr.appendChild(tdLast);
-
-    var tdModels = document.createElement('td');
-    tdModels.className = 'muted';
-    tdModels.setAttribute('data-label', 'Models');
-    tdModels.textContent = c.models || '—';
-    // The cell may summarise ("all", "all except x"); the title is the full list.
-    if (c.models_title) tdModels.title = c.models_title;
-    tr.appendChild(tdModels);
-
-    var tdVersion = document.createElement('td');
-    tdVersion.className = 'muted';
-    tdVersion.setAttribute('data-label', 'Version');
-    tdVersion.textContent = c.version || '—';
-    tr.appendChild(tdVersion);
-
-    return tr;
-  }
-
-  function emptyRow() {
-    var tr = document.createElement('tr');
-    tr.className = 'empty-row';
-    var td = document.createElement('td');
-    td.colSpan = 5;
-    td.textContent = 'No client tokens registered.';
-    tr.appendChild(td);
-    return tr;
-  }
-
-  /* swapCard replaces a card's contents with server-rendered markup.
-     Skipped when nothing changed, so the DOM is not rebuilt every poll, and
-     when the card holds input the user has started — these cards carry the
-     alias editor, and swapping it out mid-word would eat what was typed or
-     move the caret out from under them. */
-  function swapCard(id, html) {
+     A region with an accompanying "<id>-card" wrapper has it hidden when there
+     is nothing to show, so a card can appear once its first row exists. */
+  function swapRegion(id, html) {
     var el = document.getElementById(id);
     // An empty string means the server failed to render, which is a reason to
-    // leave the last good markup alone. A card with genuinely nothing to show
-    // renders as whitespace, and is hidden rather than left stale.
+    // leave the last good markup alone. A region with genuinely nothing to show
+    // renders as whitespace, and is emptied or hidden rather than left stale.
     if (!el || typeof html !== 'string' || html === '') return;
     if (el.innerHTML === html) return;
     if (el.contains(document.activeElement)) return;
@@ -389,15 +344,10 @@ function initDashboard() {
     // Which models are being served, and whether each alias target is
     // reachable, change as workers come and go — the same events the client
     // table below is polling for.
-    swapCard('active-models', d.active_models_html);
-    swapCard('alias-chains', d.alias_chains_html);
+    swapRegion('active-models', d.active_models_html);
+    swapRegion('alias-chains', d.alias_chains_html);
 
-    tbody.innerHTML = '';
-    if (d.clients && d.clients.length) {
-      d.clients.forEach(function(c) { tbody.appendChild(buildRow(c)); });
-    } else {
-      tbody.appendChild(emptyRow());
-    }
+    swapRegion('client-tbody', d.client_rows_html);
 
     var lu = document.getElementById('last-updated');
     if (lu) lu.textContent = 'Updated ' + new Date().toLocaleTimeString();
