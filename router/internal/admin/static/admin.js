@@ -355,12 +355,40 @@ function initDashboard() {
     return tr;
   }
 
+  /* swapCard replaces a card's contents with server-rendered markup.
+     Skipped when nothing changed, so the DOM is not rebuilt every poll, and
+     when the card holds input the user has started — these cards carry the
+     alias editor, and swapping it out mid-word would eat what was typed or
+     move the caret out from under them. */
+  function swapCard(id, html) {
+    var el = document.getElementById(id);
+    // An empty string means the server failed to render, which is a reason to
+    // leave the last good markup alone. A card with genuinely nothing to show
+    // renders as whitespace, and is hidden rather than left stale.
+    if (!el || typeof html !== 'string' || html === '') return;
+    if (el.innerHTML === html) return;
+    if (el.contains(document.activeElement)) return;
+    var dirty = Array.prototype.some.call(el.querySelectorAll('input'), function(i) {
+      return i.type !== 'hidden' && i.value !== '';
+    });
+    if (dirty) return;
+    el.innerHTML = html;
+    var card = document.getElementById(id + '-card');
+    if (card) card.hidden = html.trim() === '';
+  }
+
   function onData(d) {
     var el;
     el = document.getElementById('req-count');      if (el) el.textContent = d.total_requests;
     el = document.getElementById('active-clients'); if (el) el.textContent = d.active_clients;
     el = document.getElementById('api-key-count');  if (el) el.textContent = d.api_key_count;
     el = document.getElementById('token-count');    if (el) el.textContent = d.token_count;
+
+    // Which models are being served, and whether each alias target is
+    // reachable, change as workers come and go — the same events the client
+    // table below is polling for.
+    swapCard('active-models', d.active_models_html);
+    swapCard('alias-chains', d.alias_chains_html);
 
     tbody.innerHTML = '';
     if (d.clients && d.clients.length) {

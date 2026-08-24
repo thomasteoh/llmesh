@@ -20,15 +20,25 @@ type statRowJSON struct {
 }
 
 type dashboardJSON struct {
-	TotalRequests int64               `json:"total_requests"`
-	ActiveClients int                 `json:"active_clients"`
-	APIKeyCount   int                 `json:"api_key_count"`
-	TokenCount    int                 `json:"token_count"`
-	ActiveModels  []string            `json:"active_models"`
-	ActiveAliases map[string][]string `json:"active_aliases"`
-	Clients       []clientJSON        `json:"clients"`
-	StatsByModel  []statRowJSON       `json:"stats_by_model,omitempty"`
-	StatsByUser   []statRowJSON       `json:"stats_by_user,omitempty"`
+	TotalRequests int64        `json:"total_requests"`
+	ActiveClients int          `json:"active_clients"`
+	APIKeyCount   int          `json:"api_key_count"`
+	TokenCount    int          `json:"token_count"`
+	Clients       []clientJSON `json:"clients"`
+	// ActiveModelsHTML and AliasChainsHTML are the two model cards rendered
+	// through the page's own templates, so the script swaps in markup it did not
+	// have to know how to build — the alias badges carry admin forms and CSRF
+	// tokens, which belong to the server.
+	//
+	// This replaces an active_models list and an active_aliases map that were
+	// sent on every poll and read by nothing, leaving both cards frozen at
+	// whatever was true when the page loaded while the client table beside them
+	// updated. The map was also keyed the wrong way round for the card it would
+	// have fed: alias→models, where the card needs model→aliases.
+	ActiveModelsHTML string        `json:"active_models_html"`
+	AliasChainsHTML  string        `json:"alias_chains_html"`
+	StatsByModel     []statRowJSON `json:"stats_by_model,omitempty"`
+	StatsByUser      []statRowJSON `json:"stats_by_user,omitempty"`
 }
 
 type clientJSON struct {
@@ -132,19 +142,61 @@ func (a *Admin) handleDashboardJSON(w http.ResponseWriter, r *http.Request) {
 	activeModels := a.hub.ActiveModels()
 	sort.Strings(activeModels)
 
+	// The cards carry admin controls, so they are rendered with the caller's own
+	// role and CSRF token — never a cached copy built for someone else.
+	u := ctxGetUser(r)
+	var csrf string
+	if c, err := r.Cookie(sessionCookie); err == nil {
+		if token, ok := a.sessions.getCSRF(c.Value); ok {
+			csrf = token
+		}
+	}
+	cards := modelCardData{
+		ActiveModels: activeModels,
+		ModelAliases: invertAliasMap(a.state.AliasMap()),
+		AliasChains:  aliasChainRows(a.state.AliasTargets(), activeModels),
+		IsAdmin:      u.Role == "admin",
+		CSRFToken:    csrf,
+	}
+
 	resp := dashboardJSON{
-		TotalRequests: a.reqCount(),
-		ActiveClients: a.hub.ActiveClientCount(),
-		APIKeyCount:   a.state.APIKeyCount(),
-		TokenCount:    a.state.ClientTokenCount(),
-		ActiveModels:  activeModels,
-		ActiveAliases: a.state.AliasMap(),
-		Clients:       clients,
-		StatsByModel:  toStatRowJSON(statsRows(a.stats, true)),
-		StatsByUser:   toStatRowJSON(statsRows(a.stats, false)),
+		TotalRequests:    a.reqCount(),
+		ActiveClients:    a.hub.ActiveClientCount(),
+		APIKeyCount:      a.state.APIKeyCount(),
+		TokenCount:       a.state.ClientTokenCount(),
+		Clients:          clients,
+		ActiveModelsHTML: a.renderDashboardFragment("active-models-list", cards),
+		AliasChainsHTML:  a.renderDashboardFragment("alias-chain-list", cards),
+		StatsByModel:     toStatRowJSON(statsRows(a.stats, true)),
+		StatsByUser:      toStatRowJSON(statsRows(a.stats, false)),
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+// modelCardData is the subset of DashboardPage the two model-card templates
+// read, so the poll can render them without assembling a whole page.
+type modelCardData struct {
+	ActiveModels []string
+	ModelAliases map[string][]string
+	AliasChains  []AliasChainRow
+	IsAdmin      bool
+	CSRFToken    string
+}
+
+// renderDashboardFragment renders one of the Dashboard's named list templates.
+// Returns "" if rendering fails, which the page treats as "leave what is on
+// screen alone" rather than blanking a card.
+func (a *Admin) renderDashboardFragment(name string, data modelCardData) string {
+	t := a.tmpls["dashboard"]
+	if t == nil {
+		return ""
+	}
+	var buf bytes.Buffer
+	if err := t.ExecuteTemplate(&buf, name, data); err != nil {
+		return ""
+	}
+	return buf.String()
 }
 
 // ─── Jobs API ─────────────────────────────────────────────────────────────────
