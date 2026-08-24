@@ -72,8 +72,8 @@ func pumpHandler(activity time.Duration) (*Handler, *dedup.Registry, *fakeCorrel
 // merged channel.
 func subscribe(t *testing.T, reg *dedup.Registry, ctx context.Context, hash string) <-chan types.ChunkMsg {
 	t.Helper()
-	if isOriginal, _, _ := reg.RegisterOrSubscribe(hash); !isOriginal {
-		t.Fatal("first caller should be the original")
+	if role, _, _ := reg.RegisterOrSubscribe(hash); role != dedup.RoleOriginal {
+		t.Fatalf("first caller role = %v, want RoleOriginal", role)
 	}
 	_, buf, live := reg.RegisterOrSubscribe(hash)
 	if live == nil {

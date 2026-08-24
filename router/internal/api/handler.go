@@ -457,8 +457,9 @@ func (h *Handler) enqueue(
 	// response instead of occupying a new worker slot.
 	if h.Dedup != nil {
 		hash := dedup.ContentHashOpts(req, opts.CoalesceNormalize)
-		isOriginal, buf, live := h.Dedup.RegisterOrSubscribe(hash)
-		if !isOriginal {
+		role, buf, live := h.Dedup.RegisterOrSubscribe(hash)
+		switch role {
+		case dedup.RoleFollower:
 			req.ID = uuid.New().String()
 			req.Priority = h.Keys.PriorityFor(key)
 			req.Owner = h.Keys.OwnerFor(key)
@@ -474,61 +475,68 @@ func (h *Handler) enqueue(
 				h.batchResponse(w, r, req, subCh, "", nil)
 			}
 			return
-		}
-		// Original: must unregister when done (success or failure) — unless it
-		// hands the stream to a background pump, which then owns the cleanup.
-		detached := false
-		defer func() {
-			if !detached {
-				h.Dedup.Unregister(hash)
-			}
-		}()
-		// Store hash for forwarding chunks to subscribers below.
-		req.ID = uuid.New().String()
-		req.Priority = h.Keys.PriorityFor(key)
-		req.Owner = h.Keys.OwnerFor(key)
-		req.APIKeyLabel = h.Keys.LabelFor(key)
-		req.WordCount = wordCount
-		h.requestCount.Add(1)
-		req.EnqueuedAt = time.Now()
 
-		ch := h.Correlation.Create(req.ID)
-		defer func() {
-			if !detached {
+		case dedup.RoleOriginal:
+			// Must unregister when done (success or failure) — unless it hands
+			// the stream to a background pump, which then owns the cleanup.
+			detached := false
+			defer func() {
+				if !detached {
+					h.Dedup.Unregister(hash)
+				}
+			}()
+			// Store hash for forwarding chunks to subscribers below.
+			req.ID = uuid.New().String()
+			req.Priority = h.Keys.PriorityFor(key)
+			req.Owner = h.Keys.OwnerFor(key)
+			req.APIKeyLabel = h.Keys.LabelFor(key)
+			req.WordCount = wordCount
+			h.requestCount.Add(1)
+			req.EnqueuedAt = time.Now()
+
+			ch := h.Correlation.Create(req.ID)
+			defer func() {
+				if !detached {
+					h.Correlation.Delete(req.ID)
+				}
+			}()
+
+			if !h.Queue.TryPush(*req) {
+				apiLogger().Warn("api: queue full, rejecting request", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "queue_depth", h.Queue.Len())
 				h.Correlation.Delete(req.ID)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusTooManyRequests)
+				w.Write([]byte(`{"error":{"message":"server busy, queue is full — try again shortly","type":"server_error"}}` + "\n"))
+				return
 			}
-		}()
+			apiLogger().Info("api: request enqueued", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "key_label", req.APIKeyLabel, "priority", priorityName(int(req.Priority)), "stream", req.Stream, "word_count", req.WordCount, "ip", clientIP(r), "queue_depth", h.Queue.Len())
+			h.Scheduler.Wake()
 
-		if !h.Queue.TryPush(*req) {
-			apiLogger().Warn("api: queue full, rejecting request", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "queue_depth", h.Queue.Len())
-			h.Correlation.Delete(req.ID)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusTooManyRequests)
-			w.Write([]byte(`{"error":{"message":"server busy, queue is full — try again shortly","type":"server_error"}}` + "\n"))
+			// This caller going away must not cancel an answer other callers
+			// were coalesced onto. When followers remain, a pump takes over the
+			// stream and this handler leaves the request, the registry entry
+			// and the correlation channel to it.
+			onDisconnect := func() bool {
+				if !h.Dedup.HasSubscribers(hash) {
+					return false
+				}
+				detached = true
+				go h.pumpForFollowers(req.ID, hash, ch)
+				return true
+			}
+
+			if req.Stream {
+				h.streamResponse(w, r, req, ch, hash, onDisconnect)
+			} else {
+				h.batchResponse(w, r, req, ch, hash, onDisconnect)
+			}
 			return
 		}
-		apiLogger().Info("api: request enqueued", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "key_label", req.APIKeyLabel, "priority", priorityName(int(req.Priority)), "stream", req.Stream, "word_count", req.WordCount, "ip", clientIP(r), "queue_depth", h.Queue.Len())
-		h.Scheduler.Wake()
-
-		// This caller going away must not cancel an answer other callers were
-		// coalesced onto. When followers remain, a pump takes over the stream
-		// and this handler leaves the request, the registry entry and the
-		// correlation channel to it.
-		onDisconnect := func() bool {
-			if !h.Dedup.HasSubscribers(hash) {
-				return false
-			}
-			detached = true
-			go h.pumpForFollowers(req.ID, hash, ch)
-			return true
-		}
-
-		if req.Stream {
-			h.streamResponse(w, r, req, ch, hash, onDisconnect)
-		} else {
-			h.batchResponse(w, r, req, ch, hash, onDisconnect)
-		}
-		return
+		// RoleIndependent: an identical request is in flight but has produced
+		// too much output to replay from the start. This caller owns no
+		// registry entry, so it must neither forward nor unregister — it falls
+		// through to the ordinary path and runs on its own.
+		apiLogger().Debug("api: coalescing unavailable, running independently", "model", req.Model)
 	}
 
 	req.ID = uuid.New().String()
