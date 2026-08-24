@@ -135,9 +135,9 @@ func inferTo(t *testing.T, stream bool, body string) *types.UsageInfo {
 	err := New(srv.URL, nil).Infer(context.Background(),
 		types.InferenceRequest{Model: "m", Stream: stream},
 		"",
-		func(delta string, tc json.RawMessage, done bool, finish string, usage *types.UsageInfo) {
-			if done {
-				final = usage
+		func(c Chunk) {
+			if c.Done {
+				final = c.Usage
 			}
 		})
 	if err != nil {

@@ -184,8 +184,12 @@ type openAIChunkChoice struct {
 }
 
 type openAIDelta struct {
-	Content   string          `json:"content,omitempty"`
-	ToolCalls json.RawMessage `json:"tool_calls,omitempty"`
+	Content string `json:"content,omitempty"`
+	// ReasoningContent is the field name llama.cpp, vLLM and DeepSeek all use
+	// for thinking streamed alongside the answer, so callers that render it
+	// already know to look here.
+	ReasoningContent string          `json:"reasoning_content,omitempty"`
+	ToolCalls        json.RawMessage `json:"tool_calls,omitempty"`
 }
 
 // OpenAISSEChunk formats a ChunkMsg as an OpenAI SSE line (without trailing newlines).
@@ -194,7 +198,7 @@ func OpenAISSEChunk(requestID, model string, chunk types.ChunkMsg) string {
 	if chunk.Done && chunk.FinishReason != "" {
 		finishReason = &chunk.FinishReason
 	}
-	delta := openAIDelta{Content: chunk.Delta}
+	delta := openAIDelta{Content: chunk.Delta, ReasoningContent: chunk.ReasoningDelta}
 	if len(chunk.ToolCallsDelta) > 0 {
 		delta.ToolCalls = chunk.ToolCallsDelta
 	}
@@ -341,12 +345,13 @@ func parseOpenAIToolCalls(raw json.RawMessage) []toolCall {
 // chunk, Done at completion. It is used by a single request goroutine and needs
 // no synchronisation.
 type AnthropicStreamer struct {
-	requestID string
-	model     string
-	started   bool
-	textOpen  bool
-	index     int
-	toolBuf   []byte // accumulated tool_calls delta bytes (last non-empty wins)
+	requestID    string
+	model        string
+	started      bool
+	thinkingOpen bool
+	textOpen     bool
+	index        int
+	toolBuf      []byte // accumulated tool_calls delta bytes (last non-empty wins)
 }
 
 // NewAnthropicStreamer returns a streamer for the given request and model.
@@ -387,8 +392,32 @@ func (s *AnthropicStreamer) Delta(chunk types.ChunkMsg) []string {
 	if len(chunk.ToolCallsDelta) > 0 {
 		s.toolBuf = append(s.toolBuf[:0], chunk.ToolCallsDelta...)
 	}
+	// Reasoning becomes a thinking block, which is where an Anthropic client
+	// expects a model's chain of thought. Anthropic orders thinking before the
+	// answer, and so does every backend that separates the two, so the block
+	// closes as soon as answer text starts rather than interleaving.
+	if chunk.ReasoningDelta != "" {
+		if !s.thinkingOpen && !s.textOpen {
+			s.thinkingOpen = true
+			out = append(out, sseEvent("content_block_start", map[string]any{
+				"type":          "content_block_start",
+				"index":         s.index,
+				"content_block": map[string]any{"type": "thinking", "thinking": ""},
+			}))
+		}
+		if s.thinkingOpen {
+			out = append(out, sseEvent("content_block_delta", map[string]any{
+				"type":  "content_block_delta",
+				"index": s.index,
+				"delta": map[string]any{"type": "thinking_delta", "thinking": chunk.ReasoningDelta},
+			}))
+		}
+	}
 	if chunk.Delta == "" {
 		return out
+	}
+	if s.thinkingOpen {
+		out = append(out, s.closeThinking()...)
 	}
 	if !s.textOpen {
 		s.textOpen = true
@@ -406,12 +435,28 @@ func (s *AnthropicStreamer) Delta(chunk types.ChunkMsg) []string {
 	return out
 }
 
+// closeThinking emits the content_block_stop for an open thinking block and
+// advances the block index. Safe to call only while thinkingOpen.
+func (s *AnthropicStreamer) closeThinking() []string {
+	s.thinkingOpen = false
+	out := []string{sseEvent("content_block_stop", map[string]any{
+		"type": "content_block_stop", "index": s.index,
+	})}
+	s.index++
+	return out
+}
+
 // Done returns the closing events: any pending content_block_stop, tool_use
 // blocks flushed from buffered tool-call deltas, then message_delta and
 // message_stop. usage may be nil.
 func (s *AnthropicStreamer) Done(finishReason string, usage *types.UsageInfo) []string {
 	var out []string
 	out = append(out, s.start()...) // ensure message_start even for empty output
+	if s.thinkingOpen {
+		// A model that thought and then went straight to tool calls, or was cut
+		// off mid-thought, leaves this block open.
+		out = append(out, s.closeThinking()...)
+	}
 	if s.textOpen {
 		out = append(out, sseEvent("content_block_stop", map[string]any{
 			"type": "content_block_stop", "index": s.index,
