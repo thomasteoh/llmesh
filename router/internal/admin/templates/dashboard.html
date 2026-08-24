@@ -181,7 +181,7 @@
         <td data-label="Client">{{.Name}}</td>
         <td data-label="Status">{{template "status-badge" dict "Class" .StatusClass "Label" .StatusLabel}}</td>
         <td data-label="Last seen" class="muted">{{if .LastSeen}}{{.LastSeen}}{{else}}&mdash;{{end}}</td>
-        <td data-label="Models" class="muted">{{if .Models}}{{.Models}}{{else}}&mdash;{{end}}</td>
+        <td data-label="Models" class="muted"{{if .ModelsTitle}} title="{{.ModelsTitle}}"{{end}}>{{if .Models}}{{.Models}}{{else}}&mdash;{{end}}</td>
         <td data-label="Version" class="muted">{{if .Version}}{{.Version}}{{else}}&mdash;{{end}}</td>
       </tr>
       {{else}}

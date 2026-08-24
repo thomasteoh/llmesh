@@ -35,6 +35,13 @@ func connTestAdmin(t *testing.T) (*Admin, *hub.Hub) {
 // live connection rather than an unregistered socket.
 func dialClient(t *testing.T, h *hub.Hub, name, owner, tokenHash string) *websocket.Conn {
 	t.Helper()
+	return dialClientWithModels(t, h, name, owner, tokenHash, "llama3")
+}
+
+// dialClientWithModels is dialClient for a worker advertising a specific set,
+// which is what tests about differing fleets need.
+func dialClientWithModels(t *testing.T, h *hub.Hub, name, owner, tokenHash string, models ...string) *websocket.Conn {
+	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h.ServeWS(w, r, name, owner, tokenHash, nil)
 	}))
@@ -44,9 +51,13 @@ func dialClient(t *testing.T, h *hub.Hub, name, owner, tokenHash string) *websoc
 		t.Fatalf("dial %s: %v", name, err)
 	}
 	t.Cleanup(func() { conn.Close() })
+	declared := make([]map[string]any, 0, len(models))
+	for _, m := range models {
+		declared = append(declared, map[string]any{"name": m})
+	}
 	if err := conn.WriteJSON(map[string]any{
 		"type":           "register",
-		"models":         []map[string]any{{"name": "llama3"}},
+		"models":         declared,
 		"max_concurrent": 2,
 		"version":        "1.0.0",
 	}); err != nil {
