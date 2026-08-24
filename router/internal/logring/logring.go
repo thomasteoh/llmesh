@@ -18,7 +18,7 @@ const DefaultCap = 500
 // knownCategories are the categories every Sink starts with, so the admin UI
 // can offer them before the subsystem has logged anything. A category outside
 // this list is not rejected — see add — it simply has no ring until first use.
-var knownCategories = []string{"router", "hub", "scheduler", "api", "correlation", "upstream", "admin"}
+var knownCategories = []string{"router", "hub", "scheduler", "api", "correlation", "upstream", "dedup", "admin"}
 
 // Entry is a single captured log record.
 type Entry struct {

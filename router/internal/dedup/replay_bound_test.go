@@ -31,7 +31,7 @@ func readAll(t *testing.T, ch <-chan types.ChunkMsg) (count int, sawDone bool) {
 // Short requests — the ones coalescing is actually for — must still replay in
 // full, so a follower joining mid-response sees the whole answer.
 func TestReplayBuffer_ShortResponseStillReplays(t *testing.T) {
-	r := New()
+	r := New(nil)
 	r.RegisterOrSubscribe("h")
 	for i := 0; i < 10; i++ {
 		r.Forward("h", textChunk("x"))
@@ -57,7 +57,7 @@ func TestReplayBuffer_ShortResponseStillReplays(t *testing.T) {
 // on a router running many concurrent long generations it is a per-request
 // memory multiplier competing with the inference process.
 func TestReplayBuffer_DroppedOnceCapExceeded(t *testing.T) {
-	r := New()
+	r := New(nil)
 	r.RegisterOrSubscribe("h")
 	for i := 0; i < maxReplayChunks+10; i++ {
 		r.Forward("h", textChunk("x"))
@@ -79,7 +79,7 @@ func TestReplayBuffer_DroppedOnceCapExceeded(t *testing.T) {
 // and must keep receiving to the end — dropping the replay buffer is about new
 // arrivals, not existing ones.
 func TestReplayBuffer_ExistingFollowerUnaffectedByDrop(t *testing.T) {
-	r := New()
+	r := New(nil)
 	r.RegisterOrSubscribe("h")
 	_, buf, live := r.RegisterOrSubscribe("h")
 	sub := MakeSubscriberChan(context.Background(), buf, live)
@@ -105,7 +105,7 @@ func TestReplayBuffer_ExistingFollowerUnaffectedByDrop(t *testing.T) {
 // An independent caller owns nothing. If it were to unregister, it would tear
 // down the real original's entry and fail every follower on it.
 func TestReplayBuffer_IndependentCallerDoesNotOwnEntry(t *testing.T) {
-	r := New()
+	r := New(nil)
 	r.RegisterOrSubscribe("h")
 	_, _, live := r.RegisterOrSubscribe("h")
 	if live == nil {
