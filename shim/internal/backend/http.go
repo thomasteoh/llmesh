@@ -226,8 +226,9 @@ func parseOpenAIBatch(out []byte) (BatchResult, error) {
 	var r struct {
 		Choices []struct {
 			Message struct {
-				Content   string          `json:"content"`
-				ToolCalls json.RawMessage `json:"tool_calls"`
+				Content          string          `json:"content"`
+				ReasoningContent string          `json:"reasoning_content"`
+				ToolCalls        json.RawMessage `json:"tool_calls"`
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
@@ -244,6 +245,7 @@ func parseOpenAIBatch(out []byte) (BatchResult, error) {
 	}
 	return BatchResult{
 		Content:      r.Choices[0].Message.Content,
+		Reasoning:    r.Choices[0].Message.ReasoningContent,
 		ToolCalls:    r.Choices[0].Message.ToolCalls,
 		FinishReason: fr,
 	}, nil
@@ -252,21 +254,24 @@ func parseOpenAIBatch(out []byte) (BatchResult, error) {
 func parseAnthropicBatch(out []byte) (BatchResult, error) {
 	var r struct {
 		Content []struct {
-			Type  string          `json:"type"`
-			Text  string          `json:"text"`
-			ID    string          `json:"id"`
-			Name  string          `json:"name"`
-			Input json.RawMessage `json:"input"`
+			Type     string          `json:"type"`
+			Text     string          `json:"text"`
+			Thinking string          `json:"thinking"`
+			ID       string          `json:"id"`
+			Name     string          `json:"name"`
+			Input    json.RawMessage `json:"input"`
 		} `json:"content"`
 		StopReason string `json:"stop_reason"`
 	}
 	if err := json.Unmarshal(out, &r); err != nil {
 		return BatchResult{}, fmt.Errorf("parse anthropic response: %w", err)
 	}
-	var parts []string
+	var parts, thinking []string
 	var tools []openAIToolCall
 	for _, c := range r.Content {
 		switch c.Type {
+		case "thinking":
+			thinking = append(thinking, c.Thinking)
 		case "tool_use":
 			args := "{}"
 			if len(c.Input) > 0 {
@@ -285,7 +290,12 @@ func parseAnthropicBatch(out []byte) (BatchResult, error) {
 	if len(tools) > 0 {
 		toolJSON, _ = json.Marshal(tools)
 	}
-	return BatchResult{Content: strings.Join(parts, ""), ToolCalls: toolJSON, FinishReason: fr}, nil
+	return BatchResult{
+		Content:      strings.Join(parts, ""),
+		Reasoning:    strings.Join(thinking, ""),
+		ToolCalls:    toolJSON,
+		FinishReason: fr,
+	}, nil
 }
 
 // openAIToolCall is the OpenAI tool_calls array element used to normalise tool
@@ -328,15 +338,19 @@ func readOpenAIStream(body io.Reader, fn ChunkFunc) error {
 			// Emit the terminal chunk here, after the usage-only chunk that
 			// OpenAI sends *after* the finish_reason chunk — breaking on
 			// finish_reason (as before) dropped usage entirely.
-			fn("", nil, finishReason, true, usage)
+			fn(Chunk{FinishReason: finishReason, Done: true, Usage: usage})
 			doneEmitted = true
 			break
 		}
 		var chunk struct {
 			Choices []struct {
 				Delta struct {
-					Content   string          `json:"content"`
-					ToolCalls json.RawMessage `json:"tool_calls"`
+					Content string `json:"content"`
+					// Upstreams that separate thinking from the answer leave
+					// content empty for the whole thinking phase, so reading
+					// only content discards most of a reasoning model's output.
+					ReasoningContent string          `json:"reasoning_content"`
+					ToolCalls        json.RawMessage `json:"tool_calls"`
 				} `json:"delta"`
 				FinishReason *string `json:"finish_reason"`
 			} `json:"choices"`
@@ -364,9 +378,10 @@ func readOpenAIStream(body io.Reader, fn ChunkFunc) error {
 			sawFinish = true
 		}
 		delta := chunk.Choices[0].Delta.Content
+		reasoning := chunk.Choices[0].Delta.ReasoningContent
 		toolCalls := chunk.Choices[0].Delta.ToolCalls
-		if delta != "" || len(toolCalls) > 0 {
-			fn(delta, toolCalls, finishReason, false, nil)
+		if delta != "" || reasoning != "" || len(toolCalls) > 0 {
+			fn(Chunk{Delta: delta, Reasoning: reasoning, ToolCalls: toolCalls, FinishReason: finishReason})
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -379,7 +394,7 @@ func readOpenAIStream(body io.Reader, fn ChunkFunc) error {
 		if !sawFinish {
 			return fmt.Errorf("openai stream ended before completion")
 		}
-		fn("", nil, finishReason, true, usage)
+		fn(Chunk{FinishReason: finishReason, Done: true, Usage: usage})
 	}
 	return nil
 }
@@ -419,6 +434,7 @@ func readAnthropicStream(body io.Reader, fn ChunkFunc) error {
 			Delta *struct {
 				Type        string `json:"type"`
 				Text        string `json:"text"`
+				Thinking    string `json:"thinking"`
 				PartialJSON string `json:"partial_json"`
 				StopReason  string `json:"stop_reason"`
 			} `json:"delta"`
@@ -448,8 +464,15 @@ func readAnthropicStream(body io.Reader, fn ChunkFunc) error {
 			switch ev.Delta.Type {
 			case "input_json_delta":
 				toolArgs += ev.Delta.PartialJSON
+			case "thinking_delta":
+				// An extended-thinking upstream emits these instead of text for
+				// the whole thinking phase; dropping them loses that output and
+				// leaves the router seeing silence from a working backend.
+				fn(Chunk{Reasoning: ev.Delta.Thinking, FinishReason: finishReason})
+			case "signature_delta":
+				// Opaque thinking-block signature; carries no user-visible text.
 			default: // "text_delta"
-				fn(ev.Delta.Text, nil, finishReason, false, nil)
+				fn(Chunk{Delta: ev.Delta.Text, FinishReason: finishReason})
 			}
 		case "content_block_stop":
 			if toolOpen {
@@ -458,7 +481,7 @@ func readAnthropicStream(body io.Reader, fn ChunkFunc) error {
 					args = "{}"
 				}
 				tc, _ := json.Marshal([]openAIToolCall{newOpenAIToolCall(toolCount, toolID, toolName, args)})
-				fn("", tc, finishReason, false, nil)
+				fn(Chunk{ToolCalls: tc, FinishReason: finishReason})
 				toolCount++
 				toolOpen = false
 			}
@@ -475,7 +498,7 @@ func readAnthropicStream(body io.Reader, fn ChunkFunc) error {
 				}
 			}
 		case "message_stop":
-			fn("", nil, finishReason, true, usage)
+			fn(Chunk{FinishReason: finishReason, Done: true, Usage: usage})
 			doneEmitted = true
 		}
 	}

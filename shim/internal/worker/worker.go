@@ -2,7 +2,6 @@ package worker
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"os"
 	"time"
@@ -61,6 +60,7 @@ func handleBatch(ctx context.Context, req *types.InferenceRequest, spec *backend
 		Type:           "chunk",
 		RequestID:      req.ID,
 		Delta:          res.Content,
+		ReasoningDelta: res.Reasoning,
 		ToolCallsDelta: res.ToolCalls,
 		Done:           true,
 		FinishReason:   res.FinishReason,
@@ -70,21 +70,22 @@ func handleBatch(ctx context.Context, req *types.InferenceRequest, spec *backend
 
 func handleStream(ctx context.Context, req *types.InferenceRequest, spec *backend.Spec, send func(any) error, st *stats.Stats) error {
 	firstToken := true
-	err := backend.RunStream(ctx, spec, req, func(delta string, toolCalls json.RawMessage, finishReason string, done bool, usage *types.UsageInfo) {
-		if firstToken && delta != "" {
+	err := backend.RunStream(ctx, spec, req, func(c backend.Chunk) {
+		if firstToken && c.Delta != "" {
 			firstToken = false
 		}
-		if usage != nil {
-			st.TotalTokens.Add(int64(usage.CompletionTokens))
+		if c.Usage != nil {
+			st.TotalTokens.Add(int64(c.Usage.CompletionTokens))
 		}
 		chunk := types.ChunkMsg{
 			Type:           "chunk",
 			RequestID:      req.ID,
-			Delta:          delta,
-			ToolCallsDelta: toolCalls,
-			Done:           done,
-			FinishReason:   finishReason,
-			Usage:          usage,
+			Delta:          c.Delta,
+			ReasoningDelta: c.Reasoning,
+			ToolCallsDelta: c.ToolCalls,
+			Done:           c.Done,
+			FinishReason:   c.FinishReason,
+			Usage:          c.Usage,
 		}
 		if sendErr := send(chunk); sendErr != nil {
 			if ctx.Err() == nil {
