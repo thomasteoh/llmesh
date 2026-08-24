@@ -85,7 +85,8 @@ type Dispatcher interface {
 	IncrInFlight(clientID string)
 	DecrInFlight(clientID string)
 	TrackJob(clientID string, req types.InferenceRequest) bool
-	UntrackJob(clientID, requestID string)
+	// UntrackJob reports whether this caller held the record and removed it.
+	UntrackJob(clientID, requestID string) bool
 	NonOwnerInFlight(clientID, owner, model string) int
 }
 
@@ -447,7 +448,16 @@ func (s *Scheduler) drainQueue() {
 		if !s.hub.SendToClient(best.client.ID, job) {
 			// The job never reached the client, so undo the tracking as well —
 			// otherwise it lingers as a phantom in-flight job until its lease expires.
-			s.hub.UntrackJob(best.client.ID, req.ID)
+			//
+			// Untracking also decides who re-queues. If the client died between
+			// TrackJob and here, the hub's disconnect sweep has already taken
+			// the record and released the request; untracking then finds
+			// nothing, and pushing anyway would put a second copy of the same
+			// ID in the queue behind the hub's.
+			if !s.hub.UntrackJob(best.client.ID, req.ID) {
+				s.log.Warn("scheduler: client unavailable, already re-queued by the hub", "client_id", best.client.ID, "request_id", req.ID)
+				return
+			}
 			s.hub.DecrInFlight(best.client.ID)
 			s.queue.Push(*req)
 			s.log.Warn("scheduler: client unavailable, re-queued", "client_id", best.client.ID, "request_id", req.ID)
