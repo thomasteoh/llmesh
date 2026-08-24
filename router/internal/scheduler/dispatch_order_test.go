@@ -16,9 +16,12 @@ import (
 type orderSpy struct {
 	client types.ClientSummary
 
-	inFlight      int
-	tracked       bool
-	untracked     bool
+	inFlight  int
+	tracked   bool
+	untracked bool
+	// untrackLost makes UntrackJob report that someone else already took the
+	// record, as the hub's disconnect sweep does when it wins the race.
+	untrackLost   bool
 	sendOK        bool
 	sends         int
 	countAtSend   int
@@ -44,9 +47,10 @@ func (s *orderSpy) TrackJob(clientID string, req types.InferenceRequest) bool {
 	return true
 }
 
-func (s *orderSpy) UntrackJob(clientID, requestID string) {
+func (s *orderSpy) UntrackJob(clientID, requestID string) bool {
 	s.untracked = true
 	s.tracked = false
+	return !s.untrackLost
 }
 
 func (s *orderSpy) NonOwnerInFlight(clientID, owner, model string) int { return 0 }

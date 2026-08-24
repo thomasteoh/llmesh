@@ -1154,8 +1154,11 @@ func (h *Hub) untrackJob(requestID, clientID string) (InFlightRecord, bool) {
 // the client, so a failed send does not leave a phantom in-flight job that only
 // the lease reaper would clear. Silently does nothing if the record is gone or
 // belongs to another client.
-func (h *Hub) UntrackJob(clientID, requestID string) {
-	h.untrackJob(requestID, clientID)
+// Returns true when this caller held the record and removed it, which is what
+// makes it safe to re-queue the request: exactly one actor gets that answer.
+func (h *Hub) UntrackJob(clientID, requestID string) bool {
+	_, ok := h.untrackJob(requestID, clientID)
+	return ok
 }
 
 // millis converts a duration to fractional milliseconds, clamping negatives to
@@ -1318,6 +1321,13 @@ func (h *Hub) CancelRequest(requestID string) {
 	if err != nil {
 		return
 	}
+	// A dropped cancel is worse than it looks: the slot was freed above, so the
+	// scheduler will dispatch onto a worker that is still generating the
+	// abandoned response. Name the client that missed it rather than letting
+	// the oversubscription show up only as unexplained slowness. The send stays
+	// non-blocking — stalling every other client behind one backed-up peer
+	// would be the worse trade.
+	var missed []string
 	h.mu.RLock()
 	for _, c := range h.clients {
 		c.sendMu.Lock()
@@ -1325,11 +1335,16 @@ func (h *Hub) CancelRequest(requestID string) {
 			select {
 			case c.send <- data:
 			default:
+				missed = append(missed, c.ID)
 			}
 		}
 		c.sendMu.Unlock()
 	}
 	h.mu.RUnlock()
+	if len(missed) > 0 {
+		h.log.Warn("hub: cancel not delivered, client send buffer full",
+			"request_id", requestID, "client_ids", missed)
+	}
 }
 
 // IsConnected reports whether a client with the given token is currently connected.
