@@ -1394,13 +1394,24 @@ func (h *Hub) ConnectedVersion(token string) string {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	var version string
+	found := false
 	for _, c := range h.clients {
-		if c.Token == token {
-			if version == "" {
-				version = c.Version
-			} else if version != c.Version {
-				return "mixed"
-			}
+		if c.Token != token {
+			continue
+		}
+		// found, rather than version != "", marks the baseline. Using the empty
+		// string for both "nothing seen yet" and "this client reported no
+		// version" made the answer depend on map iteration order: for a token
+		// with one versioned and one unversioned connection, seeing the blank
+		// first adopted the version and returned it, while seeing the version
+		// first found the blank disagreed and returned "mixed" — so the column
+		// changed between refreshes with nothing having happened.
+		if !found {
+			version, found = c.Version, true
+			continue
+		}
+		if c.Version != version {
+			return "mixed"
 		}
 	}
 	return version
@@ -1602,6 +1613,76 @@ func (h *Hub) StartLeaseReaper() {
 }
 
 // ConnectedCountByToken returns the number of currently connected clients with the given token.
+// TokenState is one client token's connection state at a single instant.
+type TokenState struct {
+	Connections int
+	Models      []string  // union across the token's connections, sorted
+	Version     string    // "mixed" when the connections disagree
+	LastSeen    time.Time // zero if the token has never connected
+}
+
+// TokenStates returns the state of every token the hub knows about, keyed by
+// token hash. A token absent from the result has never connected.
+//
+// This exists so a caller describing a whole fleet takes one lock instead of
+// several per token. ConnectedCountByToken, ConnectedModels and
+// ConnectedVersion each lock and walk every connection, so building a table
+// row from all three both rescanned the map three times and read three
+// separate instants: a client disconnecting midway through produced a row that
+// called it connected while showing no models and no version. One pass cannot
+// disagree with itself.
+func (h *Hub) TokenStates() map[string]TokenState {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	out := make(map[string]TokenState, len(h.lastSeen)+len(h.clients))
+	models := make(map[string]map[string]bool)
+	// Whether a token has a baseline version yet, kept apart from the version
+	// itself for the reason ConnectedVersion explains: a blank is a real value,
+	// not an absence.
+	versioned := make(map[string]bool)
+
+	for _, c := range h.clients {
+		st := out[c.Token]
+		st.Connections++
+		if !versioned[c.Token] {
+			st.Version = c.Version
+			versioned[c.Token] = true
+		} else if st.Version != c.Version {
+			st.Version = "mixed"
+		}
+		out[c.Token] = st
+
+		if models[c.Token] == nil {
+			models[c.Token] = make(map[string]bool, len(c.Models))
+		}
+		for m := range c.Models {
+			models[c.Token][m] = true
+		}
+	}
+
+	for token, seen := range models {
+		if len(seen) == 0 {
+			continue
+		}
+		list := make([]string, 0, len(seen))
+		for m := range seen {
+			list = append(list, m)
+		}
+		sort.Strings(list)
+		st := out[token]
+		st.Models = list
+		out[token] = st
+	}
+
+	for token, ts := range h.lastSeen {
+		st := out[token]
+		st.LastSeen = ts
+		out[token] = st
+	}
+	return out
+}
+
 func (h *Hub) ConnectedCountByToken(token string) int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()

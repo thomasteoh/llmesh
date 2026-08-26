@@ -546,6 +546,12 @@ func filterQueueForUser(items []types.InferenceRequest, u User) []types.Inferenc
 // fleet in different words.
 func (a *Admin) dashboardClientRows() []ClientRow {
 	tokens := a.state.ClientTokensFor("", true)
+	// One snapshot for the whole table. Read per token, the count, models and
+	// version each came from a separate lock, so a client disconnecting partway
+	// through a row produced one that called it connected and then showed
+	// neither models nor a version.
+	states := a.hub.TokenStates()
+
 	rows := make([]ClientRow, 0, len(tokens))
 	// Each row's models are held back until the whole fleet is known, since
 	// what is worth saying about one client depends on what the others serve.
@@ -553,20 +559,18 @@ func (a *Admin) dashboardClientRows() []ClientRow {
 	fleet := make(map[string]bool)
 
 	for _, t := range tokens {
+		st := states[t.TokenHash]
 		row := ClientRow{Name: t.Owner + "/" + t.Name}
-		connCount := a.hub.ConnectedCountByToken(t.TokenHash)
-		ls := a.hub.LastSeenTime(t.TokenHash)
-		row.Status, row.StatusClass, row.StatusLabel = clientStatusBadge(connCount, !ls.IsZero())
+		row.Status, row.StatusClass, row.StatusLabel = clientStatusBadge(st.Connections, !st.LastSeen.IsZero())
 		var mods []string
-		if connCount > 0 {
-			mods = a.hub.ConnectedModels(t.TokenHash)
-			sort.Strings(mods)
+		if st.Connections > 0 {
+			mods = st.Models
 			for _, m := range mods {
 				fleet[m] = true
 			}
-			row.Version = a.hub.ConnectedVersion(t.TokenHash)
-		} else if !ls.IsZero() {
-			row.LastSeen = humanTime(ls)
+			row.Version = st.Version
+		} else if !st.LastSeen.IsZero() {
+			row.LastSeen = humanTime(st.LastSeen)
 		}
 		rows = append(rows, row)
 		perRow = append(perRow, mods)
