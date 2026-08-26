@@ -1103,8 +1103,20 @@ function fallbackCopy(text) {
    is pulled and swapped. The sidebar, stylesheet, and scripts stay put, and so
    does the scroll position, which a reload threw away on every revoke. */
 
-/* swapContent replaces <main> with the same region from url, then re-runs the
-   page setup so the new markup gets its handlers and pollers. */
+/* swapMain replaces <main> with the same region of a rendered page, then re-runs
+   the page setup so the new markup gets its handlers and pollers. Throws if
+   either side is missing, which callers treat as "fall back to navigating". */
+function swapMain(html, hash) {
+  var doc = new DOMParser().parseFromString(html, 'text/html');
+  var next = doc.querySelector('main');
+  var current = document.querySelector('main');
+  if (!next || !current) throw new Error('no main');
+  stopPollers();
+  current.innerHTML = next.innerHTML;
+  initPage(hash || '');
+}
+
+/* swapContent replaces <main> with the same region from url. */
 function swapContent(url) {
   return fetch(url, { headers: { 'X-Portal-Fetch': '1' }, credentials: 'same-origin' })
     .then(function(r) {
@@ -1112,14 +1124,7 @@ function swapContent(url) {
       return r.text();
     })
     .then(function(html) {
-      var doc = new DOMParser().parseFromString(html, 'text/html');
-      var next = doc.querySelector('main');
-      var current = document.querySelector('main');
-      if (!next || !current) throw new Error('no main');
-      stopPollers();
-      current.innerHTML = next.innerHTML;
-      var hash = url.indexOf('#') !== -1 ? url.slice(url.indexOf('#') + 1) : '';
-      initPage(hash);
+      swapMain(html, url.indexOf('#') !== -1 ? url.slice(url.indexOf('#') + 1) : '');
     });
 }
 
@@ -1137,17 +1142,43 @@ function submitAction(form) {
     redirect: 'follow'
   }).then(function(r) {
     if (!r.ok && r.status !== 204) throw new Error('action failed');
+    // A handler that answers with a page instead of 204 is telling the caller
+    // something the next GET cannot repeat: a secret rendered exactly once, or
+    // the validation error explaining why nothing was created. Discarding that
+    // body and re-fetching the page — which is what this did — threw away the
+    // only copy of a new API key or client token, and swallowed every create
+    // form error in silence. Showing it is also just what the same form posted
+    // without scripting would have shown.
+    var type = r.headers.get('Content-Type') || '';
+    if (r.status !== 204 && type.indexOf('text/html') !== -1) {
+      return r.text().then(function(html) { return { html: html }; });
+    }
     // Several actions finish somewhere other than where they started, and some
     // carry a #tab the page has to re-select.
-    return r.headers.get('X-Portal-Location') || window.location.pathname;
+    return { dest: r.headers.get('X-Portal-Location') || window.location.pathname };
   }, function() {
     // Only this branch means the action did not go through. Re-run it as a
     // plain form post so the browser shows whatever the server has to say,
     // including a login page if the session expired underneath us.
     form.submit();
     return null;
-  }).then(function(dest) {
-    if (dest === null) return; // already resubmitted
+  }).then(function(res) {
+    if (res === null) return; // already resubmitted
+
+    if (res.html !== undefined) {
+      // The URL stays put: the form posts to an endpoint, but the page that
+      // came back is the one the form was already on. A failed swap reloads,
+      // which loses a one-shot secret — the only alternative is re-posting,
+      // which would mint a second key.
+      try {
+        swapMain(res.html, '');
+      } catch (e) {
+        window.location.reload();
+      }
+      return;
+    }
+
+    var dest = res.dest;
     if (stripHash(dest) !== stripHash(window.location.pathname + window.location.search)) {
       window.location.href = dest;
       return;
