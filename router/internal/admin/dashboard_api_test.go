@@ -143,3 +143,56 @@ func TestDashboardJSON_EmptyCardsWhenNothingIsLive(t *testing.T) {
 		t.Errorf("expected no alias rows, got:\n%s", d.AliasChainsHTML)
 	}
 }
+
+// The client table is rendered server-side and swapped in, so the poll's markup
+// has to be the same markup the page was built from — including the status
+// badge and the models summary, both of which the script used to spell out for
+// itself and could therefore get wrong on its own.
+func TestDashboardJSON_CarriesRenderedClientRows(t *testing.T) {
+	a, h := connTestAdmin(t)
+	if err := a.state.AddUser(User{Username: "root", Role: "admin"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, ct := range []ClientToken{
+		{Name: "full", Owner: "alice", TokenHash: "hash-full", CreatedAt: time.Now()},
+		{Name: "partial", Owner: "alice", TokenHash: "hash-partial", CreatedAt: time.Now()},
+	} {
+		if err := a.state.AddClientToken(ct); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dialClientWithModels(t, h, "full", "alice", "hash-full", "gemma", "medium", "qwen")
+	dialClientWithModels(t, h, "partial", "alice", "hash-partial", "gemma", "qwen")
+	// Both clients must be registered, not merely connected. Waiting on the
+	// model count returned as soon as "full" registered, since it alone serves
+	// all three; "partial" was still mid-handshake and its row came back empty.
+	waitFor(t, func() bool { return len(h.ConnectionsLoad()) == 2 })
+
+	html := getDashboard(t, a, "root").ClientRowsHTML
+
+	for _, want := range []string{
+		"alice/full", "alice/partial",
+		"badge connected", // the status badge, previously rebuilt in JS
+		"all except medium",
+		`title="gemma, qwen"`, // the summary's full list stays reachable
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("client rows missing %q:\n%s", want, html)
+		}
+	}
+}
+
+// With no tokens at all the rows still have to say so, or the table is silently
+// blank after the first poll.
+func TestDashboardJSON_ClientRowsRenderTheEmptyState(t *testing.T) {
+	a, _ := connTestAdmin(t)
+	if err := a.state.AddUser(User{Username: "root", Role: "admin"}); err != nil {
+		t.Fatal(err)
+	}
+
+	html := getDashboard(t, a, "root").ClientRowsHTML
+
+	if !strings.Contains(html, "No client tokens registered.") {
+		t.Errorf("empty fleet did not render the empty row:\n%s", html)
+	}
+}
