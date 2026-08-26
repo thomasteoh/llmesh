@@ -334,6 +334,8 @@ function initDashboard() {
     tdModels.className = 'muted';
     tdModels.setAttribute('data-label', 'Models');
     tdModels.textContent = c.models || '—';
+    // The cell may summarise ("all", "all except x"); the title is the full list.
+    if (c.models_title) tdModels.title = c.models_title;
     tr.appendChild(tdModels);
 
     var tdVersion = document.createElement('td');

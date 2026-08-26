@@ -99,7 +99,10 @@ type ClientRow struct {
 	StatusClass string // CSS badge class
 	StatusLabel string // display label with symbol
 	LastSeen    string
+	// Models is the summary shown in the column; ModelsTitle is always the full
+	// list, so summarising never costs the reader the detail.
 	Models      string
+	ModelsTitle string
 	Version     string
 }
 
@@ -538,27 +541,87 @@ func filterQueueForUser(items []types.InferenceRequest, u User) []types.Inferenc
 	return out
 }
 
-func (a *Admin) handleDashboard(w http.ResponseWriter, r *http.Request) {
-	u := ctxGetUser(r)
+// dashboardClientRows builds the Dashboard's client table. Shared by the page
+// and the poll that refreshes it, so the two cannot come to describe the same
+// fleet in different words.
+func (a *Admin) dashboardClientRows() []ClientRow {
 	tokens := a.state.ClientTokensFor("", true)
-	clients := make([]ClientRow, 0, len(tokens))
+	rows := make([]ClientRow, 0, len(tokens))
+	// Each row's models are held back until the whole fleet is known, since
+	// what is worth saying about one client depends on what the others serve.
+	perRow := make([][]string, 0, len(tokens))
+	fleet := make(map[string]bool)
+
 	for _, t := range tokens {
-		row := ClientRow{
-			Name: t.Owner + "/" + t.Name,
-		}
+		row := ClientRow{Name: t.Owner + "/" + t.Name}
 		connCount := a.hub.ConnectedCountByToken(t.TokenHash)
 		ls := a.hub.LastSeenTime(t.TokenHash)
 		row.Status, row.StatusClass, row.StatusLabel = clientStatusBadge(connCount, !ls.IsZero())
+		var mods []string
 		if connCount > 0 {
-			mods := a.hub.ConnectedModels(t.TokenHash)
+			mods = a.hub.ConnectedModels(t.TokenHash)
 			sort.Strings(mods)
-			row.Models = strings.Join(mods, ", ")
+			for _, m := range mods {
+				fleet[m] = true
+			}
 			row.Version = a.hub.ConnectedVersion(t.TokenHash)
 		} else if !ls.IsZero() {
 			row.LastSeen = humanTime(ls)
 		}
-		clients = append(clients, row)
+		rows = append(rows, row)
+		perRow = append(perRow, mods)
 	}
+
+	for i := range rows {
+		rows[i].Models, rows[i].ModelsTitle = summariseModels(perRow[i], fleet)
+	}
+	return rows
+}
+
+// summariseModels describes what one client serves, relative to what the fleet
+// as a whole serves.
+//
+// Machines in a fleet usually run the same models, so spelling the list out on
+// every row restated the fleet's models once per machine, directly under the
+// card that had just listed them — and buried the case actually worth seeing,
+// the machine that is missing one. A client serving everything says so; one
+// that is not is described by what it lacks, when that is the shorter thing to
+// say. title carries the full list either way, so the exact answer is a hover
+// away and nothing is actually hidden.
+func summariseModels(mine []string, fleet map[string]bool) (label, title string) {
+	if len(mine) == 0 {
+		return "", ""
+	}
+	title = strings.Join(mine, ", ")
+	// One model fleet-wide: there is nothing to contrast against, and naming it
+	// is shorter than describing it.
+	if len(fleet) < 2 {
+		return title, title
+	}
+	if len(mine) == len(fleet) {
+		return "all", title
+	}
+
+	have := make(map[string]bool, len(mine))
+	for _, m := range mine {
+		have[m] = true
+	}
+	missing := make([]string, 0, len(fleet)-len(mine))
+	for m := range fleet {
+		if !have[m] {
+			missing = append(missing, m)
+		}
+	}
+	sort.Strings(missing)
+	if len(missing) < len(mine) {
+		return "all except " + strings.Join(missing, ", "), title
+	}
+	return title, title
+}
+
+func (a *Admin) handleDashboard(w http.ResponseWriter, r *http.Request) {
+	u := ctxGetUser(r)
+	clients := a.dashboardClientRows()
 	activeModels := a.hub.ActiveModels()
 	sort.Strings(activeModels)
 	activeAliases := a.state.AliasMap()

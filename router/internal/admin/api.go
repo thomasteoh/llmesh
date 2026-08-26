@@ -46,6 +46,7 @@ type clientJSON struct {
 	StatusLabel string `json:"status_label"`
 	LastSeen    string `json:"last_seen,omitempty"`
 	Models      string `json:"models,omitempty"`
+	ModelsTitle string `json:"models_title,omitempty"`
 	Version     string `json:"version,omitempty"`
 }
 
@@ -119,22 +120,21 @@ func (a *Admin) handleLogsJSON(w http.ResponseWriter, r *http.Request) {
 // ─── Dashboard API ────────────────────────────────────────────────────────────
 
 func (a *Admin) handleDashboardJSON(w http.ResponseWriter, r *http.Request) {
-	tokens := a.state.ClientTokensFor("", true)
-	clients := make([]clientJSON, 0, len(tokens))
-	for _, t := range tokens {
-		c := clientJSON{Name: t.Owner + "/" + t.Name}
-		connCount := a.hub.ConnectedCountByToken(t.TokenHash)
-		ls := a.hub.LastSeenTime(t.TokenHash)
-		c.Status, c.StatusClass, c.StatusLabel = clientStatusBadge(connCount, !ls.IsZero())
-		if connCount > 0 {
-			mods := a.hub.ConnectedModels(t.TokenHash)
-			sort.Strings(mods)
-			c.Models = strings.Join(mods, ", ")
-			c.Version = a.hub.ConnectedVersion(t.TokenHash)
-		} else if !ls.IsZero() {
-			c.LastSeen = humanTime(ls)
-		}
-		clients = append(clients, c)
+	// Built by the same function the page uses, so a row inserted by the poll
+	// describes the fleet exactly as a rendered one does.
+	rows := a.dashboardClientRows()
+	clients := make([]clientJSON, 0, len(rows))
+	for _, row := range rows {
+		clients = append(clients, clientJSON{
+			Name:        row.Name,
+			Status:      row.Status,
+			StatusClass: row.StatusClass,
+			StatusLabel: row.StatusLabel,
+			LastSeen:    row.LastSeen,
+			Models:      row.Models,
+			ModelsTitle: row.ModelsTitle,
+			Version:     row.Version,
+		})
 	}
 
 	activeModels := a.hub.ActiveModels()
