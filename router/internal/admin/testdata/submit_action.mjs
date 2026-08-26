@@ -225,6 +225,39 @@ await check('204 pointing elsewhere navigates', async () => {
   );
 });
 
+await check('an expired session sends the page to the login it was given', async () => {
+  const { context, log } = makeContext({
+    respond: () =>
+      response({
+        status: 401,
+        headers: { 'X-Portal-Location': '/portal/login', 'Content-Type': 'text/plain' },
+        body: 'session expired\n',
+      }),
+  });
+  let submitted = 0;
+  context.submitAction({ ...form, submit: () => submitted++ });
+  await settle();
+
+  assert(
+    log.navigatedTo.includes('/portal/login'),
+    `expected the login redirect to be followed, navigations: ${JSON.stringify(log.navigatedTo)}`,
+  );
+});
+
+await check('a refused action is not swallowed', async () => {
+  // No destination to follow — a CSRF rejection or a rate limit. Re-posting as
+  // a plain form is how the server's own error page gets shown, which is what
+  // the code has always claimed to do.
+  const { context } = makeContext({
+    respond: () => response({ status: 403, headers: { 'Content-Type': 'text/plain' }, body: 'forbidden' }),
+  });
+  let submitted = 0;
+  context.submitAction({ ...form, submit: () => submitted++ });
+  await settle();
+
+  assert(submitted === 1, `a refused action did nothing at all (form resubmits: ${submitted})`);
+});
+
 await check('a network failure falls back to a real form post', async () => {
   const { context } = makeContext({ respond: () => Promise.reject(new Error('offline')) });
   let submitted = 0;
@@ -232,6 +265,42 @@ await check('a network failure falls back to a real form post', async () => {
   await settle();
 
   assert(submitted === 1, `expected the form to be resubmitted once, got ${submitted}`);
+});
+
+await check('a page that will not swap reloads rather than re-posting', async () => {
+  // The response has no <main>, so the swap throws — after the key has already
+  // been minted. Re-running the form here would mint a second one.
+  const { context, log } = makeContext({
+    respond: () =>
+      response({ status: 200, headers: { 'Content-Type': 'text/html' }, body: '<html><body>no main</body></html>' }),
+  });
+  let submitted = 0;
+  context.submitAction({ ...form, submit: () => submitted++ });
+  await settle();
+
+  assert(submitted === 0, `the action already succeeded; re-posting would repeat it (${submitted} resubmits)`);
+  assert(log.reloaded === 1, `expected one reload, got ${log.reloaded}`);
+});
+
+await check('a body that fails mid-read after a successful create does not re-post', async () => {
+  // The server took the action and started answering, then the read failed.
+  // The fallback for a failed request is to post the form again, and here that
+  // would be the second key — so acceptance, not failure, decides.
+  const { context, log } = makeContext({
+    respond: () =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: { get: (n) => (n.toLowerCase() === 'content-type' ? 'text/html' : null) },
+        text: () => Promise.reject(new Error('connection reset')),
+      }),
+  });
+  let submitted = 0;
+  context.submitAction({ ...form, submit: () => submitted++ });
+  await settle();
+
+  assert(submitted === 0, `re-posted an action the server had already accepted (${submitted} resubmits)`);
+  assert(log.reloaded === 1, `expected one reload, got ${log.reloaded}`);
 });
 
 if (failures.length) {
