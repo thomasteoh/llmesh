@@ -1134,6 +1134,16 @@ function swapContent(url) {
    rather than silently doing nothing. */
 function submitAction(form) {
   var url = form.getAttribute('action') || window.location.pathname;
+  // applied records that the server accepted the action. Past that point a
+  // failure must never re-post: one "create key" would become two.
+  var applied = false;
+  var resubmitted = false;
+  function resubmit() {
+    if (resubmitted) return;
+    resubmitted = true;
+    form.submit();
+  }
+
   fetch(url, {
     method: 'POST',
     body: new FormData(form),
@@ -1141,7 +1151,24 @@ function submitAction(form) {
     credentials: 'same-origin',
     redirect: 'follow'
   }).then(function(r) {
-    if (!r.ok && r.status !== 204) throw new Error('action failed');
+    if (!r.ok && r.status !== 204) {
+      // A refusal often says where to go instead: an expired session answers
+      // 401 with the login page's address, because a 302 would be followed by
+      // fetch and arrive as a perfectly good 200 holding the login form.
+      // Throwing here instead — which is what this did — rejected a promise
+      // nothing was watching, so every button on a stale page did nothing at
+      // all, silently, including the one that would have signed you back in.
+      var refusedTo = r.headers.get('X-Portal-Location');
+      if (refusedTo) {
+        window.location.href = refusedTo;
+        return null;
+      }
+      // Nowhere to go, so hand it to the browser and let the server explain
+      // itself on a real page.
+      resubmit();
+      return null;
+    }
+    applied = true;
     // A handler that answers with a page instead of 204 is telling the caller
     // something the next GET cannot repeat: a secret rendered exactly once, or
     // the validation error explaining why nothing was created. Discarding that
@@ -1156,14 +1183,8 @@ function submitAction(form) {
     // Several actions finish somewhere other than where they started, and some
     // carry a #tab the page has to re-select.
     return { dest: r.headers.get('X-Portal-Location') || window.location.pathname };
-  }, function() {
-    // Only this branch means the action did not go through. Re-run it as a
-    // plain form post so the browser shows whatever the server has to say,
-    // including a login page if the session expired underneath us.
-    form.submit();
-    return null;
   }).then(function(res) {
-    if (res === null) return; // already resubmitted
+    if (res === null) return; // refused: already navigated or resubmitted
 
     if (res.html !== undefined) {
       // The URL stays put: the form posts to an endpoint, but the page that
@@ -1187,6 +1208,14 @@ function submitAction(form) {
     // content fails, reload — never re-post, or a failed refresh turns one
     // "create key" into two.
     return swapContent(dest).catch(function() { window.location.href = dest; });
+  }).catch(function() {
+    // The request itself failed, or something above threw. Whether it is safe
+    // to run the form again depends entirely on whether the server took it.
+    if (applied) {
+      window.location.reload();
+      return;
+    }
+    resubmit();
   });
 }
 
