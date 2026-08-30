@@ -24,7 +24,7 @@ func TestTemplatesRenderAgainstRealStructs(t *testing.T) {
 	t.Run("clients", func(t *testing.T) {
 		conn := ConnectedClientRow{
 			ID: "conn-1", Name: "gpu-box", Version: "v1.2.3",
-			Models: "llama3, qwen", InFlight: 1, MaxConcurrent: 4,
+			InFlight: 1, MaxConcurrent: 4,
 			Jobs: []InFlightJobRow{{
 				ID: "job-1", Model: "llama3", Owner: "alice", APIKeyLabel: "prod",
 				Priority: "high", Attempts: 2, Phase: "generating", CanCancel: true,
@@ -32,25 +32,31 @@ func TestTemplatesRenderAgainstRealStructs(t *testing.T) {
 				DispatchedAtISO: now.Format(time.RFC3339), EnqueuedAt: "1m ago",
 			}},
 		}
+		// Two connections, so the models sub-row renders its "Served by" column.
+		conn2 := ConnectedClientRow{
+			ID: "conn-2", Name: "gpu-box-2", Version: "v1.2.3",
+			InFlight: 0, MaxConcurrent: 2,
+		}
 		row := ClientTokenRow{
 			Status: "connected", StatusClass: "connected", StatusLabel: "● connected",
 			CSRFToken:   "csrf",
-			Connections: []ConnectedClientRow{conn},
-			ModelSlots:  []ModelSlotRow{{Name: "llama3", OwnerSlots: 2}, {Name: "qwen"}},
+			Connections: []ConnectedClientRow{conn, conn2},
+			Models: []ClientModelRow{
+				{Name: "llama3", Live: true, ServedBy: "gpu-box, gpu-box-2", OwnerSlots: 2,
+					Requests: 40, GenTPS: "38.5 tok/s", PromptTPS: "1.2k tok/s", AvgTTFT: "410 ms"},
+				{Name: "qwen", Live: true, ServedBy: "gpu-box", Requests: 2},
+			},
 			Perf: &ClientPerfRow{
 				Requests: 42, GenTPS: "38.4 tok/s", AvgTTFT: "412 ms", WindowDesc: "24h", Est: true,
-				ByModel: []ModelPerfRow{
-					{Name: "llama3", Requests: 40, GenTPS: "38.5 tok/s"},
-					{Name: "qwen", Requests: 2},
-				},
 			},
 		}
-		// An offline token with slot limits on models it no longer advertises, and
-		// a downstream router, are the two rows that take different branches.
+		// An offline token whose only model rows come from a slot limit and past
+		// traffic exercises the not-served branch and the single-connection
+		// layout, where the "Served by" column is suppressed.
 		offline := ClientTokenRow{
 			Status: "offline", StatusClass: "offline", StatusLabel: "○ offline",
 			LastSeen: "3m ago", CSRFToken: "csrf",
-			ModelSlots: []ModelSlotRow{{Name: "retired-model", OwnerSlots: 1}},
+			Models: []ClientModelRow{{Name: "retired-model", OwnerSlots: 1, Requests: 3}},
 		}
 		router := ClientTokenRow{
 			Status: "connected", StatusClass: "connected", StatusLabel: "● connected",

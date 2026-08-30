@@ -1,29 +1,61 @@
-{{define "owner-slots-section"}}
-{{/* Per-model owner-slot configuration sub-row for a client token.
-     Expects a ClientTokenRow as '.'.
-     Renders a form for each model in .ModelSlots.
-     OwnerSlots: 0 = fully shared, N = N slots reserved for the token owner. */}}
-{{if .ModelSlots}}
+{{define "models-subrow"}}
+{{/* One row per model this token is associated with, carrying its liveness,
+     owner-slot policy and recent performance. Expects a ClientTokenRow as '.'
+     and uses .CSRFToken for the slot forms.
+
+     These were three separate stacked sub-rows — the connection's model list,
+     the per-model performance table and a slot form per model — each
+     enumerating the same model names, so one machine serving three models
+     printed nine of them and left the reader matching names across lists by
+     eye. Rows are the union of the three sources rather than an intersection:
+     see ClientModelRow for why they differ. */}}
+{{if .Models}}
+{{$row := .}}
+{{/* Naming the connection per model only distinguishes anything when there is
+     more than one; with a single connection the column repeats one name. */}}
+{{$multiConn := gt (len .Connections) 1}}
 <tr>
   <td colspan="4" style="padding:0;">
-    <div class="client-connections" style="padding:4px 8px 6px;">
-      {{range .ModelSlots}}
-      <form method="POST" action="/portal/clients/owner-slots" class="form-inline" style="margin:2px 0;">
-        <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-        <input type="hidden" name="token_hash" value="{{$.TokenHash}}">
-        <input type="hidden" name="model" value="{{.Name}}">
-        <span class="conn-name" style="min-width:140px;">{{.Name}}</span>
-        {{if gt .OwnerSlots 0}}
-          <span class="badge badge-warning btn-xs" style="margin-right:4px;" title="{{.OwnerSlots}} slot(s) reserved for owner">{{.OwnerSlots}} reserved</span>
-        {{else}}
-          <span class="badge badge-ok btn-xs" style="margin-right:4px;" title="All slots shared">shared</span>
-        {{end}}
-        <input type="number" name="slots" value="{{if gt .OwnerSlots 0}}{{.OwnerSlots}}{{end}}"
-               min="0" placeholder="0" style="width:42px;text-align:center;"
-               title="Slots reserved for owner (0 = fully shared)">
-        <button type="submit" class="btn-secondary btn-xs">set</button>
-      </form>
-      {{end}}
+    <div class="client-connections client-models-block">
+      <table class="client-model-table">
+        <thead>
+          <tr>
+            <th>Model</th>
+            {{if $multiConn}}<th>Served by</th>{{end}}
+            <th title="Inference slots held back for the token owner, so another caller's queue cannot starve them. Blank means every slot is shared.">Reserved</th>
+            <th>Requests</th>
+            <th>Generation</th>
+            <th>Prompt eval</th>
+            <th>Avg TTFT</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .Models}}
+          <tr>
+            <td>
+              {{.Name}}
+              {{if not .Live}}<span class="badge muted-badge badge-sm" title="No connected client is serving this model right now. It is listed because it has slots reserved, or served requests inside the performance window.">not served</span>{{end}}
+            </td>
+            {{if $multiConn}}<td class="muted">{{if .ServedBy}}{{.ServedBy}}{{else}}&mdash;{{end}}</td>{{end}}
+            <td>
+              <form method="POST" action="/portal/clients/owner-slots" class="form-inline">
+                <input type="hidden" name="_csrf" value="{{$row.CSRFToken}}">
+                <input type="hidden" name="token_hash" value="{{$row.TokenHash}}">
+                <input type="hidden" name="model" value="{{.Name}}">
+                <input type="number" name="slots" value="{{if gt .OwnerSlots 0}}{{.OwnerSlots}}{{end}}"
+                       min="0" placeholder="0" style="width:42px;text-align:center;"
+                       title="Slots reserved for owner (0 = fully shared)">
+                <button type="submit" class="btn-secondary btn-xs">set</button>
+              </form>
+            </td>
+            <td class="muted">{{if .Requests}}{{.Requests}}{{else}}&mdash;{{end}}</td>
+            <td>{{if .GenTPS}}{{.GenTPS}}{{else}}&mdash;{{end}}</td>
+            <td>{{if .PromptTPS}}{{.PromptTPS}}{{else}}&mdash;{{end}}</td>
+            <td>{{if .AvgTTFT}}{{.AvgTTFT}}{{else}}&mdash;{{end}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
     </div>
   </td>
 </tr>
@@ -68,22 +100,8 @@
           <span class="perf-metric-label">avg queue</span>
         </div>
       </div>
-      {{if $p.ByModel}}
-      <table class="perf-model-table">
-        <thead><tr><th>Model</th><th>Requests</th><th>Generation</th><th>Prompt eval</th><th>Avg TTFT</th></tr></thead>
-        <tbody>
-          {{range $p.ByModel}}
-          <tr>
-            <td>{{.Name}}</td>
-            <td class="muted">{{.Requests}}</td>
-            <td>{{if .GenTPS}}{{.GenTPS}}{{else}}&mdash;{{end}}</td>
-            <td>{{if .PromptTPS}}{{.PromptTPS}}{{else}}&mdash;{{end}}</td>
-            <td>{{if .AvgTTFT}}{{.AvgTTFT}}{{else}}&mdash;{{end}}</td>
-          </tr>
-          {{end}}
-        </tbody>
-      </table>
-      {{end}}
+      {{/* The per-model breakdown lives in the models sub-row below, alongside
+           each model's slot policy, rather than in a table of its own here. */}}
     </div>
   </td>
 </tr>
@@ -121,7 +139,8 @@
   <span class="conn-name">{{.Name}}</span>
   {{if .IsRouter}}<span class="badge muted-badge" title="Downstream router — not a client binary">router</span>{{end}}
   {{if .Version}}<span class="conn-version">{{.Version}}</span>{{end}}
-  <span class="conn-models" title="{{.Models}}">{{.Models}}</span>
+  {{/* No model list here: the models sub-row lists each model once, naming the
+       connections that serve it when there is more than one to tell apart. */}}
   <span class="conn-capacity" data-conn-capacity="{{.ID}}">{{.InFlight}} / {{.MaxConcurrent}}</span>
 </div>
 {{/* Rendered even when empty: it is the container the page's script drops
@@ -231,7 +250,7 @@
           </tr>
           {{template "conn-subrow" .}}
           {{template "perf-subrow" .}}
-          {{template "owner-slots-section" .}}
+          {{template "models-subrow" .}}
           {{end}}
         </tbody>
       </table>
@@ -272,7 +291,7 @@
       </tr>
       {{template "conn-subrow" .}}
       {{template "perf-subrow" .}}
-      {{template "owner-slots-section" .}}
+      {{template "models-subrow" .}}
       {{else}}
       <tr class="empty-row"><td colspan="4">No client tokens yet.</td></tr>
       {{end}}
