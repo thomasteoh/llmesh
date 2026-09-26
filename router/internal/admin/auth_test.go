@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -9,6 +10,9 @@ import (
 	"testing"
 
 	"golang.org/x/crypto/bcrypt"
+
+	"llmesh/router/internal/hub"
+	"llmesh/router/internal/logring"
 )
 
 func newTestAdmin(t *testing.T) *Admin {
@@ -19,8 +23,16 @@ func newTestAdmin(t *testing.T) *Admin {
 		t.Fatal(err)
 	}
 	a := &Admin{
-		state:    state,
-		sessions: newSessionStore(),
+		state:      state,
+		sessions:   newSessionStore(),
+		authTokens: newAuthTokenStore(),
+		log:        logring.NewLogger(nil, "admin-test", slog.LevelError),
+		// A real (empty) hub, because the settings page asks it which models
+		// are live and a nil one panics there.
+		hub: hub.New(slog.New(slog.DiscardHandler)),
+	}
+	if err := a.parseTemplates(); err != nil {
+		t.Fatal(err)
 	}
 	return a
 }

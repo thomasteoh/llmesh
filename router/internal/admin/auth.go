@@ -180,32 +180,44 @@ func ctxGetUser(r *http.Request) User {
 	return r.Context().Value(ctxUser).(User)
 }
 
-func (a *Admin) handleLogin(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
-		a.renderStandalone(w, "login", map[string]string{"Error": ""})
-		return
-	}
-	r.ParseForm()
-	username := r.FormValue("username")
-	password := r.FormValue("password")
-	u, ok := a.state.LookupUser(username)
-	if !ok {
-		// Run a dummy comparison so a missing user takes the same time as a
-		// wrong password, and return the same message — no user enumeration.
-		bcrypt.CompareHashAndPassword([]byte(dummyHash), []byte(password))
-		a.renderStandalone(w, "login", map[string]string{"Error": "Invalid credentials."})
-		return
-	}
-	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)); err != nil {
-		a.renderStandalone(w, "login", map[string]string{"Error": "Invalid credentials."})
-		return
-	}
-	// "Account disabled" is only revealed to someone who supplied the correct
-	// password, so it does not leak account existence to an attacker.
-	if u.Disabled {
-		a.renderStandalone(w, "login", map[string]string{"Error": "Account disabled."})
-		return
-	}
+// loginPage is the login template's data. It is a struct rather than a map so
+// that a field the template names but the handler stopped supplying is an
+// execution error rather than a silently blank sign-in button.
+type loginPage struct {
+	Error     string
+	Notice    string
+	CSRFToken string
+	// GitHubEnabled and EmailEnabled decide whether each alternative sign-in
+	// appears at all. A router with neither configured shows exactly the
+	// username-and-password form it always did.
+	GitHubEnabled bool
+	EmailEnabled  bool
+	// EmailSubmitted keeps the address in the field after a failed attempt, so
+	// a typo is corrected rather than retyped.
+	EmailSubmitted string
+}
+
+// renderLogin draws the sign-in page, offering whichever alternative methods an
+// admin has configured.
+func (a *Admin) renderLogin(w http.ResponseWriter, r *http.Request, notice, errMsg string) {
+	a.renderLoginWithEmail(w, r, notice, errMsg, "")
+}
+
+func (a *Admin) renderLoginWithEmail(w http.ResponseWriter, r *http.Request, notice, errMsg, email string) {
+	a.renderStandalone(w, "login", loginPage{
+		Error:          errMsg,
+		Notice:         notice,
+		GitHubEnabled:  a.state.GitHubAuth().Configured(),
+		EmailEnabled:   a.state.SMTP().Configured(),
+		EmailSubmitted: email,
+	})
+}
+
+// startSession issues a fresh session and its CSRF token for username, and sets
+// the session cookie. Every way of signing in ends here, so a magic link and a
+// GitHub callback produce exactly the session a password does — no path gets a
+// longer-lived cookie or skips the CSRF token by being written separately.
+func (a *Admin) startSession(w http.ResponseWriter, r *http.Request, username string) {
 	sid := a.sessions.create(username)
 	// Generate a fresh CSRF token and store it in the session (not in state —
 	// session-scoped tokens let concurrent tabs operate independently).
@@ -221,6 +233,35 @@ func (a *Admin) handleLogin(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(sessionTTL.Seconds()),
 	})
+}
+
+func (a *Admin) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		a.renderLogin(w, r, "", "")
+		return
+	}
+	r.ParseForm()
+	username := r.FormValue("username")
+	password := r.FormValue("password")
+	u, ok := a.state.LookupUser(username)
+	if !ok {
+		// Run a dummy comparison so a missing user takes the same time as a
+		// wrong password, and return the same message — no user enumeration.
+		bcrypt.CompareHashAndPassword([]byte(dummyHash), []byte(password))
+		a.renderLogin(w, r, "", "Invalid credentials.")
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)); err != nil {
+		a.renderLogin(w, r, "", "Invalid credentials.")
+		return
+	}
+	// "Account disabled" is only revealed to someone who supplied the correct
+	// password, so it does not leak account existence to an attacker.
+	if u.Disabled {
+		a.renderLogin(w, r, "", "Account disabled.")
+		return
+	}
+	a.startSession(w, r, username)
 	http.Redirect(w, r, "/portal/", http.StatusFound)
 }
 

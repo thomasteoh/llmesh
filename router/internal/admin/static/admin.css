@@ -311,6 +311,58 @@ main {
 .auth-card .form-group { margin-bottom: 14px; }
 .auth-card button[type="submit"] { width: 100%; margin-top: 6px; }
 .auth-card .form-error { margin-bottom: 12px; }
+.auth-notice {
+  background: var(--success-soft);
+  border: 1px solid var(--success);
+  color: var(--success);
+  border-radius: var(--radius-sm);
+  padding: 9px 12px;
+  font-size: 13px;
+  margin-bottom: 12px;
+  line-height: 1.45;
+}
+.auth-hint { color: var(--text-faint); font-size: 12px; margin-top: 8px; line-height: 1.45; }
+
+/* Separator between the password form and the alternative sign-in methods. */
+.auth-sep {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 20px 0 14px;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+.auth-sep::before, .auth-sep::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.auth-alt-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 0;
+  padding: 9px 12px;
+  /* The GitHub button is an anchor, so it needs what a button gets for free. */
+  text-decoration: none;
+  font-family: inherit;
+}
+.auth-alt-form { margin-top: 12px; }
+.auth-alt-form .form-group { margin-bottom: 10px; }
+.auth-card .auth-alt-form button[type="submit"] { margin-top: 0; }
+
+/* Sign-in methods on the settings page. */
+.identity-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
 
 /* ─── Cards & sections ──────────────────────────────────────── */
 
@@ -1176,6 +1228,7 @@ label { font-size: 12.5px; font-weight: 600; color: var(--text-muted); display: 
 .gap-2 { gap: 8px; }
 .mt-1 { margin-top: 4px; } .mt-2 { margin-top: 8px; } .mt-3 { margin-top: 12px; }
 .mt-4 { margin-top: 16px; } .mt-5 { margin-top: 20px; } .mt-6 { margin-top: 24px; }
+.mb-1 { margin-bottom: 4px; } .mb-2 { margin-bottom: 8px; }
 .mb-3 { margin-bottom: 12px; } .mb-4 { margin-bottom: 16px; }
 .prefix-wrap { display: flex; align-items: center; }
 .prefix {

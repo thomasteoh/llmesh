@@ -50,6 +50,17 @@ type Admin struct {
 	// upstreamConnected reports whether the given upstream URL is currently connected.
 	// Wired by main.go to connector.Connected.
 	upstreamConnected func(url string) bool
+
+	// authTokens holds outstanding email sign-in and address-verification links.
+	authTokens *authTokenStore
+
+	// GitHub OAuth endpoints and the client used to call them. All four are
+	// empty/nil in production and fall back to the real endpoints and a
+	// default client; tests set them to an httptest server.
+	ghAuthorizeURL string
+	ghTokenURL     string
+	ghAPIBaseURL   string
+	httpClient     *http.Client
 }
 
 // SetUpstreamReloader registers the callback invoked after upstream router config changes.
@@ -124,6 +135,7 @@ func New(statePath string, h *hub.Hub, q *queue.Queue, reqCount func() int64, s 
 		name:          name,
 		host:          host,
 		sessions:      newSessionStore(),
+		authTokens:    newAuthTokenStore(),
 		log:           logring.NewLogger(sink, "admin", slog.LevelInfo),
 		sink:          sink,
 		rateLimiter:   newRateLimiter(1*time.Minute, 5*time.Minute),
@@ -202,7 +214,7 @@ func (a *Admin) parseTemplates() error {
 		}
 		a.tmpls[name] = t
 	}
-	for _, name := range []string{"login", "setup"} {
+	for _, name := range []string{"login", "setup", "magic-confirm"} {
 		t, err := template.New(name+".html").Funcs(funcMap).ParseFS(adminFS, "templates/"+name+".html")
 		if err != nil {
 			return err
@@ -232,6 +244,19 @@ func (a *Admin) registerRoutes() {
 	// Auth (no session required)
 	mux.HandleFunc("/portal/login", a.requireRateLimit(a.handleLogin, 5))
 	mux.HandleFunc("/portal/setup", a.requireRateLimit(a.handleSetup, 5))
+
+	// Alternative sign-in methods. Each route is registered unconditionally and
+	// each handler refuses when its method is not configured, so turning one off
+	// in the portal takes effect immediately rather than at the next restart.
+	//
+	// Requesting a link is limited harder than a password attempt: each one
+	// sends mail to an address the caller chose, and the limit is what stops
+	// this endpoint being used to post it at someone.
+	mux.HandleFunc("/portal/login/magic", a.requireRateLimit(a.postOnly(a.handleMagicLinkRequest), 3))
+	mux.HandleFunc("/portal/login/magic/verify", a.requireRateLimit(a.handleMagicLinkVerify, 10))
+	mux.HandleFunc("/portal/auth/github", a.requireRateLimit(a.handleGitHubLogin, 10))
+	mux.HandleFunc("/portal/auth/github/callback", a.requireRateLimit(a.handleGitHubCallback, 10))
+	mux.HandleFunc("/portal/settings/email/verify", a.requireRateLimit(a.handleEmailVerify, 10))
 
 	// Logout requires auth + CSRF
 	mux.HandleFunc("/portal/logout", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleLogout)), 20))
@@ -314,6 +339,16 @@ func (a *Admin) registerRoutes() {
 	mux.HandleFunc("/portal/settings/pricing/delete", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleModelPricingDelete)), 30))
 	mux.HandleFunc("/portal/settings/currency", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleCostCurrencyUpdate)), 20))
 
+	// Sign-in method configuration (admin) and per-user identity linking (any
+	// signed-in user, acting on their own account only).
+	mux.HandleFunc("/portal/settings/auth/github", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleGitHubAuthUpdate)), 20))
+	mux.HandleFunc("/portal/settings/auth/smtp", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleSMTPUpdate)), 20))
+	mux.HandleFunc("/portal/settings/auth/smtp/test", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleSMTPTest)), 5))
+	mux.HandleFunc("/portal/settings/email", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleEmailUpdate)), 5))
+	mux.HandleFunc("/portal/settings/email/resend", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleEmailResend)), 3))
+	mux.HandleFunc("/portal/settings/github/link", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleGitHubLink)), 10))
+	mux.HandleFunc("/portal/settings/github/unlink", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleGitHubUnlink)), 10))
+
 	// Dashboard JSON API
 	mux.HandleFunc("/portal/api/dashboard", a.requireAuth(a.handleDashboardJSON))
 
@@ -390,6 +425,18 @@ func redirectOrRefresh(w http.ResponseWriter, r *http.Request, url string) {
 	}
 	w.Header().Set("X-Portal-Location", url)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// postOnly rejects anything but a POST. Used for the unauthenticated form posts
+// that have no session to carry a CSRF token, where postWithCSRF cannot apply.
+func (a *Admin) postOnly(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		handler(w, r)
+	}
 }
 
 // postWithCSRF returns an http.HandlerFunc that only accepts POST requests

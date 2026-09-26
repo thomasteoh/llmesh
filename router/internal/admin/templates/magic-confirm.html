@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>llmesh &mdash; Confirm sign-in</title>
+  <link rel="stylesheet" href="{{asset "admin.css"}}">
+  <script>(function(){var t;try{t=localStorage.getItem('llmesh-theme');}catch(e){}if(!t&&window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches)t='light';if(t)document.documentElement.setAttribute('data-theme',t);})();</script>
+</head>
+<body class="auth-body">
+<div class="auth-card">
+  <div class="brand">llmesh</div>
+  <h1>Confirm sign-in</h1>
+  {{/* The link is spent by this button rather than by loading the page, so a
+       mail scanner that fetches every URL in a message cannot use it up before
+       the recipient sees it. */}}
+  <p class="auth-hint mb-3">You followed a sign-in link. Continue to finish signing in to the portal.</p>
+  <form method="POST" action="/portal/login/magic/verify">
+    <input type="hidden" name="token" value="{{.Token}}">
+    <button type="submit">Sign in</button>
+  </form>
+</div>
+</body>
+</html>
