@@ -177,18 +177,23 @@ From the admin dashboard you can:
 
 **Sign-in methods**
 
-Username and password always works. Two alternatives can be added under **Settings → Sign-in**, and each appears on the login page only once an admin has configured *and* enabled it — a router with neither set up shows exactly the login form it always did.
+Username and password always works. Three alternatives can be added under **Settings → Sign-in**, and each appears on the login page only once an admin has configured *and* enabled it — a router with none set up shows exactly the login form it always did.
 
 | Method | What an admin configures | What a user does |
 |---|---|---|
-| **GitHub** | An OAuth app's client ID and secret. The page shows the exact callback URL to register with GitHub. | Links their own GitHub account under **Settings → Account**, then signs in with **Continue with GitHub**. |
+| **GitHub** | An OAuth app's client ID and secret (github.com/settings/developers → OAuth Apps). The page shows the exact callback URL to register. | Links their own GitHub account under **Settings → Account**, then signs in with **Continue with GitHub**. |
+| **Google** | An OAuth client ID and secret (Google Cloud console → APIs & Services → Credentials → OAuth client ID, type *Web application*). Same callback URL treatment. | Links their own Google account under **Settings → Account**, then signs in with **Continue with Google**. |
 | **Email link** | An SMTP relay (host, port, transport security, From address, optional credentials), with a **Send test** button that reports the relay's own error. | Adds an address under **Settings → Account** and confirms it by following the link sent to it, then requests a sign-in link from the login page. |
 
-Both are ways to reach an existing account, never a way to obtain one. A GitHub account nobody has linked and an address nobody has verified are both refused, and neither creates a user — accounts are still made by an admin under **Settings → Users**. Each identity belongs to one account: a second claim on the same GitHub account or the same verified address is rejected.
+All three are ways to reach an existing account, never a way to obtain one. A provider account nobody has linked and an address nobody has verified are both refused, and neither creates a user — accounts are still made by an admin under **Settings → Users**. Each identity belongs to one account: a second claim on the same provider account or the same verified address is rejected. A user may link both providers; either then signs them in.
+
+Each provider is matched on its immutable account id — GitHub's numeric user id, Google's OpenID Connect subject — and never on a handle or an address. Both of those can change, and once changed someone else can take them; a Google address in particular can be reassigned by a Workspace admin, and matching on it would hand over the llmesh account along with the mailbox. The handle or address is stored only to display, and is refreshed on each sign-in.
+
+The scopes requested are the minimum that identifies an account: `read:user` from GitHub, `openid email` from Google. Neither grants the router access to repositories, mail, or files.
 
 An address is only a sign-in identity once its owner has followed a link sent to it, so claiming someone else's gets you nothing. Sign-in links last 15 minutes, work once, and are invalidated by requesting another or by changing the address. Requesting one tells you nothing about whether the address has an account here.
 
-The GitHub client secret and the SMTP password are stored in the state database in plaintext, as upstream router tokens already are. Neither is ever rendered back into the portal — the form shows only whether one is stored, and leaving its field blank keeps it. Protect the database file accordingly.
+OAuth client secrets and the SMTP password are stored in the state database in plaintext, as upstream router tokens already are. None is ever rendered back into the portal — each form shows only whether a secret is stored, and leaving its field blank keeps it. Protect the database file accordingly.
 
 ---
 
