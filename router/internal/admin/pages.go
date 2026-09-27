@@ -487,11 +487,10 @@ type SettingsPage struct {
 // a page source, a screenshot, or a proxy log, and an admin has no reason to
 // read one back — only to replace it.
 type AuthSettings struct {
-	GitHubEnabled     bool
-	GitHubClientID    string
-	GitHubHasSecret   bool
-	GitHubConfigured  bool
-	GitHubCallbackURL string
+	// Providers is one entry per federated sign-in provider, in a fixed order,
+	// so the page renders a card per provider from a loop rather than a block
+	// per provider that has to be copied to add one.
+	Providers []OAuthProviderSettings
 
 	SMTPEnabled     bool
 	SMTPHost        string
@@ -502,11 +501,41 @@ type AuthSettings struct {
 	SMTPSecurity    string
 	SMTPConfigured  bool
 
-	// The viewing user's own identities.
+	// The viewing user's own email identity. Their provider identities are on
+	// the matching OAuthProviderSettings entry.
 	Email         string
 	EmailVerified bool
-	GitHubLogin   string
-	GitHubLinked  bool
+}
+
+// AnyProviderConfigured reports whether any federated sign-in is on, which is
+// what decides whether the account page shows a provider section at all.
+func (a AuthSettings) AnyProviderConfigured() bool {
+	for _, p := range a.Providers {
+		if p.Configured {
+			return true
+		}
+	}
+	return false
+}
+
+// OAuthProviderSettings is one provider's card: the router-wide configuration
+// an admin edits, and whether the viewing user has linked their own account.
+type OAuthProviderSettings struct {
+	Key         string
+	Name        string
+	Enabled     bool
+	ClientID    string
+	HasSecret   bool
+	Configured  bool
+	CallbackURL string
+	// Scope and ConsoleHint orient an admin registering the app: what the
+	// router will ask the provider for, and where to go to create it.
+	Scope       string
+	ConsoleHint string
+
+	// The viewing user's own link.
+	Linked bool
+	Label  string
 }
 
 // ModelPricingRow is one model's token rate, as displayed and edited.
@@ -1280,22 +1309,47 @@ func (a *Admin) renderSettings(w http.ResponseWriter, r *http.Request, u User, f
 	})
 }
 
+// oauthConsoleHints point an admin at the page where each provider's OAuth app
+// is registered. Both are stable product URLs, not deep links into a console
+// that reorganises.
+var oauthConsoleHints = map[string]string{
+	providerGitHub: "github.com/settings/developers → OAuth Apps",
+	providerGoogle: "console.cloud.google.com → APIs & Services → Credentials → OAuth client ID (Web application)",
+}
+
 // authSettings assembles the settings page's sign-in section.
 func (a *Admin) authSettings(r *http.Request, u User) AuthSettings {
-	gh := a.state.GitHubAuth()
 	smtp := a.state.SMTP()
 	// Re-read the user: the context copy predates any identity change made by
-	// the request now rendering this page, so linking a GitHub account would
+	// the request now rendering this page, so linking an account would
 	// otherwise render as still unlinked.
 	if fresh, ok := a.state.LookupUser(u.Username); ok {
 		u = fresh
 	}
+	providers := make([]OAuthProviderSettings, 0, len(oauthProviderOrder))
+	for _, key := range oauthProviderOrder {
+		p, ok := a.providerFor(key)
+		if !ok {
+			continue
+		}
+		cfg := a.state.OAuth(key)
+		ident := p.get(u)
+		providers = append(providers, OAuthProviderSettings{
+			Key:         key,
+			Name:        p.name,
+			Enabled:     cfg.Enabled,
+			ClientID:    cfg.ClientID,
+			HasSecret:   cfg.ClientSecret != "",
+			Configured:  cfg.Configured(),
+			CallbackURL: a.OAuthCallbackURL(r, key),
+			Scope:       p.scope,
+			ConsoleHint: oauthConsoleHints[key],
+			Linked:      ident.ID != "",
+			Label:       ident.Label,
+		})
+	}
 	return AuthSettings{
-		GitHubEnabled:     gh.Enabled,
-		GitHubClientID:    gh.ClientID,
-		GitHubHasSecret:   gh.ClientSecret != "",
-		GitHubConfigured:  gh.Configured(),
-		GitHubCallbackURL: a.GitHubCallbackURL(r),
+		Providers: providers,
 
 		SMTPEnabled:     smtp.Enabled,
 		SMTPHost:        smtp.Host,
@@ -1308,8 +1362,6 @@ func (a *Admin) authSettings(r *http.Request, u User) AuthSettings {
 
 		Email:         u.Email,
 		EmailVerified: u.EmailVerified,
-		GitHubLogin:   u.GitHubLogin,
-		GitHubLinked:  u.GitHubUserID != "",
 	}
 }
 

@@ -43,6 +43,14 @@ type User struct {
 	// time, kept only to display; a user who renames on GitHub stays linked.
 	GitHubUserID string `json:"github_user_id,omitempty"`
 	GitHubLogin  string `json:"github_login,omitempty"`
+
+	// GoogleUserID is the OpenID Connect subject, Google's stable account id,
+	// and GoogleEmail is the verified address at link time, kept only to
+	// display. As with GitHub the match is on the id: a Google address can be
+	// reassigned to another account, and matching on it would hand this one to
+	// whoever inherits the mailbox.
+	GoogleUserID string `json:"google_user_id,omitempty"`
+	GoogleEmail  string `json:"google_email,omitempty"`
 }
 
 // APIKey is a stored API key. The key material itself is never persisted:
@@ -240,7 +248,9 @@ func createSchema(db *sql.DB) error {
 			email             TEXT NOT NULL DEFAULT '',
 			email_verified    INTEGER NOT NULL DEFAULT 0,
 			github_user_id    TEXT NOT NULL DEFAULT '',
-			github_login      TEXT NOT NULL DEFAULT ''
+			github_login      TEXT NOT NULL DEFAULT '',
+			google_user_id    TEXT NOT NULL DEFAULT '',
+			google_email      TEXT NOT NULL DEFAULT ''
 		);
 		CREATE TABLE IF NOT EXISTS api_keys (
 			key_hash       TEXT PRIMARY KEY,
@@ -349,6 +359,8 @@ func createSchema(db *sql.DB) error {
 	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0`)
 	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN github_user_id TEXT NOT NULL DEFAULT ''`)
 	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN github_login TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN google_user_id TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN google_email TEXT NOT NULL DEFAULT ''`)
 	// An identity must resolve to exactly one account, so the database — not
 	// just the handler that happens to write it — refuses a second claim on the
 	// same GitHub account or the same verified address. Unverified duplicates
@@ -357,6 +369,12 @@ func createSchema(db *sql.DB) error {
 	if _, err := db.Exec(
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_github_user_id
 		 ON users(github_user_id) WHERE github_user_id <> ''`,
+	); err != nil {
+		return err
+	}
+	if _, err := db.Exec(
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_user_id
+		 ON users(google_user_id) WHERE google_user_id <> ''`,
 	); err != nil {
 		return err
 	}
@@ -643,7 +661,8 @@ func (s *State) NeedsSetup() bool {
 // scanUser expects. Keeping the two together means adding a column touches one
 // pair of definitions rather than each of the three queries that read a user.
 const userColumns = `username, password_hash, role, disabled, csrf_token,
-	send_isolation, receive_isolation, email, email_verified, github_user_id, github_login`
+	send_isolation, receive_isolation, email, email_verified,
+	github_user_id, github_login, google_user_id, google_email`
 
 // rowScanner is satisfied by both *sql.Row and *sql.Rows.
 type rowScanner interface{ Scan(dest ...any) error }
@@ -652,7 +671,8 @@ func scanUser(sc rowScanner) (User, error) {
 	var u User
 	var disabled, sendIso, recvIso, emailVerified int
 	err := sc.Scan(&u.Username, &u.PasswordHash, &u.Role, &disabled, &u.CSRFToken,
-		&sendIso, &recvIso, &u.Email, &emailVerified, &u.GitHubUserID, &u.GitHubLogin)
+		&sendIso, &recvIso, &u.Email, &emailVerified,
+		&u.GitHubUserID, &u.GitHubLogin, &u.GoogleUserID, &u.GoogleEmail)
 	if err != nil {
 		return User{}, err
 	}
@@ -672,14 +692,24 @@ func (s *State) LookupUser(username string) (User, bool) {
 	return u, true
 }
 
-// LookupUserByGitHubID returns the account linked to a GitHub numeric user id.
-// An empty id never matches, so an unlinked account cannot be reached by one.
-func (s *State) LookupUserByGitHubID(id string) (User, bool) {
-	if id == "" {
+// oauthIDColumns maps a provider key to the column holding its account id. It
+// is the only place a provider name becomes SQL, so a key that is not one of
+// these can never reach a query.
+var oauthIDColumns = map[string]string{
+	"github": "github_user_id",
+	"google": "google_user_id",
+}
+
+// LookupUserByOAuth returns the account linked to a provider account id. An
+// empty id never matches, so an unlinked account cannot be reached by one, and
+// an unknown provider matches nothing at all.
+func (s *State) LookupUserByOAuth(provider, id string) (User, bool) {
+	column, known := oauthIDColumns[provider]
+	if !known || id == "" {
 		return User{}, false
 	}
 	u, err := scanUser(s.db.QueryRow(
-		`SELECT `+userColumns+` FROM users WHERE github_user_id = ?`, id))
+		`SELECT `+userColumns+` FROM users WHERE `+column+` = ?`, id))
 	if err != nil {
 		return User{}, false
 	}
@@ -756,10 +786,11 @@ func (s *State) UpdateUser(username string, fn func(*User)) error {
 	_, err := s.db.Exec(
 		`UPDATE users SET password_hash = ?, role = ?, disabled = ?, csrf_token = ?,
 		 send_isolation = ?, receive_isolation = ?, email = ?, email_verified = ?,
-		 github_user_id = ?, github_login = ? WHERE username = ?`,
+		 github_user_id = ?, github_login = ?, google_user_id = ?, google_email = ?
+		 WHERE username = ?`,
 		u.PasswordHash, u.Role, boolInt(u.Disabled), u.CSRFToken,
 		boolInt(u.SendIsolation), boolInt(u.ReceiveIsolation), u.Email, boolInt(u.EmailVerified),
-		u.GitHubUserID, u.GitHubLogin, username,
+		u.GitHubUserID, u.GitHubLogin, u.GoogleUserID, u.GoogleEmail, username,
 	)
 	if err != nil {
 		return identityConflictError(err)
@@ -778,6 +809,8 @@ func identityConflictError(err error) error {
 	switch {
 	case strings.Contains(msg, "users.github_user_id"):
 		return fmt.Errorf("that GitHub account is already linked to another user")
+	case strings.Contains(msg, "users.google_user_id"):
+		return fmt.Errorf("that Google account is already linked to another user")
 	case strings.Contains(msg, "users.email"):
 		return fmt.Errorf("that email address is already in use by another user")
 	}

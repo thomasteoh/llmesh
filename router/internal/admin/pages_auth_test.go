@@ -20,70 +20,116 @@ func postAs(t *testing.T, a *Admin, username, path string, form url.Values, hand
 	return rr
 }
 
-func TestGitHubAuthSettingsForm(t *testing.T) {
-	a := newTestAdmin(t)
-	addTestUser(t, a, "admin", "admin")
+func TestOAuthSettingsForm(t *testing.T) {
+	forEachProvider(t, func(t *testing.T, key string) {
+		a := newTestAdmin(t)
+		addTestUser(t, a, "admin", "admin")
+		path := "/portal/settings/auth/" + key
 
-	rr := postAs(t, a, "admin", "/portal/settings/auth/github", url.Values{
-		"enabled": {"on"}, "client_id": {"iv1.abc"}, "client_secret": {"shh"},
-	}, a.handleGitHubAuthUpdate)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("got %d: %s", rr.Code, rr.Body.String())
-	}
-	if !a.state.GitHubAuth().Configured() {
-		t.Fatal("saving an enabled config did not configure GitHub sign-in")
-	}
-	// The secret must not come back out in the rendered page.
-	if strings.Contains(rr.Body.String(), "shh") {
-		t.Fatal("the client secret was rendered back to the browser")
-	}
+		rr := postAs(t, a, "admin", path, url.Values{
+			"enabled": {"on"}, "client_id": {"cid-1"}, "client_secret": {"shh"},
+		}, a.handleOAuthSettingsUpdate(key))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("got %d: %s", rr.Code, rr.Body.String())
+		}
+		if !a.state.OAuth(key).Configured() {
+			t.Fatal("saving an enabled config did not configure this sign-in")
+		}
+		// The secret must not come back out in the rendered page.
+		if strings.Contains(rr.Body.String(), "shh") {
+			t.Fatal("the client secret was rendered back to the browser")
+		}
 
-	// Editing the client ID with the secret field left blank — what the form
-	// submits every time after the first — must not blank the secret.
-	postAs(t, a, "admin", "/portal/settings/auth/github", url.Values{
-		"enabled": {"on"}, "client_id": {"iv1.xyz"},
-	}, a.handleGitHubAuthUpdate)
-	if got := a.state.GitHubAuth(); got.ClientSecret != "shh" || got.ClientID != "iv1.xyz" {
-		t.Fatalf("re-save mangled the config: %+v", got)
-	}
+		// Editing the client ID with the secret field left blank — what the
+		// form submits every time after the first — must not blank the secret.
+		postAs(t, a, "admin", path, url.Values{
+			"enabled": {"on"}, "client_id": {"cid-2"},
+		}, a.handleOAuthSettingsUpdate(key))
+		if got := a.state.OAuth(key); got.ClientSecret != "shh" || got.ClientID != "cid-2" {
+			t.Fatalf("re-save mangled the config: %+v", got)
+		}
 
-	// Unchecking the box switches it off without losing the credentials.
-	postAs(t, a, "admin", "/portal/settings/auth/github", url.Values{
-		"client_id": {"iv1.xyz"},
-	}, a.handleGitHubAuthUpdate)
-	if got := a.state.GitHubAuth(); got.Configured() || got.ClientSecret == "" {
-		t.Fatalf("disabling should keep credentials and stop offering sign-in: %+v", got)
-	}
+		// Unchecking the box switches it off without losing the credentials.
+		postAs(t, a, "admin", path, url.Values{
+			"client_id": {"cid-2"},
+		}, a.handleOAuthSettingsUpdate(key))
+		if got := a.state.OAuth(key); got.Configured() || got.ClientSecret == "" {
+			t.Fatalf("disabling should keep credentials and stop offering sign-in: %+v", got)
+		}
+	})
 }
 
-func TestGitHubClearSecretDisablesSignIn(t *testing.T) {
-	a := newTestAdmin(t)
-	addTestUser(t, a, "admin", "admin")
-	if err := a.state.SetGitHubAuth(GitHubAuthConfig{Enabled: true, ClientID: "id", ClientSecret: "shh"}); err != nil {
-		t.Fatal(err)
-	}
-	postAs(t, a, "admin", "/portal/settings/auth/github", url.Values{"clear_secret": {"1"}}, a.handleGitHubAuthUpdate)
+func TestOAuthClearSecretDisablesSignIn(t *testing.T) {
+	forEachProvider(t, func(t *testing.T, key string) {
+		a := newTestAdmin(t)
+		addTestUser(t, a, "admin", "admin")
+		if err := a.state.SetOAuth(key, oauthProviders[key].name,
+			OAuthConfig{Enabled: true, ClientID: "id", ClientSecret: "shh"}); err != nil {
+			t.Fatal(err)
+		}
+		postAs(t, a, "admin", "/portal/settings/auth/"+key,
+			url.Values{"clear_secret": {"1"}}, a.handleOAuthSettingsUpdate(key))
 
-	got := a.state.GitHubAuth()
-	if got.ClientSecret != "" {
-		t.Fatal("secret survived")
-	}
-	// Leaving it switched on would put a button on the login page that can only
-	// ever fail.
-	if got.Enabled {
-		t.Fatal("GitHub sign-in is still on with no secret to complete it")
-	}
+		got := a.state.OAuth(key)
+		if got.ClientSecret != "" {
+			t.Fatal("secret survived")
+		}
+		// Leaving it switched on would put a button on the login page that can
+		// only ever fail.
+		if got.Enabled {
+			t.Fatal("sign-in is still on with no secret to complete it")
+		}
+	})
 }
 
-func TestGitHubAuthSettingsRejectEnableWithoutCredentials(t *testing.T) {
+func TestOAuthSettingsRejectEnableWithoutCredentials(t *testing.T) {
+	forEachProvider(t, func(t *testing.T, key string) {
+		a := newTestAdmin(t)
+		addTestUser(t, a, "admin", "admin")
+		rr := postAs(t, a, "admin", "/portal/settings/auth/"+key,
+			url.Values{"enabled": {"on"}}, a.handleOAuthSettingsUpdate(key))
+		if !strings.Contains(rr.Body.String(), "client ID is required") {
+			t.Fatalf("expected a validation error, got:\n%s", rr.Body.String())
+		}
+		// The error should name the provider the admin is looking at.
+		if !strings.Contains(rr.Body.String(), oauthProviders[key].name) {
+			t.Fatalf("the error does not name the provider:\n%s", rr.Body.String())
+		}
+		if a.state.OAuth(key).Configured() {
+			t.Fatal("an invalid save still enabled sign-in")
+		}
+	})
+}
+
+// TestOAuthSettingsFormsDoNotCollide pins that saving one provider's card
+// leaves the other's credentials alone — the failure a shared handler makes
+// easiest to introduce.
+func TestOAuthSettingsFormsDoNotCollide(t *testing.T) {
 	a := newTestAdmin(t)
 	addTestUser(t, a, "admin", "admin")
-	rr := postAs(t, a, "admin", "/portal/settings/auth/github", url.Values{"enabled": {"on"}}, a.handleGitHubAuthUpdate)
-	if !strings.Contains(rr.Body.String(), "client ID is required") {
-		t.Fatalf("expected a validation error, got:\n%s", rr.Body.String())
+
+	postAs(t, a, "admin", "/portal/settings/auth/github", url.Values{
+		"enabled": {"on"}, "client_id": {"gh-id"}, "client_secret": {"gh-secret"},
+	}, a.handleOAuthSettingsUpdate(providerGitHub))
+	postAs(t, a, "admin", "/portal/settings/auth/google", url.Values{
+		"enabled": {"on"}, "client_id": {"goog-id"}, "client_secret": {"goog-secret"},
+	}, a.handleOAuthSettingsUpdate(providerGoogle))
+
+	if got := a.state.OAuth(providerGitHub); got.ClientID != "gh-id" || got.ClientSecret != "gh-secret" {
+		t.Fatalf("saving google overwrote github: %+v", got)
 	}
-	if a.state.GitHubAuth().Configured() {
-		t.Fatal("an invalid save still enabled sign-in")
+	if got := a.state.OAuth(providerGoogle); got.ClientID != "goog-id" || got.ClientSecret != "goog-secret" {
+		t.Fatalf("google did not save independently: %+v", got)
+	}
+
+	// Clearing one secret switches that provider off and leaves the other on.
+	postAs(t, a, "admin", "/portal/settings/auth/github",
+		url.Values{"clear_secret": {"1"}}, a.handleOAuthSettingsUpdate(providerGitHub))
+	if a.state.OAuth(providerGitHub).Configured() {
+		t.Fatal("github should be off after clearing its secret")
+	}
+	if !a.state.OAuth(providerGoogle).Configured() {
+		t.Fatal("clearing github's secret switched google off too")
 	}
 }
 
@@ -172,14 +218,20 @@ func TestSignInConfigurationIsAdminOnly(t *testing.T) {
 	addTestUser(t, a, "admin", "admin")
 	addTestUser(t, a, "bob", "member")
 
-	for _, tc := range []struct {
+	cases := []struct {
 		path    string
 		handler http.HandlerFunc
 	}{
-		{"/portal/settings/auth/github", a.handleGitHubAuthUpdate},
 		{"/portal/settings/auth/smtp", a.handleSMTPUpdate},
 		{"/portal/settings/auth/smtp/test", a.handleSMTPTest},
-	} {
+	}
+	for _, key := range oauthProviderOrder {
+		cases = append(cases, struct {
+			path    string
+			handler http.HandlerFunc
+		}{"/portal/settings/auth/" + key, a.handleOAuthSettingsUpdate(key)})
+	}
+	for _, tc := range cases {
 		req := httptest.NewRequest("POST", tc.path, strings.NewReader(""))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.AddCookie(signIn(a, "bob"))
@@ -189,8 +241,13 @@ func TestSignInConfigurationIsAdminOnly(t *testing.T) {
 			t.Errorf("%s: a member got %d, want 403", tc.path, rr.Code)
 		}
 	}
-	if a.state.SMTP().Configured() || a.state.GitHubAuth().Configured() {
-		t.Fatal("a member changed the router's sign-in configuration")
+	if a.state.SMTP().Configured() {
+		t.Fatal("a member changed the router's email sign-in configuration")
+	}
+	for _, key := range oauthProviderOrder {
+		if a.state.OAuth(key).Configured() {
+			t.Fatalf("a member configured %s sign-in", key)
+		}
 	}
 }
 
@@ -201,20 +258,25 @@ func TestSignInRoutesAreRegistered(t *testing.T) {
 	addTestUser(t, a, "admin", "admin")
 	a.registerRoutes()
 
-	for _, path := range []string{
+	paths := []string{
 		"/portal/login/magic",
 		"/portal/login/magic/verify",
-		"/portal/auth/github",
-		"/portal/auth/github/callback",
 		"/portal/settings/email",
 		"/portal/settings/email/resend",
 		"/portal/settings/email/verify",
-		"/portal/settings/github/link",
-		"/portal/settings/github/unlink",
-		"/portal/settings/auth/github",
 		"/portal/settings/auth/smtp",
 		"/portal/settings/auth/smtp/test",
-	} {
+	}
+	for _, key := range oauthProviderOrder {
+		paths = append(paths,
+			"/portal/auth/"+key,
+			"/portal/auth/"+key+"/callback",
+			"/portal/settings/"+key+"/link",
+			"/portal/settings/"+key+"/unlink",
+			"/portal/settings/auth/"+key,
+		)
+	}
+	for _, path := range paths {
 		if _, pattern := a.mux.Handler(httptest.NewRequest("GET", path, nil)); pattern != path {
 			t.Errorf("%s resolves to %q, so it is not registered", path, pattern)
 		}

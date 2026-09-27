@@ -17,63 +17,114 @@ func newTestState(t *testing.T) *State {
 	return s
 }
 
-func TestGitHubAuthRoundTrip(t *testing.T) {
-	s := newTestState(t)
+// Every provider goes through the same storage and the same validation, so
+// each of these runs against all of them rather than pinning one.
+func TestOAuthConfigRoundTrip(t *testing.T) {
+	for _, key := range oauthProviderOrder {
+		t.Run(key, func(t *testing.T) {
+			s := newTestState(t)
+			name := oauthProviders[key].name
 
-	if got := s.GitHubAuth(); got.Configured() {
-		t.Fatal("a fresh router must not offer GitHub sign-in")
-	}
-	if err := s.SetGitHubAuth(GitHubAuthConfig{Enabled: true, ClientID: "iv1.abc", ClientSecret: "shh"}); err != nil {
-		t.Fatal(err)
-	}
-	got := s.GitHubAuth()
-	if !got.Configured() || got.ClientID != "iv1.abc" || got.ClientSecret != "shh" {
-		t.Fatalf("round-trip lost the configuration: %+v", got)
-	}
+			if got := s.OAuth(key); got.Configured() {
+				t.Fatal("a fresh router must not offer this sign-in")
+			}
+			if err := s.SetOAuth(key, name, OAuthConfig{Enabled: true, ClientID: "cid-1", ClientSecret: "shh"}); err != nil {
+				t.Fatal(err)
+			}
+			got := s.OAuth(key)
+			if !got.Configured() || got.ClientID != "cid-1" || got.ClientSecret != "shh" {
+				t.Fatalf("round-trip lost the configuration: %+v", got)
+			}
 
-	// Re-saving with a blank secret is what the settings form submits when the
-	// admin edits anything else, since the page never renders the secret back.
-	if err := s.SetGitHubAuth(GitHubAuthConfig{Enabled: true, ClientID: "iv1.xyz"}); err != nil {
-		t.Fatal(err)
-	}
-	if got := s.GitHubAuth(); got.ClientSecret != "shh" || got.ClientID != "iv1.xyz" {
-		t.Fatalf("blank secret must keep the stored one: %+v", got)
-	}
+			// Re-saving with a blank secret is what the settings form submits
+			// when the admin edits anything else, since the page never renders
+			// the secret back.
+			if err := s.SetOAuth(key, name, OAuthConfig{Enabled: true, ClientID: "cid-2"}); err != nil {
+				t.Fatal(err)
+			}
+			if got := s.OAuth(key); got.ClientSecret != "shh" || got.ClientID != "cid-2" {
+				t.Fatalf("blank secret must keep the stored one: %+v", got)
+			}
 
-	// Switching off keeps the credentials but stops offering the button.
-	if err := s.SetGitHubAuth(GitHubAuthConfig{Enabled: false, ClientID: "iv1.xyz"}); err != nil {
-		t.Fatal(err)
-	}
-	if got := s.GitHubAuth(); got.Configured() {
-		t.Fatal("disabled config must not be Configured")
-	} else if got.ClientSecret == "" {
-		t.Fatal("disabling must not discard the secret")
+			// Switching off keeps the credentials but stops offering the button.
+			if err := s.SetOAuth(key, name, OAuthConfig{Enabled: false, ClientID: "cid-2"}); err != nil {
+				t.Fatal(err)
+			}
+			if got := s.OAuth(key); got.Configured() {
+				t.Fatal("disabled config must not be Configured")
+			} else if got.ClientSecret == "" {
+				t.Fatal("disabling must not discard the secret")
+			}
+		})
 	}
 }
 
-func TestGitHubAuthRejectsIncompleteEnable(t *testing.T) {
+// TestOAuthConfigsAreIndependent pins the thing a shared settings namespace
+// most easily gets wrong: one provider's credentials reading or overwriting
+// another's.
+func TestOAuthConfigsAreIndependent(t *testing.T) {
 	s := newTestState(t)
-	if err := s.SetGitHubAuth(GitHubAuthConfig{Enabled: true, ClientSecret: "shh"}); err == nil {
-		t.Fatal("enabling without a client ID must fail")
+	if err := s.SetOAuth(providerGitHub, "GitHub", OAuthConfig{Enabled: true, ClientID: "gh-id", ClientSecret: "gh-secret"}); err != nil {
+		t.Fatal(err)
 	}
-	if err := s.SetGitHubAuth(GitHubAuthConfig{Enabled: true, ClientID: "iv1.abc"}); err == nil {
-		t.Fatal("enabling with no secret stored and none supplied must fail")
+	if err := s.SetOAuth(providerGoogle, "Google", OAuthConfig{Enabled: true, ClientID: "goog-id", ClientSecret: "goog-secret"}); err != nil {
+		t.Fatal(err)
 	}
-	if s.GitHubAuth().Configured() {
-		t.Fatal("a rejected save must leave sign-in off")
+	if got := s.OAuth(providerGitHub); got.ClientID != "gh-id" || got.ClientSecret != "gh-secret" {
+		t.Fatalf("google config overwrote github's: %+v", got)
+	}
+	if got := s.OAuth(providerGoogle); got.ClientID != "goog-id" || got.ClientSecret != "goog-secret" {
+		t.Fatalf("github config leaked into google's: %+v", got)
+	}
+
+	// Clearing one secret leaves the other alone.
+	if err := s.ClearOAuthClientSecret(providerGoogle); err != nil {
+		t.Fatal(err)
+	}
+	if s.OAuth(providerGitHub).ClientSecret != "gh-secret" {
+		t.Fatal("clearing google's secret took github's")
+	}
+	if s.OAuth(providerGoogle).ClientSecret != "" {
+		t.Fatal("google's secret survived being cleared")
+	}
+	// An unknown provider reads as unconfigured rather than as someone else.
+	if s.OAuth("nonesuch").Configured() {
+		t.Fatal("an unknown provider resolved to a configuration")
 	}
 }
 
-func TestClearGitHubClientSecret(t *testing.T) {
-	s := newTestState(t)
-	if err := s.SetGitHubAuth(GitHubAuthConfig{Enabled: true, ClientID: "id", ClientSecret: "shh"}); err != nil {
-		t.Fatal(err)
+func TestOAuthConfigRejectsIncompleteEnable(t *testing.T) {
+	for _, key := range oauthProviderOrder {
+		t.Run(key, func(t *testing.T) {
+			s := newTestState(t)
+			name := oauthProviders[key].name
+			if err := s.SetOAuth(key, name, OAuthConfig{Enabled: true, ClientSecret: "shh"}); err == nil {
+				t.Fatal("enabling without a client ID must fail")
+			}
+			if err := s.SetOAuth(key, name, OAuthConfig{Enabled: true, ClientID: "cid"}); err == nil {
+				t.Fatal("enabling with no secret stored and none supplied must fail")
+			}
+			if s.OAuth(key).Configured() {
+				t.Fatal("a rejected save must leave sign-in off")
+			}
+		})
 	}
-	if err := s.ClearGitHubClientSecret(); err != nil {
-		t.Fatal(err)
-	}
-	if got := s.GitHubAuth(); got.ClientSecret != "" {
-		t.Fatal("secret survived being cleared")
+}
+
+func TestClearOAuthClientSecret(t *testing.T) {
+	for _, key := range oauthProviderOrder {
+		t.Run(key, func(t *testing.T) {
+			s := newTestState(t)
+			if err := s.SetOAuth(key, oauthProviders[key].name, OAuthConfig{Enabled: true, ClientID: "id", ClientSecret: "shh"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.ClearOAuthClientSecret(key); err != nil {
+				t.Fatal(err)
+			}
+			if got := s.OAuth(key); got.ClientSecret != "" {
+				t.Fatal("secret survived being cleared")
+			}
+		})
 	}
 }
 
@@ -184,7 +235,7 @@ func TestNormalizeAndValidateEmail(t *testing.T) {
 }
 
 // TestSchemaUpgradeFromPreIdentityDatabase opens a database written by a build
-// that predates federated sign-in. The new columns arrive by ALTER rather than
+// that predates federated sign-in entirely. The new columns arrive by ALTER rather than
 // by CREATE TABLE on that path, and the unique indexes are built afterwards, so
 // it is the path most likely to break an existing deployment on upgrade.
 func TestSchemaUpgradeFromPreIdentityDatabase(t *testing.T) {
@@ -224,7 +275,7 @@ func TestSchemaUpgradeFromPreIdentityDatabase(t *testing.T) {
 		t.Fatalf("existing fields were mangled: %+v", u)
 	}
 	// Password-only sign-in is exactly what it was, with no identity attached.
-	if u.Email != "" || u.EmailVerified || u.GitHubUserID != "" {
+	if u.Email != "" || u.EmailVerified || u.GitHubUserID != "" || u.GoogleUserID != "" {
 		t.Fatalf("upgrade invented an identity: %+v", u)
 	}
 
@@ -233,14 +284,17 @@ func TestSchemaUpgradeFromPreIdentityDatabase(t *testing.T) {
 		usr.Email = "alice@example.com"
 		usr.EmailVerified = true
 		usr.GitHubUserID = "4242"
+		usr.GoogleUserID = "sub-4242"
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if got, ok := s.LookupUserByVerifiedEmail("alice@example.com"); !ok || got.Username != "alice" {
 		t.Fatal("verified email does not resolve after upgrade")
 	}
-	if got, ok := s.LookupUserByGitHubID("4242"); !ok || got.Username != "alice" {
-		t.Fatal("GitHub id does not resolve after upgrade")
+	for provider, id := range map[string]string{providerGitHub: "4242", providerGoogle: "sub-4242"} {
+		if got, ok := s.LookupUserByOAuth(provider, id); !ok || got.Username != "alice" {
+			t.Fatalf("%s id does not resolve after upgrade", provider)
+		}
 	}
 
 	// The uniqueness the indexes exist to enforce holds on an upgraded database.
@@ -249,6 +303,9 @@ func TestSchemaUpgradeFromPreIdentityDatabase(t *testing.T) {
 	}
 	if err := s.UpdateUser("bob", func(usr *User) { usr.GitHubUserID = "4242" }); err == nil {
 		t.Fatal("a duplicate GitHub id was accepted after upgrade")
+	}
+	if err := s.UpdateUser("bob", func(usr *User) { usr.GoogleUserID = "sub-4242" }); err == nil {
+		t.Fatal("a duplicate Google id was accepted after upgrade")
 	}
 	if err := s.UpdateUser("bob", func(usr *User) {
 		usr.Email = "alice@example.com"
@@ -259,5 +316,83 @@ func TestSchemaUpgradeFromPreIdentityDatabase(t *testing.T) {
 	// An unverified duplicate is fine: it is not an identity.
 	if err := s.UpdateUser("bob", func(usr *User) { usr.Email = "alice@example.com" }); err != nil {
 		t.Fatalf("an unverified duplicate should be allowed: %v", err)
+	}
+}
+
+// TestSchemaUpgradeFromGitHubOnlyDatabase opens a database written by the build
+// that had GitHub sign-in but not Google. That is the upgrade anyone already
+// running the previous branch will perform, and it is the one where the Google
+// columns arrive by ALTER on a table that already carries linked identities.
+func TestSchemaUpgradeFromGitHubOnlyDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+
+	old, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.Exec(`
+		CREATE TABLE users (
+			username          TEXT PRIMARY KEY,
+			password_hash     TEXT NOT NULL DEFAULT '',
+			role              TEXT NOT NULL DEFAULT 'member',
+			disabled          INTEGER NOT NULL DEFAULT 0,
+			csrf_token        TEXT NOT NULL DEFAULT '',
+			send_isolation    INTEGER NOT NULL DEFAULT 0,
+			receive_isolation INTEGER NOT NULL DEFAULT 0,
+			email             TEXT NOT NULL DEFAULT '',
+			email_verified    INTEGER NOT NULL DEFAULT 0,
+			github_user_id    TEXT NOT NULL DEFAULT '',
+			github_login      TEXT NOT NULL DEFAULT ''
+		);
+		CREATE UNIQUE INDEX idx_users_github_user_id ON users(github_user_id) WHERE github_user_id <> '';
+		CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '');
+		INSERT INTO users (username, role, email, email_verified, github_user_id, github_login)
+			VALUES ('alice', 'admin', 'alice@example.com', 1, '4242', 'octocat');
+		INSERT INTO settings (key, value) VALUES
+			('auth.github.enabled', '1'),
+			('auth.github.client_id', 'iv1.existing'),
+			('auth.github.client_secret', 'existing-secret');
+	`); err != nil {
+		t.Fatal(err)
+	}
+	old.Close()
+
+	s, err := LoadState(path)
+	if err != nil {
+		t.Fatalf("opening a github-only database failed: %v", err)
+	}
+
+	// The existing link and the existing configuration both survive: the
+	// settings keys are already namespaced per provider, so adding one moves
+	// nothing.
+	if got, ok := s.LookupUserByOAuth(providerGitHub, "4242"); !ok || got.Username != "alice" {
+		t.Fatal("an existing GitHub link did not survive the upgrade")
+	}
+	if got := s.OAuth(providerGitHub); !got.Configured() || got.ClientSecret != "existing-secret" {
+		t.Fatalf("existing GitHub configuration lost: %+v", got)
+	}
+	if got, ok := s.LookupUserByVerifiedEmail("alice@example.com"); !ok || got.Username != "alice" {
+		t.Fatal("an existing verified address did not survive the upgrade")
+	}
+
+	// Google arrives unconfigured and unlinked, so nothing changes for anyone
+	// until an admin sets it up.
+	if s.OAuth(providerGoogle).Configured() {
+		t.Fatal("the upgrade switched Google sign-in on")
+	}
+	u, _ := s.LookupUser("alice")
+	if u.GoogleUserID != "" || u.GoogleEmail != "" {
+		t.Fatalf("the upgrade invented a Google identity: %+v", u)
+	}
+
+	// And the new column is usable and unique.
+	if err := s.UpdateUser("alice", func(usr *User) { usr.GoogleUserID = "sub-1" }); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddUser(User{Username: "bob", Role: "member"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateUser("bob", func(usr *User) { usr.GoogleUserID = "sub-1" }); err == nil {
+		t.Fatal("a duplicate Google id was accepted after upgrade")
 	}
 }
