@@ -1,6 +1,6 @@
 # Access management v2
 
-> **Status: design, awaiting review.** Replaces the ad-hoc admin/member checks,
+> **Status: approved 2026-09-29; phase 1 implemented.** Replaces the ad-hoc admin/member checks,
 > per-user isolation flags, and per-token `owner_slots` with one authorization
 > model covering the portal, inference admission, and dispatch.
 
@@ -353,17 +353,17 @@ behaviour until an admin changes a setting.
 
 Phases 1–2 are prerequisites; 3, 4, and 5 can proceed in parallel after 2.
 
-## 14. Open questions
+## 14. Decisions (2026-09-29)
 
-1. **Tenancy.** Should teams be hard tenants (members of one team cannot see
-   that another exists, its clients, or its models), or groups within one
-   organisation? This design assumes groups; tenants would add a tenant id to
-   every row and query.
-2. **Default for new models.** Migrated routers keep `* → everyone`. Should a
-   *new* router start default-deny (admins grant models explicitly)?
-3. **Who may choose "Shared"?** Any client owner, or only roles with a
-   permission such as `client.share.public`?
-4. **Session loss on upgrade.** Acceptable to sign everyone out once when
-   sessions move to SQLite?
-5. **Policy as code.** Is YAML export/import of roles and policies (for review
-   in git) wanted in phase 6, or later?
+1. **Tenancy:** teams are groups within one router, not hard tenants.
+2. **Default model access:** every router, new or upgraded, starts with
+   `* → everyone`. Admins narrow it.
+3. **Sharing:** any client owner may choose any sharing mode, including
+   Shared. (`client.share.own` is in the member role.)
+4. **Sessions:** signing everyone out once when sessions move to SQLite is
+   acceptable.
+5. **Policy as code:** no YAML export/import.
+
+Implementation note: persistence for §2 lives in `router/internal/admin`
+beside the other tables it joins (users, api_keys, client_tokens), rather than
+a separate `authz/store` package; `authz` itself stays pure.
