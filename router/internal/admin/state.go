@@ -57,6 +57,13 @@ type User struct {
 	// unique within its issuer. OIDCLabel is kept only to display.
 	OIDCSubject string `json:"oidc_subject,omitempty"`
 	OIDCLabel   string `json:"oidc_label,omitempty"`
+
+	// ManagedBy names the identity provider that owns this account, or is
+	// empty for an account managed here. A managed account was created by that
+	// provider's sign-in, takes its role from the provider on every sign-in,
+	// and can sign in no other way — otherwise a password or email link would
+	// let someone the provider has since refused keep walking in.
+	ManagedBy string `json:"managed_by,omitempty"`
 }
 
 // APIKey is a stored API key. The key material itself is never persisted:
@@ -258,7 +265,8 @@ func createSchema(db *sql.DB) error {
 			google_user_id    TEXT NOT NULL DEFAULT '',
 			google_email      TEXT NOT NULL DEFAULT '',
 			oidc_subject      TEXT NOT NULL DEFAULT '',
-			oidc_label        TEXT NOT NULL DEFAULT ''
+			oidc_label        TEXT NOT NULL DEFAULT '',
+			managed_by        TEXT NOT NULL DEFAULT ''
 		);
 		CREATE TABLE IF NOT EXISTS api_keys (
 			key_hash       TEXT PRIMARY KEY,
@@ -371,6 +379,7 @@ func createSchema(db *sql.DB) error {
 	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN google_email TEXT NOT NULL DEFAULT ''`)
 	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN oidc_subject TEXT NOT NULL DEFAULT ''`)
 	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN oidc_label TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN managed_by TEXT NOT NULL DEFAULT ''`)
 	// An identity must resolve to exactly one account, so the database — not
 	// just the handler that happens to write it — refuses a second claim on the
 	// same GitHub account or the same verified address. Unverified duplicates
@@ -679,7 +688,7 @@ func (s *State) NeedsSetup() bool {
 const userColumns = `username, password_hash, role, disabled, csrf_token,
 	send_isolation, receive_isolation, email, email_verified,
 	github_user_id, github_login, google_user_id, google_email,
-	oidc_subject, oidc_label`
+	oidc_subject, oidc_label, managed_by`
 
 // rowScanner is satisfied by both *sql.Row and *sql.Rows.
 type rowScanner interface{ Scan(dest ...any) error }
@@ -690,7 +699,7 @@ func scanUser(sc rowScanner) (User, error) {
 	err := sc.Scan(&u.Username, &u.PasswordHash, &u.Role, &disabled, &u.CSRFToken,
 		&sendIso, &recvIso, &u.Email, &emailVerified,
 		&u.GitHubUserID, &u.GitHubLogin, &u.GoogleUserID, &u.GoogleEmail,
-		&u.OIDCSubject, &u.OIDCLabel)
+		&u.OIDCSubject, &u.OIDCLabel, &u.ManagedBy)
 	if err != nil {
 		return User{}, err
 	}
@@ -765,6 +774,47 @@ func (s *State) AddUser(u User) error {
 	return nil
 }
 
+// ProvisionOIDCUser creates an account for an OIDC identity seen for the first
+// time, already linked to it and marked as managed by the provider.
+//
+// The insert carries the identity, so the unique index on oidc_subject settles
+// a race between two first sign-ins by the same person: the loser gets the
+// winner's account rather than a second one. A taken username gets a numeric
+// suffix, since the name is derived from the provider and two people there can
+// share one.
+func (s *State) ProvisionOIDCUser(base, role string, ident oauthIdentity) (User, error) {
+	token, err := generateCSRFToken()
+	if err != nil {
+		return User{}, err
+	}
+	for i := 1; i <= 100; i++ {
+		username := base
+		if i > 1 {
+			username = fmt.Sprintf("%s-%d", base, i)
+		}
+		_, err := s.db.Exec(
+			`INSERT INTO users (username, role, csrf_token, oidc_subject, oidc_label, managed_by)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+			username, role, token, ident.ID, ident.Label, providerOIDC,
+		)
+		if err == nil {
+			u, _ := s.LookupUser(username)
+			return u, nil
+		}
+		msg := err.Error()
+		if strings.Contains(msg, "users.oidc_subject") {
+			if u, ok := s.LookupUserByOAuth(providerOIDC, ident.ID); ok {
+				return u, nil
+			}
+			return User{}, err
+		}
+		if !strings.Contains(msg, "users.username") {
+			return User{}, err
+		}
+	}
+	return User{}, fmt.Errorf("no free username derived from %q", base)
+}
+
 // AddFirstAdmin atomically creates the initial admin account, but only if no
 // users exist yet. This closes the first-run race where two concurrent setup
 // requests both pass NeedsSetup() and each create an admin.
@@ -806,12 +856,12 @@ func (s *State) UpdateUser(username string, fn func(*User)) error {
 		`UPDATE users SET password_hash = ?, role = ?, disabled = ?, csrf_token = ?,
 		 send_isolation = ?, receive_isolation = ?, email = ?, email_verified = ?,
 		 github_user_id = ?, github_login = ?, google_user_id = ?, google_email = ?,
-		 oidc_subject = ?, oidc_label = ?
+		 oidc_subject = ?, oidc_label = ?, managed_by = ?
 		 WHERE username = ?`,
 		u.PasswordHash, u.Role, boolInt(u.Disabled), u.CSRFToken,
 		boolInt(u.SendIsolation), boolInt(u.ReceiveIsolation), u.Email, boolInt(u.EmailVerified),
 		u.GitHubUserID, u.GitHubLogin, u.GoogleUserID, u.GoogleEmail,
-		u.OIDCSubject, u.OIDCLabel, username,
+		u.OIDCSubject, u.OIDCLabel, u.ManagedBy, username,
 	)
 	if err != nil {
 		return identityConflictError(err)

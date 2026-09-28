@@ -27,6 +27,11 @@ const (
 	oidcAuthorizeURLKey = "auth.oidc.authorize_url"
 	oidcTokenURLKey     = "auth.oidc.token_url"
 	oidcUserInfoURLKey  = "auth.oidc.userinfo_url"
+	oidcScopesKey       = "auth.oidc.extra_scopes"
+	oidcRolesClaimKey   = "auth.oidc.roles_claim"
+	oidcMemberRoleKey   = "auth.oidc.member_role"
+	oidcAdminRoleKey    = "auth.oidc.admin_role"
+	oidcProvisionKey    = "auth.oidc.provision"
 )
 
 // defaultOIDCName is what the login button says until an admin names the
@@ -60,6 +65,17 @@ type OIDCConfig struct {
 	AuthorizeURL string
 	TokenURL     string
 	UserInfoURL  string
+
+	// ExtraScopes are requested alongside the fixed ones, for a provider that
+	// only releases roles when asked (space-separated).
+	ExtraScopes string
+	// The access policy; see oidc_access.go. RolesClaim empty turns it off.
+	RolesClaim string
+	MemberRole string
+	AdminRole  string
+	// Provision creates an account for a permitted identity seen for the
+	// first time, instead of refusing it as unlinked.
+	Provision bool
 }
 
 // Discovered reports whether the endpoints a sign-in needs are known.
@@ -78,7 +94,8 @@ func (c OIDCConfig) DisplayName() string {
 // OIDC returns the stored OIDC provider configuration.
 func (s *State) OIDC() OIDCConfig {
 	v := s.settings(oidcIssuerKey, oidcNameKey, oidcAuthMethodKey,
-		oidcAuthorizeURLKey, oidcTokenURLKey, oidcUserInfoURLKey)
+		oidcAuthorizeURLKey, oidcTokenURLKey, oidcUserInfoURLKey,
+		oidcScopesKey, oidcRolesClaimKey, oidcMemberRoleKey, oidcAdminRoleKey, oidcProvisionKey)
 	method := v[oidcAuthMethodKey]
 	if !oidcAuthMethods[method] {
 		method = oidcAuthBasic
@@ -90,6 +107,11 @@ func (s *State) OIDC() OIDCConfig {
 		AuthorizeURL: v[oidcAuthorizeURLKey],
 		TokenURL:     v[oidcTokenURLKey],
 		UserInfoURL:  v[oidcUserInfoURLKey],
+		ExtraScopes:  v[oidcScopesKey],
+		RolesClaim:   v[oidcRolesClaimKey],
+		MemberRole:   v[oidcMemberRoleKey],
+		AdminRole:    v[oidcAdminRoleKey],
+		Provision:    v[oidcProvisionKey] == "1",
 	}
 }
 
@@ -103,7 +125,19 @@ func (s *State) SetOIDC(c OIDCConfig) error {
 	if !oidcAuthMethods[c.AuthMethod] {
 		return fmt.Errorf("unknown token authentication method %q", c.AuthMethod)
 	}
+	c.ExtraScopes = strings.Join(strings.Fields(c.ExtraScopes), " ")
+	c.RolesClaim = strings.TrimSpace(c.RolesClaim)
+	c.MemberRole = strings.TrimSpace(c.MemberRole)
+	c.AdminRole = strings.TrimSpace(c.AdminRole)
+	if err := c.validateAccess(); err != nil {
+		return err
+	}
 	return s.putSettings(map[string]string{
+		oidcScopesKey:       c.ExtraScopes,
+		oidcRolesClaimKey:   c.RolesClaim,
+		oidcMemberRoleKey:   c.MemberRole,
+		oidcAdminRoleKey:    c.AdminRole,
+		oidcProvisionKey:    boolSetting(c.Provision),
 		oidcIssuerKey:       c.Issuer,
 		oidcNameKey:         strings.TrimSpace(c.Name),
 		oidcAuthMethodKey:   c.AuthMethod,
@@ -233,6 +267,12 @@ func oidcIdentity(body []byte) (oauthIdentity, error) {
 	if err := json.Unmarshal(body, &v); err != nil {
 		return oauthIdentity{}, fmt.Errorf("decode userinfo: %w", err)
 	}
+	// The whole document is kept for the access policy, which reads a claim
+	// the admin names and so cannot be a field here.
+	var claims map[string]json.RawMessage
+	if err := json.Unmarshal(body, &claims); err != nil {
+		return oauthIdentity{}, fmt.Errorf("decode userinfo: %w", err)
+	}
 	label := ""
 	if claimIsTrue(v.EmailVerified) {
 		label = NormalizeEmail(v.Email)
@@ -243,7 +283,12 @@ func oidcIdentity(body []byte) (oauthIdentity, error) {
 	if label == "" {
 		label = v.Sub
 	}
-	return oauthIdentity{ID: v.Sub, Label: label}, nil
+	return oauthIdentity{
+		ID:       v.Sub,
+		Label:    label,
+		Username: strings.TrimSpace(v.PreferredUsername),
+		Claims:   claims,
+	}, nil
 }
 
 // claimIsTrue reads a boolean claim that some providers (AWS Cognito among

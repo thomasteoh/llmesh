@@ -183,9 +183,10 @@ func TestTemplatesRender(t *testing.T) {
 	t.Run("settings", func(t *testing.T) {
 		d := base("settings")
 		d["Users"] = []any{
-			map[string]any{"Username": "alice", "IsSelf": true, "Role": "admin", "Disabled": false},
-			map[string]any{"Username": "bob", "IsSelf": false, "Role": "member", "Disabled": false},
-			map[string]any{"Username": "carol", "IsSelf": false, "Role": "admin", "Disabled": true},
+			map[string]any{"Username": "alice", "IsSelf": true, "Role": "admin", "Disabled": false, "ManagedBy": ""},
+			map[string]any{"Username": "bob", "IsSelf": false, "Role": "member", "Disabled": false, "ManagedBy": ""},
+			map[string]any{"Username": "carol", "IsSelf": false, "Role": "admin", "Disabled": true, "ManagedBy": ""},
+			map[string]any{"Username": "dave", "IsSelf": false, "Role": "member", "Disabled": false, "ManagedBy": "oidc"},
 		}
 		d["Upstreams"] = []any{map[string]any{
 			"Name": "orch", "URL": "https://orch.example.com", "Priority": "high", "Connected": true,
@@ -201,6 +202,14 @@ func TestTemplatesRender(t *testing.T) {
 				Key: "google", Name: "Google", Enabled: true, ClientID: "goog.apps",
 				HasSecret: true, Configured: true, Scope: "openid email",
 				CallbackURL: "https://llm.example.com/portal/auth/google/callback",
+			}, {
+				Key: "oidc", Name: "Zitadel", Enabled: true, ClientID: "123@llmesh",
+				HasSecret: true, Configured: true, Scope: "openid email profile",
+				CallbackURL: "https://llm.example.com/portal/auth/oidc/callback",
+				OIDC:        true, OIDCIssuer: "https://acme.zitadel.cloud", OIDCName: "Zitadel",
+				OIDCAuthMethod: "client_secret_basic", OIDCDiscovered: true,
+				OIDCRolesClaim: "urn:zitadel:iam:org:project:roles",
+				OIDCMemberRole: "llmesh-user", OIDCAdminRole: "llmesh-admin", OIDCProvision: true,
 			}},
 			SMTPEnabled: true, SMTPHost: "smtp.example.com", SMTPPort: 587,
 			SMTPUsername: "llmesh", SMTPHasPassword: true, SMTPFrom: "llmesh@example.com",

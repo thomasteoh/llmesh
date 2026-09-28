@@ -186,7 +186,7 @@ Username and password always works. Four alternatives can be added under **Setti
 | **OpenID Connect** | An issuer URL, display name, client ID and secret, and token authentication method for any OIDC provider (Zitadel, Keycloak, Authentik, Entra ID). The provider's endpoints are read from its discovery document when you save. Same callback URL treatment. | Links their own account under **Settings → Account**, then signs in with **Continue with** *display name*. |
 | **Email link** | An SMTP relay (host, port, transport security, From address, optional credentials), with a **Send test** button that reports the relay's own error. | Adds an address under **Settings → Account** and confirms it by following the link sent to it, then requests a sign-in link from the login page. |
 
-All four are ways to reach an existing account, never a way to obtain one. A provider account nobody has linked and an address nobody has verified are both refused, and neither creates a user — accounts are still made by an admin under **Settings → Users**. Each identity belongs to one account: a second claim on the same provider account or the same verified address is rejected. A user may link several providers; any of them then signs them in.
+All four are ways to reach an existing account, and by default never a way to obtain one (OpenID Connect can be set to create accounts; see below). A provider account nobody has linked and an address nobody has verified are both refused, and neither creates a user — accounts are still made by an admin under **Settings → Users**. Each identity belongs to one account: a second claim on the same provider account or the same verified address is rejected. A user may link several providers; any of them then signs them in.
 
 Each provider is matched on its immutable account id — GitHub's numeric user id, Google's OpenID Connect subject — and never on a handle or an address. Both of those can change, and once changed someone else can take them; a Google address in particular can be reassigned by a Workspace admin, and matching on it would hand over the llmesh account along with the mailbox. The handle or address is stored only to display, and is refreshed on each sign-in.
 
@@ -195,6 +195,18 @@ The scopes requested are the minimum that identifies an account: `read:user` fro
 For OpenID Connect, the stored identity is the issuer and subject together, since a subject is only unique within its issuer. Pointing the router at a different issuer therefore detaches every existing link rather than letting whoever holds the same subject at the new provider sign in to them; users link again. The discovery document must name the issuer you entered, and every endpoint must be HTTPS (plain HTTP is accepted only on a loopback host, for a provider under development). The flow always uses PKCE.
 
 To use **Zitadel**: in your project, create an application of type *Web* with the *Code* flow, add the callback URL shown on the settings page as a redirect URI, and choose *Basic* or *Post* authentication. Enter your instance URL (e.g. `https://your-instance.zitadel.cloud`) as the issuer, the application's client ID and secret, and pick the matching method (`client_secret_basic` for Basic, `client_secret_post` for Post).
+
+**Access control from the identity provider.** Setting a *roles claim* on the OpenID Connect card hands the decision of who may sign in to the provider:
+
+- A sign-in whose roles include neither the configured *member role* nor *admin role* is refused, linked or not.
+- With *Create an account on first sign-in* on, a permitted identity seen for the first time gets an account, named from its username at the provider. Provisioning requires a roles claim, so it never opens the router to everyone who can register at the provider.
+- Accounts created this way are **managed** (marked *SSO* under **Settings → Users**). Their role follows the provider on every sign-in (admin role wins), they cannot sign in by password, email link, or another provider, and their role cannot be changed in the portal. **Take over** sets a password and hands the account back to llmesh, which is the recovery path if the provider is gone.
+- Accounts created in llmesh and linked afterwards keep the role set here, so a break-glass admin's rights never depend on the provider. They are still refused at the OIDC button without a role.
+- The last active admin is never demoted by the provider.
+
+Changes at the provider take effect at the user's next OIDC sign-in. A portal session already open lasts until it expires (24 hours), and API keys and client tokens keep working until the user is disabled here. Disabling a user in llmesh cuts off all of those immediately. Everything finer than admin/member (models, priority, concurrency, isolation) is still set in llmesh.
+
+For Zitadel: create roles such as `llmesh-user` and `llmesh-admin` in the project and grant them to users, enable *Assert Roles on Authentication* on the project, and set the roles claim to `urn:zitadel:iam:org:project:roles`. Enabling *Check authorization on Authentication* as well makes Zitadel itself refuse users with no role.
 
 An address is only a sign-in identity once its owner has followed a link sent to it, so claiming someone else's gets you nothing. Sign-in links last 15 minutes, work once, and are invalidated by requesting another or by changing the address. Requesting one tells you nothing about whether the address has an account here.
 

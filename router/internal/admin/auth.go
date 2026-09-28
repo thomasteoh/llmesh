@@ -277,6 +277,10 @@ func (a *Admin) handleLogin(w http.ResponseWriter, r *http.Request) {
 		a.renderLogin(w, r, "", "Account disabled.")
 		return
 	}
+	if msg := managedElsewhere(u, "password"); msg != "" {
+		a.renderLogin(w, r, "", msg)
+		return
+	}
 	a.startSession(w, r, username)
 	http.Redirect(w, r, "/portal/", http.StatusFound)
 }

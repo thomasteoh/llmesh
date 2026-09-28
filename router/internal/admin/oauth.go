@@ -63,6 +63,11 @@ type oauthIdentity struct {
 	// Label is what the portal displays — a GitHub handle, a Google address.
 	// It is refreshed on each sign-in and carries no authority.
 	Label string
+
+	// Username and Claims are filled only by OIDC, for the access policy and
+	// for naming an account it creates. Neither is stored.
+	Username string
+	Claims   map[string]json.RawMessage
 }
 
 // oauthProvider describes one federated sign-in provider.
@@ -108,6 +113,9 @@ func (a *Admin) providerFor(key string) (oauthProvider, bool) {
 	if key == providerOIDC {
 		c := a.state.OIDC()
 		p.name = c.DisplayName()
+		if c.ExtraScopes != "" {
+			p.scope += " " + c.ExtraScopes
+		}
 		p.authorizeURL = c.AuthorizeURL
 		p.tokenURL = c.TokenURL
 		p.userInfoURL = c.UserInfoURL
@@ -356,6 +364,10 @@ func (a *Admin) handleOAuthCallback(providerKey string) http.HandlerFunc {
 // router is granted by an admin creating an account, and a federated login is a
 // way to reach an existing one, not a way to obtain one.
 func (a *Admin) completeOAuthLogin(w http.ResponseWriter, r *http.Request, p oauthProvider, ident oauthIdentity) {
+	if p.key == providerOIDC {
+		a.completeOIDCLogin(w, r, p, ident)
+		return
+	}
 	u, ok := a.state.LookupUserByOAuth(p.key, ident.ID)
 	if !ok {
 		a.log.Info("admin: sign-in refused for unlinked account", "provider", p.key, "label", ident.Label)
@@ -364,6 +376,10 @@ func (a *Admin) completeOAuthLogin(w http.ResponseWriter, r *http.Request, p oau
 	}
 	if u.Disabled {
 		a.renderLogin(w, r, "", "Account disabled.")
+		return
+	}
+	if msg := managedElsewhere(u, p.key); msg != "" {
+		a.renderLogin(w, r, "", msg)
 		return
 	}
 	// Keep the stored label current, so the portal does not go on showing a
@@ -411,6 +427,12 @@ func (a *Admin) handleOAuthUnlink(providerKey string) http.HandlerFunc {
 		p, ok := a.providerFor(providerKey)
 		if !ok {
 			http.NotFound(w, r)
+			return
+		}
+		// A managed account's link is its only way in; removing it would lock
+		// the user out and let their next sign-in create a second account.
+		if u.ManagedBy == providerKey {
+			a.renderSettings(w, r, u, "", "This account is managed by "+p.name+" and cannot be unlinked from it.")
 			return
 		}
 		previous := p.get(u).Label
