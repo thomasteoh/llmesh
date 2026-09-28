@@ -269,7 +269,6 @@ func (a *Admin) registerRoutes() {
 		}
 	}))
 	mux.HandleFunc("/portal/clients/revoke", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleClientTokenRevoke)), 20))
-	mux.HandleFunc("/portal/clients/update", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleClientUpdate)), 20))
 	mux.HandleFunc("/portal/clients/owner-slots", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleClientTokenOwnerSlots)), 20))
 	mux.HandleFunc("/portal/clients/config", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {

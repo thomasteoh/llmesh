@@ -38,12 +38,6 @@ func (c *Conn) Run(ctx context.Context) {
 	c.inner.Run(ctx)
 }
 
-// SetOnUpdate registers a callback invoked when the router requests an in-place update.
-// Must be called before Run.
-func (c *Conn) SetOnUpdate(fn func()) {
-	c.inner.SetOnUpdate(fn)
-}
-
 // SlotPool returns the shared concurrency pool. Pass this to the local API
 // server so local requests share the same slot budget as router-dispatched jobs.
 func (c *Conn) SlotPool() *wsclient.SlotPool { return c.inner.Pool() }
