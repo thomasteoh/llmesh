@@ -92,7 +92,13 @@ func TestUserDisableDisconnectsClients(t *testing.T) {
 			break // closed by the router, as it should be
 		}
 	}
-	if n := len(h.ConnectedClientsByToken(ct.TokenHash)); n != 0 {
-		t.Fatalf("%d client(s) still connected after their owner was disabled", n)
+	// The hub drops the client from its registry just after the socket
+	// closes, so allow it a moment.
+	deadline = time.Now().Add(2 * time.Second)
+	for len(h.ConnectedClientsByToken(ct.TokenHash)) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("client still connected after its owner was disabled")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
