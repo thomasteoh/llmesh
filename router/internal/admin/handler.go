@@ -54,12 +54,11 @@ type Admin struct {
 	// authTokens holds outstanding email sign-in and address-verification links.
 	authTokens *authTokenStore
 
-	// GitHub OAuth endpoints and the client used to call them. All four are
-	// empty/nil in production and fall back to the real endpoints and a
-	// default client; tests set them to an httptest server.
-	ghAuthorizeURL string
-	ghTokenURL     string
-	ghAPIBaseURL   string
+	// oauthOverrides replaces a provider's endpoints, and httpClient the client
+	// used to reach them. Both are empty/nil in production, where the real
+	// endpoints and a default client apply; tests point them at an httptest
+	// server.
+	oauthOverrides map[string]oauthEndpoints
 	httpClient     *http.Client
 }
 
@@ -214,8 +213,12 @@ func (a *Admin) parseTemplates() error {
 		}
 		a.tmpls[name] = t
 	}
+	// The standalone auth pages get partials.html too: the provider marks the
+	// login page draws are the same ones the settings page draws, and one
+	// definition is better than two that can disagree.
 	for _, name := range []string{"login", "setup", "magic-confirm"} {
-		t, err := template.New(name+".html").Funcs(funcMap).ParseFS(adminFS, "templates/"+name+".html")
+		t, err := template.New(name+".html").Funcs(funcMap).ParseFS(
+			adminFS, "templates/partials.html", "templates/"+name+".html")
 		if err != nil {
 			return err
 		}
@@ -254,9 +257,21 @@ func (a *Admin) registerRoutes() {
 	// this endpoint being used to post it at someone.
 	mux.HandleFunc("/portal/login/magic", a.requireRateLimit(a.postOnly(a.handleMagicLinkRequest), 3))
 	mux.HandleFunc("/portal/login/magic/verify", a.requireRateLimit(a.handleMagicLinkVerify, 10))
-	mux.HandleFunc("/portal/auth/github", a.requireRateLimit(a.handleGitHubLogin, 10))
-	mux.HandleFunc("/portal/auth/github/callback", a.requireRateLimit(a.handleGitHubCallback, 10))
 	mux.HandleFunc("/portal/settings/email/verify", a.requireRateLimit(a.handleEmailVerify, 10))
+
+	// One set of routes per federated provider, registered from the same list
+	// the login and settings pages render from, so a provider cannot appear in
+	// the UI without the routes behind it existing.
+	for _, key := range oauthProviderOrder {
+		mux.HandleFunc(oauthStartPath(key), a.requireRateLimit(a.handleOAuthLogin(key), 10))
+		mux.HandleFunc(oauthCallbackPath(key), a.requireRateLimit(a.handleOAuthCallback(key), 10))
+		mux.HandleFunc("/portal/settings/"+key+"/link",
+			a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleOAuthLink(key))), 10))
+		mux.HandleFunc("/portal/settings/"+key+"/unlink",
+			a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleOAuthUnlink(key))), 10))
+		mux.HandleFunc("/portal/settings/auth/"+key,
+			a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleOAuthSettingsUpdate(key))), 20))
+	}
 
 	// Logout requires auth + CSRF
 	mux.HandleFunc("/portal/logout", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleLogout)), 20))
@@ -339,15 +354,12 @@ func (a *Admin) registerRoutes() {
 	mux.HandleFunc("/portal/settings/pricing/delete", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleModelPricingDelete)), 30))
 	mux.HandleFunc("/portal/settings/currency", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleCostCurrencyUpdate)), 20))
 
-	// Sign-in method configuration (admin) and per-user identity linking (any
-	// signed-in user, acting on their own account only).
-	mux.HandleFunc("/portal/settings/auth/github", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleGitHubAuthUpdate)), 20))
+	// Email sign-in configuration (admin) and the address a user sets on their
+	// own account. The per-provider equivalents are registered above.
 	mux.HandleFunc("/portal/settings/auth/smtp", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleSMTPUpdate)), 20))
 	mux.HandleFunc("/portal/settings/auth/smtp/test", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleSMTPTest)), 5))
 	mux.HandleFunc("/portal/settings/email", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleEmailUpdate)), 5))
 	mux.HandleFunc("/portal/settings/email/resend", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleEmailResend)), 3))
-	mux.HandleFunc("/portal/settings/github/link", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleGitHubLink)), 10))
-	mux.HandleFunc("/portal/settings/github/unlink", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleGitHubUnlink)), 10))
 
 	// Dashboard JSON API
 	mux.HandleFunc("/portal/api/dashboard", a.requireAuth(a.handleDashboardJSON))

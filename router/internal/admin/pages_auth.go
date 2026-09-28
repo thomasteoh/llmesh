@@ -14,49 +14,62 @@ import (
 // is what an admin editing any other setting will submit, and reading it as
 // "erase it" would silently break sign-in. Erasing is its own explicit action.
 
-func (a *Admin) handleGitHubAuthUpdate(w http.ResponseWriter, r *http.Request) {
-	u := ctxGetUser(r)
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	if r.FormValue("clear_secret") != "" {
-		if err := a.state.ClearGitHubClientSecret(); err != nil {
-			a.renderSettings(w, r, u, "", err.Error())
+// handleOAuthSettingsUpdate saves one provider's credentials. The same handler
+// serves every provider, so none can acquire a subtly different rule about
+// what a blank secret means or when a configuration counts as enabled.
+func (a *Admin) handleOAuthSettingsUpdate(providerKey string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		u := ctxGetUser(r)
+		p, ok := a.providerFor(providerKey)
+		if !ok {
+			http.NotFound(w, r)
 			return
 		}
-		// A configuration with no secret cannot complete a sign-in, so leaving
-		// it switched on would offer users a button that always fails.
-		if err := a.state.SetGitHubAuth(GitHubAuthConfig{
-			Enabled:  false,
-			ClientID: a.state.GitHubAuth().ClientID,
-		}); err != nil {
-			a.renderSettings(w, r, u, "", err.Error())
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
-		a.state.RecordAudit(u.Username, "settings.auth.github.clear_secret", "", a.clientIP(r))
-		a.renderSettings(w, r, u, "GitHub client secret cleared and GitHub sign-in switched off.", "")
-		return
-	}
+		if r.FormValue("clear_secret") != "" {
+			if err := a.state.ClearOAuthClientSecret(providerKey); err != nil {
+				a.renderSettings(w, r, u, "", err.Error())
+				return
+			}
+			// A configuration with no secret cannot complete a sign-in, so
+			// leaving it switched on would offer users a button that always fails.
+			if err := a.state.SetOAuth(providerKey, p.name, OAuthConfig{
+				Enabled:  false,
+				ClientID: a.state.OAuth(providerKey).ClientID,
+			}); err != nil {
+				a.renderSettings(w, r, u, "", err.Error())
+				return
+			}
+			a.state.RecordAudit(u.Username, "settings.auth."+providerKey+".clear_secret", "", a.clientIP(r))
+			a.renderSettings(w, r, u,
+				p.name+" client secret cleared and "+p.name+" sign-in switched off.", "")
+			return
+		}
 
-	cfg := GitHubAuthConfig{
-		Enabled:      r.FormValue("enabled") != "",
-		ClientID:     r.FormValue("client_id"),
-		ClientSecret: r.FormValue("client_secret"),
+		cfg := OAuthConfig{
+			Enabled:      r.FormValue("enabled") != "",
+			ClientID:     r.FormValue("client_id"),
+			ClientSecret: r.FormValue("client_secret"),
+		}
+		if err := a.state.SetOAuth(providerKey, p.name, cfg); err != nil {
+			a.renderSettings(w, r, u, "", err.Error())
+			return
+		}
+		// The secret is deliberately absent from the audit target.
+		a.state.RecordAudit(u.Username, "settings.auth."+providerKey,
+			"enabled="+strconv.FormatBool(cfg.Enabled), a.clientIP(r))
+		a.log.Info("admin: oauth sign-in settings updated",
+			"actor", u.Username, "provider", providerKey, "enabled", cfg.Enabled)
+		if cfg.Enabled {
+			a.renderSettings(w, r, u,
+				p.name+" sign-in is on. Users can link their account under Sign-in methods.", "")
+			return
+		}
+		a.renderSettings(w, r, u, p.name+" sign-in settings saved.", "")
 	}
-	if err := a.state.SetGitHubAuth(cfg); err != nil {
-		a.renderSettings(w, r, u, "", err.Error())
-		return
-	}
-	// The secret is deliberately absent from the audit target.
-	a.state.RecordAudit(u.Username, "settings.auth.github",
-		"enabled="+strconv.FormatBool(cfg.Enabled), a.clientIP(r))
-	a.log.Info("admin: github sign-in settings updated", "actor", u.Username, "enabled", cfg.Enabled)
-	if cfg.Enabled {
-		a.renderSettings(w, r, u, "GitHub sign-in is on. Users can link their account under Sign-in methods.", "")
-		return
-	}
-	a.renderSettings(w, r, u, "GitHub sign-in settings saved.", "")
 }
 
 func (a *Admin) handleSMTPUpdate(w http.ResponseWriter, r *http.Request) {

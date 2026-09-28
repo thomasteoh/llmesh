@@ -95,29 +95,61 @@ func TestTemplatesRenderAgainstRealStructs(t *testing.T) {
 			Pricing:   []ModelPricingRow{{Model: "llama3", InputRate: "1", OutputRate: "2", Basis: "estimated", Live: true, Configured: true}},
 		}
 
+		// One provider card per real provider, so adding a provider puts it
+		// through this page's every state without anyone remembering to.
+		configuredProviders := func(linked, hasSecret bool) []OAuthProviderSettings {
+			out := make([]OAuthProviderSettings, 0, len(oauthProviderOrder))
+			for _, key := range oauthProviderOrder {
+				p := oauthProviders[key]
+				label := ""
+				if linked {
+					label = "someone@" + key
+				}
+				out = append(out, OAuthProviderSettings{
+					Key: key, Name: p.name, Enabled: true, ClientID: "cid",
+					HasSecret: hasSecret, Configured: true,
+					CallbackURL: "https://llm.example.com/portal/auth/" + key + "/callback",
+					Scope:       p.scope, ConsoleHint: oauthConsoleHints[key],
+					Linked: linked, Label: label,
+				})
+			}
+			return out
+		}
+		unconfiguredProviders := func() []OAuthProviderSettings {
+			out := make([]OAuthProviderSettings, 0, len(oauthProviderOrder))
+			for _, key := range oauthProviderOrder {
+				p := oauthProviders[key]
+				out = append(out, OAuthProviderSettings{
+					Key: key, Name: p.name, Scope: p.scope,
+					CallbackURL: "https://llm.example.com/portal/auth/" + key + "/callback",
+					ConsoleHint: oauthConsoleHints[key],
+				})
+			}
+			return out
+		}
+
 		fullyConfigured := AuthSettings{
-			GitHubEnabled: true, GitHubClientID: "iv1.abc", GitHubHasSecret: true,
-			GitHubConfigured: true, GitHubCallbackURL: "https://llm.example.com/portal/auth/github/callback",
+			Providers:   configuredProviders(true, true),
 			SMTPEnabled: true, SMTPHost: "smtp.example.com", SMTPPort: 587,
 			SMTPUsername: "llmesh", SMTPHasPassword: true, SMTPFrom: "llmesh@example.com",
 			SMTPSecurity: "starttls", SMTPConfigured: true,
 			Email: "alice@example.com", EmailVerified: true,
-			GitHubLogin: "octocat", GitHubLinked: true,
 		}
 		// Configured but with nothing linked and an address still unverified,
 		// which is what a user sees between claiming one and confirming it.
 		pending := fullyConfigured
+		pending.Providers = configuredProviders(false, false)
 		pending.EmailVerified = false
-		pending.GitHubLinked = false
-		pending.GitHubLogin = ""
-		pending.GitHubHasSecret = false
 		pending.SMTPHasPassword = false
 		// Nothing configured at all: the page must fall back to the password
 		// card alone and never reach a sign-in-method field.
-		off := AuthSettings{SMTPSecurity: "starttls"}
+		off := AuthSettings{Providers: unconfiguredProviders(), SMTPSecurity: "starttls"}
+		// And a router with no providers compiled in at all, which is what the
+		// page sees if the provider list is ever empty.
+		none := AuthSettings{SMTPSecurity: "starttls"}
 
 		for name, auth := range map[string]AuthSettings{
-			"configured": fullyConfigured, "pending": pending, "off": off,
+			"configured": fullyConfigured, "pending": pending, "off": off, "none": none,
 		} {
 			page := base
 			page.Auth = auth
@@ -130,13 +162,25 @@ func TestTemplatesRenderAgainstRealStructs(t *testing.T) {
 	})
 
 	t.Run("login", func(t *testing.T) {
-		for _, p := range []loginPage{
+		all := make([]loginProvider, 0, len(oauthProviderOrder))
+		for _, key := range oauthProviderOrder {
+			all = append(all, loginProvider{Key: key, Name: oauthProviders[key].name, Path: oauthStartPath(key)})
+		}
+		pages := []loginPage{
 			{},
 			{Error: "Invalid credentials."},
-			{Notice: "Check your mail.", GitHubEnabled: true, EmailEnabled: true, EmailSubmitted: "a@b.com"},
-			{GitHubEnabled: true},
+			{Notice: "Check your mail.", Providers: all, EmailEnabled: true, EmailSubmitted: "a@b.com"},
+			{Providers: all},
 			{EmailEnabled: true},
-		} {
+			// A provider with no mark of its own must still render.
+			{Providers: []loginProvider{{Key: "nonesuch", Name: "Nonesuch", Path: "/portal/auth/nonesuch"}}},
+		}
+		// And each provider alone, since only one button is drawn at a time in
+		// the common case.
+		for _, p := range all {
+			pages = append(pages, loginPage{Providers: []loginProvider{p}})
+		}
+		for _, p := range pages {
 			renderStandalonePage(t, "login", p)
 		}
 	})

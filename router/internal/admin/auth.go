@@ -187,11 +187,11 @@ type loginPage struct {
 	Error     string
 	Notice    string
 	CSRFToken string
-	// GitHubEnabled and EmailEnabled decide whether each alternative sign-in
-	// appears at all. A router with neither configured shows exactly the
-	// username-and-password form it always did.
-	GitHubEnabled bool
-	EmailEnabled  bool
+	// Providers lists the federated sign-in buttons to draw, and EmailEnabled
+	// whether to offer a link by mail. A router with neither configured shows
+	// exactly the username-and-password form it always did.
+	Providers    []loginProvider
+	EmailEnabled bool
 	// EmailSubmitted keeps the address in the field after a failed attempt, so
 	// a typo is corrected rather than retyped.
 	EmailSubmitted string
@@ -203,11 +203,27 @@ func (a *Admin) renderLogin(w http.ResponseWriter, r *http.Request, notice, errM
 	a.renderLoginWithEmail(w, r, notice, errMsg, "")
 }
 
+// loginProvider is one federated sign-in button.
+type loginProvider struct {
+	Key  string
+	Name string
+	// Path is where the button sends the browser to start the flow.
+	Path string
+}
+
 func (a *Admin) renderLoginWithEmail(w http.ResponseWriter, r *http.Request, notice, errMsg, email string) {
+	var providers []loginProvider
+	for _, key := range oauthProviderOrder {
+		p, ok := a.providerFor(key)
+		if !ok || !a.state.OAuth(key).Configured() {
+			continue
+		}
+		providers = append(providers, loginProvider{Key: key, Name: p.name, Path: oauthStartPath(key)})
+	}
 	a.renderStandalone(w, "login", loginPage{
 		Error:          errMsg,
 		Notice:         notice,
-		GitHubEnabled:  a.state.GitHubAuth().Configured(),
+		Providers:      providers,
 		EmailEnabled:   a.state.SMTP().Configured(),
 		EmailSubmitted: email,
 	})

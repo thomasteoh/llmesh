@@ -111,16 +111,28 @@ func TestLoginPageOffersOnlyConfiguredMethods(t *testing.T) {
 	}
 
 	body := render()
-	if strings.Contains(body, "Continue with GitHub") || strings.Contains(body, "Email me a sign-in link") {
-		t.Fatalf("an unconfigured router offered an alternative sign-in:\n%s", body)
+	for _, key := range oauthProviderOrder {
+		if strings.Contains(body, "Continue with "+oauthProviders[key].name) {
+			t.Fatalf("an unconfigured router offered %s sign-in:\n%s", key, body)
+		}
+	}
+	if strings.Contains(body, "Email me a sign-in link") {
+		t.Fatalf("an unconfigured router offered email sign-in:\n%s", body)
 	}
 
-	if err := a.state.SetGitHubAuth(GitHubAuthConfig{Enabled: true, ClientID: "id", ClientSecret: "shh"}); err != nil {
-		t.Fatal(err)
-	}
-	body = render()
-	if !strings.Contains(body, "Continue with GitHub") {
-		t.Fatal("GitHub sign-in configured but not offered")
+	// Each provider appears once configured, and only that provider does.
+	for _, key := range oauthProviderOrder {
+		if err := a.state.SetOAuth(key, oauthProviders[key].name,
+			OAuthConfig{Enabled: true, ClientID: "id", ClientSecret: "shh"}); err != nil {
+			t.Fatal(err)
+		}
+		body = render()
+		if !strings.Contains(body, "Continue with "+oauthProviders[key].name) {
+			t.Fatalf("%s configured but not offered", key)
+		}
+		if !strings.Contains(body, `href="/portal/auth/`+key+`"`) {
+			t.Fatalf("%s button does not point at its own start path:\n%s", key, body)
+		}
 	}
 	if strings.Contains(body, "Email me a sign-in link") {
 		t.Fatal("email sign-in offered without SMTP")
@@ -135,12 +147,16 @@ func TestLoginPageOffersOnlyConfiguredMethods(t *testing.T) {
 		t.Fatal("SMTP configured but email sign-in not offered")
 	}
 
-	// Switching a method off hides it again without discarding its settings.
-	if err := a.state.SetGitHubAuth(GitHubAuthConfig{Enabled: false, ClientID: "id"}); err != nil {
+	// Switching one method off hides it again, without touching the others.
+	if err := a.state.SetOAuth(providerGitHub, "GitHub", OAuthConfig{Enabled: false, ClientID: "id"}); err != nil {
 		t.Fatal(err)
 	}
-	if body = render(); strings.Contains(body, "Continue with GitHub") {
+	body = render()
+	if strings.Contains(body, "Continue with GitHub") {
 		t.Fatal("a disabled method is still offered")
+	}
+	if !strings.Contains(body, "Continue with Google") {
+		t.Fatal("disabling GitHub took Google with it")
 	}
 }
 

@@ -14,11 +14,14 @@ import (
 // both fills it in and switches it on — a half-entered GitHub app never shows
 // up as a sign-in button on the login page.
 
-const (
-	githubEnabledKey      = "auth.github.enabled"
-	githubClientIDKey     = "auth.github.client_id"
-	githubClientSecretKey = "auth.github.client_secret"
+// oauthSettingKeys returns the settings-table keys holding one provider's
+// credentials. Each provider gets its own namespace under auth.<provider>.
+func oauthSettingKeys(provider string) (enabled, clientID, clientSecret string) {
+	base := "auth." + provider + "."
+	return base + "enabled", base + "client_id", base + "client_secret"
+}
 
+const (
 	smtpEnabledKey  = "auth.smtp.enabled"
 	smtpHostKey     = "auth.smtp.host"
 	smtpPortKey     = "auth.smtp.port"
@@ -28,23 +31,23 @@ const (
 	smtpSecurityKey = "auth.smtp.security"
 )
 
-// GitHubAuthConfig is the GitHub OAuth app an admin registered for this router.
+// OAuthConfig is the OAuth app an admin registered with one provider.
 //
 // ClientSecret is held in the settings table in plaintext, as upstream router
 // tokens already are: the router has no key to encrypt it under that it does
 // not also store beside it. It is never rendered back to the portal, never
 // logged, and the database file is expected to be protected accordingly.
-type GitHubAuthConfig struct {
+type OAuthConfig struct {
 	Enabled      bool
 	ClientID     string
 	ClientSecret string
 }
 
-// Configured reports whether GitHub sign-in should be offered. Both halves
-// matter: switching it off leaves the credentials in place for later, and
-// credentials alone are not a decision to turn it on.
-func (g GitHubAuthConfig) Configured() bool {
-	return g.Enabled && g.ClientID != "" && g.ClientSecret != ""
+// Configured reports whether this provider's sign-in should be offered. Both
+// halves matter: switching it off leaves the credentials in place for later,
+// and credentials alone are not a decision to turn it on.
+func (c OAuthConfig) Configured() bool {
+	return c.Enabled && c.ClientID != "" && c.ClientSecret != ""
 }
 
 // SMTPConfig is the mail relay used to send sign-in and verification links.
@@ -123,44 +126,50 @@ func (s *State) putSettings(kv map[string]string) error {
 	return tx.Commit()
 }
 
-// GitHubAuth returns the stored GitHub OAuth configuration.
-func (s *State) GitHubAuth() GitHubAuthConfig {
-	v := s.settings(githubEnabledKey, githubClientIDKey, githubClientSecretKey)
-	return GitHubAuthConfig{
-		Enabled:      v[githubEnabledKey] == "1",
-		ClientID:     v[githubClientIDKey],
-		ClientSecret: v[githubClientSecretKey],
+// OAuth returns one provider's stored configuration.
+func (s *State) OAuth(provider string) OAuthConfig {
+	enabledKey, idKey, secretKey := oauthSettingKeys(provider)
+	v := s.settings(enabledKey, idKey, secretKey)
+	return OAuthConfig{
+		Enabled:      v[enabledKey] == "1",
+		ClientID:     v[idKey],
+		ClientSecret: v[secretKey],
 	}
 }
 
-// SetGitHubAuth stores the GitHub OAuth configuration. An empty ClientSecret
-// keeps the stored one, so an admin can re-save the form — which never shows
-// the secret back to them — without blanking it.
-func (s *State) SetGitHubAuth(c GitHubAuthConfig) error {
+// SetOAuth stores one provider's configuration. An empty ClientSecret keeps the
+// stored one, so an admin can re-save the form — which never shows the secret
+// back to them — without blanking it.
+//
+// providerName is used only in error messages, so they name the provider the
+// admin is looking at rather than its URL key.
+func (s *State) SetOAuth(provider, providerName string, c OAuthConfig) error {
+	enabledKey, idKey, secretKey := oauthSettingKeys(provider)
 	c.ClientID = strings.TrimSpace(c.ClientID)
 	c.ClientSecret = strings.TrimSpace(c.ClientSecret)
 	kv := map[string]string{
-		githubEnabledKey:  boolSetting(c.Enabled),
-		githubClientIDKey: c.ClientID,
+		enabledKey: boolSetting(c.Enabled),
+		idKey:      c.ClientID,
 	}
 	if c.ClientSecret != "" {
-		kv[githubClientSecretKey] = c.ClientSecret
+		kv[secretKey] = c.ClientSecret
 	}
 	if c.Enabled {
 		if c.ClientID == "" {
-			return fmt.Errorf("a client ID is required to enable GitHub sign-in")
+			return fmt.Errorf("a client ID is required to enable %s sign-in", providerName)
 		}
-		if c.ClientSecret == "" && s.setting(githubClientSecretKey) == "" {
-			return fmt.Errorf("a client secret is required to enable GitHub sign-in")
+		if c.ClientSecret == "" && s.setting(secretKey) == "" {
+			return fmt.Errorf("a client secret is required to enable %s sign-in", providerName)
 		}
 	}
 	return s.putSettings(kv)
 }
 
-// ClearGitHubClientSecret forgets the stored secret, for rotating an app or
-// decommissioning one. Enabling GitHub sign-in again requires a new secret.
-func (s *State) ClearGitHubClientSecret() error {
-	_, err := s.db.Exec(`DELETE FROM settings WHERE key = ?`, githubClientSecretKey)
+// ClearOAuthClientSecret forgets a provider's stored secret, for rotating an
+// app or decommissioning one. Enabling that sign-in again requires a new secret.
+func (s *State) ClearOAuthClientSecret(provider string) error {
+	_, _, secretKey := oauthSettingKeys(provider)
+	_, err := s.db.Exec(`DELETE FROM settings WHERE key = ?`, secretKey)
 	return err
 }
 

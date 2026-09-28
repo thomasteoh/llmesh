@@ -33,7 +33,7 @@
 
       {{/* Sign-in methods appear only for the methods an admin has switched on,
            so a user on a password-only router sees the password card alone. */}}
-      {{if or .Auth.GitHubConfigured .Auth.SMTPConfigured}}
+      {{if or .Auth.AnyProviderConfigured .Auth.SMTPConfigured}}
       <div class="card mt-3">
         <div class="card-title">Sign-in methods</div>
         <p class="table-hint mb-3">Link an identity to this account to sign in without typing a password. Your password keeps working either way.</p>
@@ -63,20 +63,20 @@
         {{end}}
         {{end}}
 
-        {{if .Auth.GitHubConfigured}}
-        <div class="form-group mb-2"><label>GitHub</label></div>
-        {{if .Auth.GitHubLinked}}
-        <div class="identity-row">
-          <p class="table-hint">{{template "status-badge" dict "Class" "connected" "Label" "✓ linked"}} Signed in as <strong>@{{.Auth.GitHubLogin}}</strong> on GitHub.</p>
-          {{template "action-button" dict "Action" "/portal/settings/github/unlink" "CSRF" $.CSRFToken "Confirm" "Unlink this GitHub account? You will no longer be able to sign in with it." "Class" "btn-danger btn-xs" "Label" "Unlink"}}
+        {{range .Auth.Providers}}{{if .Configured}}
+        <div class="form-group mb-2"><label>{{.Name}}</label></div>
+        {{if .Linked}}
+        <div class="identity-row mb-3">
+          <p class="table-hint">{{template "status-badge" dict "Class" "connected" "Label" "✓ linked"}} Linked to <strong>{{.Label}}</strong> on {{.Name}}.</p>
+          {{template "action-button" dict "Action" (printf "/portal/settings/%s/unlink" .Key) "CSRF" $.CSRFToken "Confirm" (printf "Unlink this %s account? You will no longer be able to sign in with it." .Name) "Class" "btn-danger btn-xs" "Label" "Unlink"}}
         </div>
         {{else}}
-        <div class="identity-row">
-          <p class="table-hint">Not linked. Linking sends you to GitHub to authorize this router, then returns you here.</p>
-          {{template "action-button" dict "Action" "/portal/settings/github/link" "CSRF" $.CSRFToken "Class" "btn-secondary btn-xs" "Label" "Link GitHub account"}}
+        <div class="identity-row mb-3">
+          <p class="table-hint">Not linked. Linking sends you to {{.Name}} to authorize this router, then returns you here.</p>
+          {{template "action-button" dict "Action" (printf "/portal/settings/%s/link" .Key) "CSRF" $.CSRFToken "Class" "btn-secondary btn-xs" "Label" (printf "Link %s account" .Name)}}
         </div>
         {{end}}
-        {{end}}
+        {{end}}{{end}}
       </div>
       {{end}}
     </div>
@@ -105,33 +105,37 @@
   {{/* ── Sign-in tab ── */}}
   <div id="tab-signin" class="tab-panel">
     <div class="settings-narrow">
-      <div class="card">
-        <div class="card-title">GitHub sign-in</div>
-        <p class="table-hint mb-3">Register an OAuth app on GitHub, then enter its credentials here. Once this is on, the login page offers &ldquo;Continue with GitHub&rdquo; and each user links their own GitHub account under Settings &rarr; Account. A GitHub account that is not linked to a user here cannot sign in and no account is created for it.</p>
-        <p class="table-hint mb-2">Set the OAuth app&rsquo;s authorization callback URL to:</p>
-        <div class="mb-3">{{template "endpoint-display" dict "URL" .Auth.GitHubCallbackURL}}</div>
-        <form method="POST" action="/portal/settings/auth/github">
-          <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+      {{range $i, $p := .Auth.Providers}}
+      <div class="card{{if $i}} mt-3{{end}}">
+        <div class="card-title">{{template "provider-icon" $p.Key}} {{$p.Name}} sign-in</div>
+        <p class="table-hint mb-3">Register an OAuth app with {{$p.Name}}, then enter its credentials here. Once this is on, the login page offers &ldquo;Continue with {{$p.Name}}&rdquo; and each user links their own {{$p.Name}} account under Settings &rarr; Account. A {{$p.Name}} account that is not linked to a user here cannot sign in, and no account is created for it.</p>
+        {{if $p.ConsoleHint}}<p class="table-hint mb-2">Create the app at <code>{{$p.ConsoleHint}}</code>.</p>{{end}}
+        <p class="table-hint mb-2">Set its authorized redirect URI to:</p>
+        <div class="mb-3">{{template "endpoint-display" dict "URL" $p.CallbackURL}}</div>
+        <form method="POST" action="/portal/settings/auth/{{$p.Key}}">
+          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
           <div class="form-group mb-3">
             <label>Client ID</label>
-            <input name="client_id" value="{{.Auth.GitHubClientID}}" autocomplete="off" placeholder="Iv1.0123456789abcdef">
+            <input name="client_id" value="{{$p.ClientID}}" autocomplete="off">
           </div>
           <div class="form-group mb-3">
             <label>Client secret</label>
-            <input name="client_secret" type="password" autocomplete="new-password" placeholder="{{if .Auth.GitHubHasSecret}}•••••••• (stored — leave blank to keep){{else}}not set{{end}}">
+            <input name="client_secret" type="password" autocomplete="new-password" placeholder="{{if $p.HasSecret}}•••••••• (stored — leave blank to keep){{else}}not set{{end}}">
             <p class="field-desc">Stored secrets are never shown again. Leave blank to keep the current one.</p>
           </div>
           <div class="form-group mb-4">
-            <label><input type="checkbox" name="enabled" {{if .Auth.GitHubEnabled}}checked{{end}}> Offer GitHub sign-in on the login page</label>
+            <label><input type="checkbox" name="enabled" {{if $p.Enabled}}checked{{end}}> Offer {{$p.Name}} sign-in on the login page</label>
+            {{if $p.Scope}}<p class="field-desc">Requests the <code>{{$p.Scope}}</code> scope — enough to read an account id and a name to display, nothing else.</p>{{end}}
           </div>
           <div class="flex gap-2">
-            <button type="submit" class="btn">Save GitHub settings</button>
-            {{if .Auth.GitHubHasSecret}}
-            {{template "action-button" dict "Action" "/portal/settings/auth/github" "CSRF" $.CSRFToken "Fields" (dict "clear_secret" "1") "Confirm" "Clear the stored client secret? GitHub sign-in will be switched off." "Class" "btn-secondary" "Label" "Clear secret"}}
+            <button type="submit" class="btn">Save {{$p.Name}} settings</button>
+            {{if $p.HasSecret}}
+            {{template "action-button" dict "Action" (printf "/portal/settings/auth/%s" $p.Key) "CSRF" $.CSRFToken "Fields" (dict "clear_secret" "1") "Confirm" (printf "Clear the stored client secret? %s sign-in will be switched off." $p.Name) "Class" "btn-secondary" "Label" "Clear secret"}}
             {{end}}
           </div>
         </form>
       </div>
+      {{end}}
 
       <div class="card mt-3">
         <div class="card-title">Email sign-in</div>

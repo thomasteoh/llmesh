@@ -53,7 +53,9 @@ func renderPage(t *testing.T, page string, data any) {
 // renderStandalonePage executes a page that has no layout (the auth pages).
 func renderStandalonePage(t *testing.T, page string, data any) {
 	t.Helper()
-	tmpl, err := template.New(page+".html").Funcs(testFuncMap()).ParseFS(adminFS, "templates/"+page+".html")
+	// Mirrors parseTemplates: the standalone pages get partials.html too.
+	tmpl, err := template.New(page+".html").Funcs(testFuncMap()).ParseFS(
+		adminFS, "templates/partials.html", "templates/"+page+".html")
 	if err != nil {
 		t.Fatalf("parse %s: %v", page, err)
 	}
@@ -189,14 +191,21 @@ func TestTemplatesRender(t *testing.T) {
 			"Name": "orch", "URL": "https://orch.example.com", "Priority": "high", "Connected": true,
 		}}
 		d["Currency"] = "AUD"
-		d["Auth"] = map[string]any{
-			"GitHubEnabled": true, "GitHubClientID": "iv1.abc", "GitHubHasSecret": true,
-			"GitHubConfigured": true, "GitHubCallbackURL": "https://llm.example.com/portal/auth/github/callback",
-			"SMTPEnabled": true, "SMTPHost": "smtp.example.com", "SMTPPort": 587,
-			"SMTPUsername": "llmesh", "SMTPHasPassword": true, "SMTPFrom": "llmesh@example.com",
-			"SMTPSecurity": "starttls", "SMTPConfigured": true,
-			"Email": "alice@example.com", "EmailVerified": true,
-			"GitHubLogin": "octocat", "GitHubLinked": true,
+		d["Auth"] = AuthSettings{
+			Providers: []OAuthProviderSettings{{
+				Key: "github", Name: "GitHub", Enabled: true, ClientID: "iv1.abc",
+				HasSecret: true, Configured: true, Scope: "read:user",
+				CallbackURL: "https://llm.example.com/portal/auth/github/callback",
+				Linked:      true, Label: "octocat",
+			}, {
+				Key: "google", Name: "Google", Enabled: true, ClientID: "goog.apps",
+				HasSecret: true, Configured: true, Scope: "openid email",
+				CallbackURL: "https://llm.example.com/portal/auth/google/callback",
+			}},
+			SMTPEnabled: true, SMTPHost: "smtp.example.com", SMTPPort: 587,
+			SMTPUsername: "llmesh", SMTPHasPassword: true, SMTPFrom: "llmesh@example.com",
+			SMTPSecurity: "starttls", SMTPConfigured: true,
+			Email: "alice@example.com", EmailVerified: true,
 		}
 		// Covers each pricing state: charged and live, estimated and live,
 		// and a configured rate whose model no longer has a worker.
