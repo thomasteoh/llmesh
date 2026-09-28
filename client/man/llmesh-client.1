@@ -113,6 +113,14 @@ bind lets anyone with network reach obtain inference and starve router traffic.
 Prefer a loopback bind (e.g.\~\fI127.0.0.1:8089\fR); if you must bind a routable
 interface, set
 .BR local_api_token .
+.IP
+The endpoint is for programs, not browsers. It refuses any request carrying an
+.I Origin
+header, requires
+.I "Content-Type: application/json"
+on chat completions, and, when no token is set, only answers to a
+.I Host
+of localhost or an IP address, so a web page open on the machine cannot use it.
 .TP
 .B local_api_token
 Optional bearer token required on the local endpoint. When set, callers must
