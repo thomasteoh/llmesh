@@ -1513,14 +1513,14 @@ func (h *Hub) HasWorkerForModel(model string, aliases map[string][]string) bool 
 	return false
 }
 
-// OwnerInFlight returns the number of jobs currently in flight whose
-// request owner matches owner.
-func (h *Hub) OwnerInFlight(owner string) int {
+// KeyInFlight returns the number of jobs currently in flight that were sent
+// with the API key whose label is keyLabel ("owner/label", unique per key).
+func (h *Hub) KeyInFlight(keyLabel string) int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	n := 0
 	for _, rec := range h.jobs {
-		if rec.Req.Owner == owner {
+		if rec.Req.APIKeyLabel == keyLabel {
 			n++
 		}
 	}

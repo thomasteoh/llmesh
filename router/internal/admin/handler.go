@@ -133,7 +133,7 @@ func New(statePath string, h *hub.Hub, q *queue.Queue, reqCount func() int64, s 
 		routerVersion: routerVersion,
 		name:          name,
 		host:          host,
-		sessions:      newSessionStore(),
+		sessions:      newSessionStore(state),
 		authTokens:    newAuthTokenStore(),
 		log:           logring.NewLogger(sink, "admin", slog.LevelInfo),
 		sink:          sink,

@@ -86,7 +86,10 @@ func TestTemplatesRender(t *testing.T) {
 		d["Users"] = []any{"alice", "bob"}
 		d["Keys"] = []any{map[string]any{
 			"Owner": "alice", "Label": "prod", "KeyHash": "deadbeef", "KeyPrefix": "sk-alice-1a2b…",
-			"Priority": "high", "CreatedAt": now,
+			"Priority": "high", "CreatedAt": now, "ExpiresAt": time.Time{}, "LastUsedAt": now,
+		}, map[string]any{
+			"Owner": "bob", "Label": "ci", "KeyHash": "cafe", "KeyPrefix": "sk-bob-9f8e…",
+			"Priority": "normal", "CreatedAt": now, "ExpiresAt": now.Add(24 * time.Hour), "LastUsedAt": time.Time{},
 		}}
 		renderPage(t, "api-keys", d)
 	})

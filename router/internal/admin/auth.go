@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
-	"sync"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -25,73 +24,6 @@ var dummyHash = func() string {
 	h, _ := bcrypt.GenerateFromPassword([]byte("llmesh-dummy-password"), bcryptCost)
 	return string(h)
 }()
-
-// sessionStore is an in-memory store of active sessions.
-type sessionStore struct {
-	mu      sync.Mutex
-	entries map[string]sessionEntry
-}
-
-type sessionEntry struct {
-	Username  string
-	Expiry    time.Time
-	CSRFToken string // plaintext CSRF token to serve with first page after login
-}
-
-func newSessionStore() *sessionStore {
-	return &sessionStore{entries: make(map[string]sessionEntry)}
-}
-
-func (s *sessionStore) create(username string) string {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		panic("crypto/rand unavailable: " + err.Error())
-	}
-	id := hex.EncodeToString(b)
-	s.mu.Lock()
-	s.entries[id] = sessionEntry{Username: username, Expiry: time.Now().Add(sessionTTL)}
-	s.mu.Unlock()
-	return id
-}
-
-func (s *sessionStore) lookup(id string) (string, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entries[id]
-	if !ok {
-		return "", false
-	}
-	if time.Now().After(e.Expiry) {
-		delete(s.entries, id)
-		return "", false
-	}
-	return e.Username, true
-}
-
-func (s *sessionStore) delete(id string) {
-	s.mu.Lock()
-	delete(s.entries, id)
-	s.mu.Unlock()
-}
-
-func (s *sessionStore) setCSRF(id, token string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if e, ok := s.entries[id]; ok {
-		e.CSRFToken = token
-		s.entries[id] = e
-	}
-}
-
-func (s *sessionStore) getCSRF(id string) (string, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entries[id]
-	if !ok {
-		return "", false
-	}
-	return e.CSRFToken, true
-}
 
 // sessionUser returns the authenticated User for this request, or User{} if not authenticated.
 func (a *Admin) sessionUser(r *http.Request) (User, bool) {
@@ -234,7 +166,7 @@ func (a *Admin) renderLoginWithEmail(w http.ResponseWriter, r *http.Request, not
 // GitHub callback produce exactly the session a password does — no path gets a
 // longer-lived cookie or skips the CSRF token by being written separately.
 func (a *Admin) startSession(w http.ResponseWriter, r *http.Request, username string) {
-	sid := a.sessions.create(username)
+	sid := a.sessions.createWithMeta(username, a.clientIP(r), r.UserAgent())
 	// Generate a fresh CSRF token and store it in the session (not in state —
 	// session-scoped tokens let concurrent tabs operate independently).
 	if csrfToken, err := generateCSRFToken(); err == nil {

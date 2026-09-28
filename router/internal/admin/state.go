@@ -12,10 +12,12 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"llmesh/pkg/types"
+	"llmesh/router/internal/authz"
 	_ "modernc.org/sqlite"
 )
 
@@ -78,6 +80,27 @@ type APIKey struct {
 	Priority      string // "high" | "normal" | "low"
 	MaxConcurrent int    // 0 = unlimited
 	CreatedAt     time.Time
+	// ExpiresAt, when set, is when the key stops working.
+	ExpiresAt  time.Time
+	LastUsedAt time.Time // zero until first use; updated at most once a minute
+	CreatedBy  string    // who issued it, when not the owner
+}
+
+// apiKeyColumns and scanAPIKey read a key the same way everywhere.
+const apiKeyColumns = `key_hash, key_prefix, label, owner, priority, max_concurrent, created_at,
+	expires_at, last_used_at, created_by`
+
+func scanAPIKey(sc rowScanner) (APIKey, error) {
+	var k APIKey
+	var created, expires, used string
+	if err := sc.Scan(&k.KeyHash, &k.KeyPrefix, &k.Label, &k.Owner, &k.Priority, &k.MaxConcurrent,
+		&created, &expires, &used, &k.CreatedBy); err != nil {
+		return APIKey{}, err
+	}
+	k.CreatedAt, _ = time.Parse(time.RFC3339, created)
+	k.ExpiresAt, _ = time.Parse(time.RFC3339, expires)
+	k.LastUsedAt, _ = time.Parse(time.RFC3339, used)
+	return k, nil
 }
 
 // ClientToken is a stored worker token, hashed at rest like APIKey.
@@ -88,6 +111,22 @@ type ClientToken struct {
 	TokenPrefix string // display prefix, e.g. "ct-alice-1a2b…"
 	CreatedAt   time.Time
 	OwnerSlots  map[string]int // model → slots reserved for owner; 0/unset = fully shared
+	LastUsedAt  time.Time      // last connection; updated at most once a minute
+	CreatedBy   string         // who issued it, when not the owner
+}
+
+const clientTokenColumns = `token_hash, token_prefix, name, owner, created_at, owner_slots, last_used_at, created_by`
+
+func scanClientToken(sc rowScanner) (ClientToken, error) {
+	var t ClientToken
+	var created, slots, used string
+	if err := sc.Scan(&t.TokenHash, &t.TokenPrefix, &t.Name, &t.Owner, &created, &slots, &used, &t.CreatedBy); err != nil {
+		return ClientToken{}, err
+	}
+	t.CreatedAt, _ = time.Parse(time.RFC3339, created)
+	t.LastUsedAt, _ = time.Parse(time.RFC3339, used)
+	json.Unmarshal([]byte(slots), &t.OwnerSlots)
+	return t, nil
 }
 
 // HashSecret returns the hex SHA-256 of an API key or client token, the form
@@ -202,6 +241,14 @@ type State struct {
 	// Read by the scheduler each drain and invalidated (store nil) on any user
 	// mutation, mirroring optCache.
 	isoCache atomic.Pointer[map[string]types.UserIsolation]
+
+	// authzEngine is the compiled access model; see access_store.go.
+	authzEngine atomic.Pointer[authz.Engine]
+
+	// lastTouch throttles last_used_at writes for keys and tokens to one per
+	// credential per minute, so recording use does not turn every inference
+	// request into a database write.
+	lastTouch sync.Map
 }
 
 // dbPath converts a .json path to a .db path so that tests using .json paths
@@ -240,8 +287,24 @@ func LoadState(path string) (*State, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate secrets to hashed storage: %w", err)
 	}
+	// After migrateSecretColumns, which rebuilds api_keys and client_tokens
+	// on old databases and would drop columns added before it.
+	if err := createAccessSchema(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	s := &State{db: db}
 	if err := s.maybeMigrateJSON(path, dbfile); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := s.migrateAccess(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate access model: %w", err)
+	}
+	// Fail closed: a router that cannot compile its access policies must not
+	// start and serve without them.
+	if err := s.ReloadAuthz(); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -761,6 +824,9 @@ func (s *State) LookupUserByVerifiedEmail(email string) (User, bool) {
 }
 
 func (s *State) AddUser(u User) error {
+	if err := ValidUsername(u.Username); err != nil {
+		return err
+	}
 	_, err := s.db.Exec(
 		`INSERT INTO users (username, password_hash, role, disabled, csrf_token) VALUES (?, ?, ?, ?, ?)`,
 		u.Username, u.PasswordHash, u.Role, boolInt(u.Disabled), u.CSRFToken,
@@ -771,7 +837,7 @@ func (s *State) AddUser(u User) error {
 		}
 		return err
 	}
-	return nil
+	return s.syncLegacyRole(u.Username, u.Role)
 }
 
 // ProvisionOIDCUser creates an account for an OIDC identity seen for the first
@@ -798,6 +864,9 @@ func (s *State) ProvisionOIDCUser(base, role string, ident oauthIdentity) (User,
 			username, role, token, ident.ID, ident.Label, providerOIDC,
 		)
 		if err == nil {
+			if err := s.syncLegacyRole(username, role); err != nil {
+				return User{}, err
+			}
 			u, _ := s.LookupUser(username)
 			return u, nil
 		}
@@ -819,6 +888,9 @@ func (s *State) ProvisionOIDCUser(base, role string, ident oauthIdentity) (User,
 // users exist yet. This closes the first-run race where two concurrent setup
 // requests both pass NeedsSetup() and each create an admin.
 func (s *State) AddFirstAdmin(u User) error {
+	if err := ValidUsername(u.Username); err != nil {
+		return err
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -837,7 +909,14 @@ func (s *State) AddFirstAdmin(u User) error {
 	); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO role_bindings (principal, role, team) VALUES (?, ?, '')`,
+		userPrincipal(u.Username), authz.RoleOwner); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return s.bumpAuthz()
 }
 
 func (s *State) UpdateUser(username string, fn func(*User)) error {
@@ -845,6 +924,7 @@ func (s *State) UpdateUser(username string, fn func(*User)) error {
 	if !ok {
 		return fmt.Errorf("user not found: %s", username)
 	}
+	before := u
 	fn(&u)
 	u.Email = NormalizeEmail(u.Email)
 	if u.Email == "" {
@@ -867,6 +947,18 @@ func (s *State) UpdateUser(username string, fn func(*User)) error {
 		return identityConflictError(err)
 	}
 	s.isoCache.Store(nil) // isolation flags may have changed; rebuild on next read
+	if u.Role != before.Role {
+		if err := s.syncLegacyRole(username, u.Role); err != nil {
+			return err
+		}
+	}
+	// A disabled account is already refused on every request; ending its
+	// sessions as well means re-enabling it later does not revive them.
+	if u.Disabled && !before.Disabled {
+		if err := s.RevokeSessions(username, ""); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -958,7 +1050,7 @@ func (s *State) DemoteUser(actor, target string) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("user not found: %s", target)
 	}
-	return nil
+	return s.syncLegacyRole(target, "member")
 }
 
 // DeleteUser permanently removes a disabled user and the credentials they own.
@@ -996,6 +1088,15 @@ func (s *State) DeleteUser(actor, target string) error {
 	if _, err := tx.Exec(`DELETE FROM client_tokens WHERE owner = ?`, target); err != nil {
 		return err
 	}
+	for _, q := range []string{
+		`DELETE FROM team_members WHERE username = ?`,
+		`DELETE FROM role_bindings WHERE principal = 'user:' || ?`,
+		`DELETE FROM sessions WHERE username = ?`,
+	} {
+		if _, err := tx.Exec(q, target); err != nil {
+			return err
+		}
+	}
 	res, err := tx.Exec(`DELETE FROM users WHERE username = ?`, target)
 	if err != nil {
 		return err
@@ -1003,7 +1104,10 @@ func (s *State) DeleteUser(actor, target string) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("user not found: %s", target)
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return s.bumpAuthz()
 }
 
 // --- API Keys ---
@@ -1016,16 +1120,10 @@ func (s *State) LookupAPIKey(key string) (APIKey, bool) {
 // LookupAPIKeyByHash finds a key record by its stored hash — the identifier
 // the portal uses in forms, since the plaintext is never available again.
 func (s *State) LookupAPIKeyByHash(hash string) (APIKey, bool) {
-	var k APIKey
-	var createdAt string
-	err := s.db.QueryRow(
-		`SELECT key_hash, key_prefix, label, owner, priority, max_concurrent, created_at FROM api_keys WHERE key_hash = ?`,
-		hash,
-	).Scan(&k.KeyHash, &k.KeyPrefix, &k.Label, &k.Owner, &k.Priority, &k.MaxConcurrent, &createdAt)
+	k, err := scanAPIKey(s.db.QueryRow(`SELECT `+apiKeyColumns+` FROM api_keys WHERE key_hash = ?`, hash))
 	if err != nil {
 		return APIKey{}, false
 	}
-	k.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
 	return k, true
 }
 
@@ -1035,9 +1133,9 @@ func (s *State) APIKeysFor(owner string, isAdmin bool) []APIKey {
 		err  error
 	)
 	if isAdmin {
-		rows, err = s.db.Query(`SELECT key_hash, key_prefix, label, owner, priority, max_concurrent, created_at FROM api_keys ORDER BY owner, label`)
+		rows, err = s.db.Query(`SELECT ` + apiKeyColumns + ` FROM api_keys ORDER BY owner, label`)
 	} else {
-		rows, err = s.db.Query(`SELECT key_hash, key_prefix, label, owner, priority, max_concurrent, created_at FROM api_keys WHERE owner = ? ORDER BY label`, owner)
+		rows, err = s.db.Query(`SELECT `+apiKeyColumns+` FROM api_keys WHERE owner = ? ORDER BY label`, owner)
 	}
 	if err != nil {
 		return nil
@@ -1045,10 +1143,7 @@ func (s *State) APIKeysFor(owner string, isAdmin bool) []APIKey {
 	defer rows.Close()
 	var out []APIKey
 	for rows.Next() {
-		var k APIKey
-		var createdAt string
-		if err := rows.Scan(&k.KeyHash, &k.KeyPrefix, &k.Label, &k.Owner, &k.Priority, &k.MaxConcurrent, &createdAt); err == nil {
-			k.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		if k, err := scanAPIKey(rows); err == nil {
 			out = append(out, k)
 		}
 	}
@@ -1057,8 +1152,10 @@ func (s *State) APIKeysFor(owner string, isAdmin bool) []APIKey {
 
 func (s *State) AddAPIKey(k APIKey) error {
 	_, err := s.db.Exec(
-		`INSERT INTO api_keys (key_hash, key_prefix, label, owner, priority, max_concurrent, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO api_keys (key_hash, key_prefix, label, owner, priority, max_concurrent, created_at, expires_at, created_by)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		k.KeyHash, k.KeyPrefix, k.Label, k.Owner, k.Priority, k.MaxConcurrent, k.CreatedAt.Format(time.RFC3339),
+		timeString(k.ExpiresAt), k.CreatedBy,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
@@ -1140,14 +1237,44 @@ func (s *State) APIKeyCount() int {
 // access, and a key that outlived it would leave the user able to spend the
 // router's capacity with nothing in the portal showing why. A key with no
 // owning user row (a legacy key from before accounts existed) is unaffected.
+//
+// Every check goes through PrincipalActive, the same liveness test sessions
+// and client tokens use, and a key past its expiry is refused.
 func (s *State) ValidAPIKey(key string) bool {
-	var one int
-	err := s.db.QueryRow(
-		`SELECT 1 FROM api_keys k LEFT JOIN users u ON u.username = k.owner
-		 WHERE k.key_hash = ? AND COALESCE(u.disabled, 0) = 0`,
-		HashSecret(key),
-	).Scan(&one)
-	return err == nil
+	hash := HashSecret(key)
+	var owner, expires string
+	if err := s.db.QueryRow(`SELECT owner, expires_at FROM api_keys WHERE key_hash = ?`, hash).
+		Scan(&owner, &expires); err != nil {
+		return false
+	}
+	if expired(expires) || !s.PrincipalActive(ownerPrincipal(owner)) {
+		return false
+	}
+	s.touch("api_keys", "key_hash", hash)
+	return true
+}
+
+// expired reports whether an RFC 3339 expiry has passed. Empty means never.
+func expired(at string) bool {
+	if at == "" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, at)
+	// An unreadable expiry is treated as passed: it can only come from a bad
+	// write, and failing closed costs a reissued key, not a leak.
+	return err != nil || !time.Now().Before(t)
+}
+
+// touch records that a credential was used, at most once a minute per
+// credential.
+func (s *State) touch(table, column, hash string) {
+	now := time.Now()
+	k := table + "\x00" + hash
+	if prev, ok := s.lastTouch.Load(k); ok && now.Sub(prev.(time.Time)) < time.Minute {
+		return
+	}
+	s.lastTouch.Store(k, now)
+	_, _ = s.db.Exec(`UPDATE `+table+` SET last_used_at = ? WHERE `+column+` = ?`, now.UTC().Format(time.RFC3339), hash)
 }
 
 func (s *State) PriorityFor(key string) types.Priority {
@@ -1192,26 +1319,20 @@ func (s *State) LookupActiveClientToken(token string) (ClientToken, bool) {
 	if !ok {
 		return ClientToken{}, false
 	}
-	if u, found := s.LookupUser(ct.Owner); found && u.Disabled {
+	if !s.PrincipalActive(ownerPrincipal(ct.Owner)) {
 		return ClientToken{}, false
 	}
+	s.touch("client_tokens", "token_hash", ct.TokenHash)
 	return ct, true
 }
 
 // LookupClientTokenByHash finds a token record by its stored hash — the
 // identifier used by portal forms and by the hub's connection registry.
 func (s *State) LookupClientTokenByHash(hash string) (ClientToken, bool) {
-	var t ClientToken
-	var createdAt, ownerSlotsJSON string
-	err := s.db.QueryRow(
-		`SELECT token_hash, token_prefix, name, owner, created_at, owner_slots FROM client_tokens WHERE token_hash = ?`,
-		hash,
-	).Scan(&t.TokenHash, &t.TokenPrefix, &t.Name, &t.Owner, &createdAt, &ownerSlotsJSON)
+	t, err := scanClientToken(s.db.QueryRow(`SELECT `+clientTokenColumns+` FROM client_tokens WHERE token_hash = ?`, hash))
 	if err != nil {
 		return ClientToken{}, false
 	}
-	t.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
-	json.Unmarshal([]byte(ownerSlotsJSON), &t.OwnerSlots)
 	return t, true
 }
 
@@ -1221,9 +1342,9 @@ func (s *State) ClientTokensFor(owner string, isAdmin bool) []ClientToken {
 		err  error
 	)
 	if isAdmin {
-		rows, err = s.db.Query(`SELECT token_hash, token_prefix, name, owner, created_at, owner_slots FROM client_tokens ORDER BY owner, name`)
+		rows, err = s.db.Query(`SELECT ` + clientTokenColumns + ` FROM client_tokens ORDER BY owner, name`)
 	} else {
-		rows, err = s.db.Query(`SELECT token_hash, token_prefix, name, owner, created_at, owner_slots FROM client_tokens WHERE owner = ? ORDER BY name`, owner)
+		rows, err = s.db.Query(`SELECT `+clientTokenColumns+` FROM client_tokens WHERE owner = ? ORDER BY name`, owner)
 	}
 	if err != nil {
 		return nil
@@ -1231,11 +1352,7 @@ func (s *State) ClientTokensFor(owner string, isAdmin bool) []ClientToken {
 	defer rows.Close()
 	var out []ClientToken
 	for rows.Next() {
-		var t ClientToken
-		var createdAt, ownerSlotsJSON string
-		if err := rows.Scan(&t.TokenHash, &t.TokenPrefix, &t.Name, &t.Owner, &createdAt, &ownerSlotsJSON); err == nil {
-			t.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
-			json.Unmarshal([]byte(ownerSlotsJSON), &t.OwnerSlots)
+		if t, err := scanClientToken(rows); err == nil {
 			out = append(out, t)
 		}
 	}
@@ -1244,8 +1361,8 @@ func (s *State) ClientTokensFor(owner string, isAdmin bool) []ClientToken {
 
 func (s *State) AddClientToken(t ClientToken) error {
 	_, err := s.db.Exec(
-		`INSERT INTO client_tokens (token_hash, token_prefix, name, owner, created_at, owner_slots) VALUES (?, ?, ?, ?, ?, ?)`,
-		t.TokenHash, t.TokenPrefix, t.Name, t.Owner, t.CreatedAt.Format(time.RFC3339), marshalOwnerSlots(t.OwnerSlots),
+		`INSERT INTO client_tokens (token_hash, token_prefix, name, owner, created_at, owner_slots, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		t.TokenHash, t.TokenPrefix, t.Name, t.Owner, t.CreatedAt.Format(time.RFC3339), marshalOwnerSlots(t.OwnerSlots), t.CreatedBy,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
@@ -1673,4 +1790,12 @@ func (s *State) SetPortalHost(host string) error {
 		portalHostKey, host,
 	)
 	return err
+}
+
+// timeString formats a time for storage, with the zero time as empty.
+func timeString(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
 }

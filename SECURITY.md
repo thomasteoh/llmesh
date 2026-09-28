@@ -54,6 +54,11 @@ llmesh is self-hosted and its security depends on how it is deployed:
 - **Register the redirect URI exactly.** Each provider's callback URL is shown
   on the settings page. Registering a broader pattern than the one shown, where
   a provider permits it, widens where an authorization code can be delivered.
+- **Portal sessions are stored hashed** in the state database and survive a
+  restart. Changing a password signs out the account's other sessions;
+  resetting one or disabling the account signs out all of them.
+- **Give API keys an expiry** where you can. An expired key is refused, and
+  each key shows when it was last used.
 - **Disable a user to cut off their access.** Disabling ends their portal
   session, refuses their API keys and client tokens, and disconnects any
   client already connected with one. Re-enabling restores them unchanged;

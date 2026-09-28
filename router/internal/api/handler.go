@@ -96,10 +96,11 @@ type ModalityChecker interface {
 	ModelModalityVerdict(model string, aliases map[string][]string, required []string) (anyCompatible, anyUnknown bool)
 }
 
-// OwnerInFlighter is satisfied by *hub.Hub (duck typing — no import needed).
-// OwnerInFlight returns the number of jobs currently in flight for owner.
-type OwnerInFlighter interface {
-	OwnerInFlight(owner string) int
+// KeyInFlighter is satisfied by *hub.Hub (duck typing — no import needed).
+// KeyInFlight returns the number of jobs currently in flight sent with the key
+// whose label is keyLabel.
+type KeyInFlighter interface {
+	KeyInFlight(keyLabel string) int
 }
 
 // LimitProvider is satisfied by *admin.State (duck typing — no import needed).
@@ -141,7 +142,7 @@ type Handler struct {
 	Workers      WorkerChecker   // optional; nil = skip worker fast-fail
 	ContextSizes ContextChecker  // optional; nil = skip context size validation
 	Modalities   ModalityChecker // optional; nil = skip modality fast-fail
-	InFlight     OwnerInFlighter // optional; nil = skip per-owner concurrency check
+	InFlight     KeyInFlighter   // optional; nil = skip per-key concurrency check
 	Limits       LimitProvider   // optional; nil = no per-key concurrency limits
 	Dedup        *dedup.Registry // optional; nil = no coalescing
 	// MaxRequestBytes caps the inbound request body size. 0 = default (8 MiB);
@@ -285,9 +286,12 @@ func (h *Handler) enqueue(
 	if h.Limits != nil && h.InFlight != nil {
 		limit := h.Limits.MaxConcurrentFor(key)
 		if limit > 0 {
-			owner := h.Keys.OwnerFor(key)
-			if h.InFlight.OwnerInFlight(owner) >= limit {
-				apiLogger().Warn("api: per-key concurrency limit reached", "owner", owner, "limit", limit, "ip", clientIP(r))
+			// Counted per key, as the limit is set per key. Counting the
+			// owner's jobs across all their keys made each key's limit depend
+			// on what the others were doing.
+			label := h.Keys.LabelFor(key)
+			if h.InFlight.KeyInFlight(label) >= limit {
+				apiLogger().Warn("api: per-key concurrency limit reached", "key", label, "limit", limit, "ip", clientIP(r))
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusTooManyRequests)
 				w.Write([]byte(`{"error":{"message":"concurrency limit reached for your API key — try again shortly","type":"rate_limit_error"}}` + "\n"))

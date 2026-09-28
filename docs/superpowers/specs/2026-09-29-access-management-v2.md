@@ -1,6 +1,6 @@
 # Access management v2
 
-> **Status: approved 2026-09-29; phase 1 implemented.** Replaces the ad-hoc admin/member checks,
+> **Status: approved 2026-09-29; phases 1–2 implemented.** Replaces the ad-hoc admin/member checks,
 > per-user isolation flags, and per-token `owner_slots` with one authorization
 > model covering the portal, inference admission, and dispatch.
 
@@ -364,6 +364,19 @@ Phases 1–2 are prerequisites; 3, 4, and 5 can proceed in parallel after 2.
    acceptable.
 5. **Policy as code:** no YAML export/import.
 
-Implementation note: persistence for §2 lives in `router/internal/admin`
-beside the other tables it joins (users, api_keys, client_tokens), rather than
-a separate `authz/store` package; `authz` itself stays pure.
+Implementation notes (phase 2):
+
+- Persistence for §2 lives in `router/internal/admin` beside the tables it
+  joins (users, api_keys, client_tokens), not a separate `authz/store`
+  package; `authz` itself stays pure.
+- There is no `principals` table: users stay in `users`, teams are in
+  `teams`, and principal ids are derived ("user:<name>", "team:<id>").
+  Owner columns keep bare usernames for user-owned rows.
+- Every existing admin becomes an **owner**, not only the first: today any
+  admin can do what an owner can, so granting less would take power away.
+- Revoking a key or token still deletes the row; the audit log records it.
+- Isolation flags and `owner_slots` are converted in phase 5 with the
+  scheduler, so the portal's current isolation controls cannot drift from
+  policies in the meantime.
+- Until phase 3, `users.role` remains what the portal reads; promotions,
+  demotions, and OIDC role sync keep the bindings in step.

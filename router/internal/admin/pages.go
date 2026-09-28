@@ -881,6 +881,16 @@ func (a *Admin) handleAPIKeyCreate(w http.ResponseWriter, r *http.Request) {
 		Priority:  priority,
 		CreatedAt: time.Now().UTC(),
 	}
+	if owner != u.Username {
+		k.CreatedBy = u.Username
+	}
+	switch days, _ := strconv.Atoi(r.FormValue("expires_days")); {
+	case days < 0 || days > 3650:
+		a.renderAPIKeys(w, r, u, "", "Expiry must be between 0 (never) and 3650 days.")
+		return
+	case days > 0:
+		k.ExpiresAt = k.CreatedAt.Add(time.Duration(days) * 24 * time.Hour)
+	}
 	if err := a.state.AddAPIKey(k); err != nil {
 		a.renderAPIKeys(w, r, u, "", err.Error())
 		return
@@ -1586,8 +1596,14 @@ func (a *Admin) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.state.UpdateUser(u.Username, func(user *User) { user.PasswordHash = hash })
+	// Whoever knew the old password may hold a session; keep only this one.
+	keep := ""
+	if c, err := r.Cookie(sessionCookie); err == nil {
+		keep = c.Value
+	}
+	_ = a.state.RevokeSessions(u.Username, keep)
 	a.state.RecordAudit(u.Username, "user.password_change", u.Username, a.clientIP(r))
-	a.renderSettings(w, r, u, "Password updated.", "")
+	a.renderSettings(w, r, u, "Password updated. Your other sessions have been signed out.", "")
 }
 
 func (a *Admin) handleAddUser(w http.ResponseWriter, r *http.Request) {
@@ -1734,6 +1750,7 @@ func (a *Admin) handleUserResetPassword(w http.ResponseWriter, r *http.Request) 
 		a.renderSettings(w, r, u, "", err.Error())
 		return
 	}
+	_ = a.state.RevokeSessions(target, "")
 	a.state.RecordAudit(u.Username, "user.password_reset", target, a.clientIP(r))
 	msg := fmt.Sprintf("Temporary password for %q: %s — copy it now, it will not be shown again. The user should change it after signing in.", target, temp)
 	if released {

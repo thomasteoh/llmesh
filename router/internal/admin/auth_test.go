@@ -24,7 +24,7 @@ func newTestAdmin(t *testing.T) *Admin {
 	}
 	a := &Admin{
 		state:      state,
-		sessions:   newSessionStore(),
+		sessions:   newSessionStore(state),
 		authTokens: newAuthTokenStore(),
 		log:        logring.NewLogger(nil, "admin-test", slog.LevelError),
 		// A real (empty) hub, because the settings page asks it which models
@@ -65,7 +65,7 @@ func TestHandleSetup_POST(t *testing.T) {
 }
 
 func TestSessionStore(t *testing.T) {
-	ss := newSessionStore()
+	ss := newSessionStore(newTestState(t))
 	id := ss.create("alice")
 	if id == "" {
 		t.Fatal("empty session id")
