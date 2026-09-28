@@ -85,7 +85,6 @@ type Conn struct {
 	models      ModelProvider
 	jobs        JobDispatcher
 	log         *slog.Logger
-	onUpdate    func() // called when the router sends an "update" message
 	pool        *SlotPool
 
 	mu        sync.Mutex
@@ -123,12 +122,6 @@ func New(
 // server so local requests compete for the same slots and take priority over
 // queued router jobs.
 func (c *Conn) Pool() *SlotPool { return c.pool }
-
-// SetOnUpdate registers a callback invoked when the router sends an "update" message.
-// Must be called before Run. Safe to call with nil to clear.
-func (c *Conn) SetOnUpdate(fn func()) {
-	c.onUpdate = fn
-}
 
 // Run connects to the router and reconnects on disconnect. Blocks until ctx is cancelled.
 func (c *Conn) Run(ctx context.Context) {
@@ -405,11 +398,6 @@ func (c *Conn) connect(outerCtx context.Context) (registered bool, err error) {
 				delete(c.cancels, in.RequestID)
 			}
 			c.cancelsMu.Unlock()
-
-		case "update":
-			if fn := c.onUpdate; fn != nil {
-				go fn()
-			}
 		}
 	}
 }

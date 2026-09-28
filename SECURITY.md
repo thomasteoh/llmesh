@@ -52,8 +52,9 @@ llmesh is self-hosted and its security depends on how it is deployed:
   a provider permits it, widens where an authorization code can be delivered.
 - **Restrict the local client API** (`local_api_addr`) to a loopback bind, or
   set `local_api_token`, since it serves unauthenticated inference otherwise.
-- **Serve the update endpoint over HTTPS.** The client only auto-updates over
-  TLS and only installs sha256-verified, strictly-newer binaries.
+- **Clients never update themselves.** A router cannot change the code running
+  on a client machine; upgrade a client by pulling a new image or replacing the
+  binary yourself.
 - **Containers run as non-root** (uid 10001) for the router, client, and shim
   images. Keep it that way — for bind-mounted state, chown the host directory
   to 10001 (rootful docker) or map your user with

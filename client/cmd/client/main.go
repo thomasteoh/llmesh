@@ -10,15 +10,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"runtime"
-	"strings"
 	"syscall"
 	"time"
 
 	clientPkg "llmesh/client"
 	"llmesh/client/internal/localapi"
 	"llmesh/client/internal/stats"
-	"llmesh/client/internal/updater"
 	"llmesh/client/internal/ws"
 )
 
@@ -42,8 +39,6 @@ Config file fields (YAML):
                   e.g. ":8089" — accepts /v1/chat/completions and /v1/models directly,
                   routing to the appropriate llama.cpp backend without going through the router.
                   Active local requests are counted as jobs in the status line.
-  auto_update     enable hourly self-update checks (default: false)
-  remote_update   honour update requests pushed by the router (default: true)
   models:
     - endpoint:   llama.cpp base URL (e.g. http://localhost:8080)  (required)
       name:       model identifier (e.g. llama3.2:3b)
@@ -118,23 +113,6 @@ Config file fields (YAML):
 				log.Error("local API error", "error", err)
 			}
 		}()
-	}
-
-	if manifestURL := deriveManifestURL(cfg.RouterURL); manifestURL != "" {
-		triggerCh := make(chan struct{}, 1)
-		go updater.Run(ctx, manifestURL, version, cfg.AutoUpdate, func() bool {
-			return st.ActiveJobs.Load() == 0
-		}, triggerCh, log)
-		if cfg.RemoteUpdateEnabled() {
-			conn.SetOnUpdate(func() {
-				select {
-				case triggerCh <- struct{}{}:
-				default:
-				}
-			})
-		} else {
-			log.Info("remote update disabled — ignoring router-triggered update requests")
-		}
 	}
 
 	conn.Run(ctx) // blocks until ctx cancelled, reconnects on disconnect
@@ -217,22 +195,4 @@ func formatUptime(d time.Duration) string {
 	default:
 		return fmt.Sprintf("%dd", int(d.Hours()/24))
 	}
-}
-
-// deriveManifestURL converts a wss:// or ws:// router URL to the platform-specific
-// update manifest URL served by that router. Returns "" on unrecognised scheme.
-func deriveManifestURL(routerURL string) string {
-	var scheme, rest string
-	switch {
-	case strings.HasPrefix(routerURL, "wss://"):
-		scheme, rest = "https", strings.TrimPrefix(routerURL, "wss://")
-	case strings.HasPrefix(routerURL, "ws://"):
-		scheme, rest = "http", strings.TrimPrefix(routerURL, "ws://")
-	default:
-		return ""
-	}
-	if idx := strings.Index(rest, "/"); idx >= 0 {
-		rest = rest[:idx]
-	}
-	return fmt.Sprintf("%s://%s/downloads/manifest/%s/%s", scheme, rest, runtime.GOOS, runtime.GOARCH)
 }

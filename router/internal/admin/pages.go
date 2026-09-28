@@ -1030,31 +1030,6 @@ func (a *Admin) handleClientTokenRevoke(w http.ResponseWriter, r *http.Request) 
 	redirectOrRefresh(w, r, "/portal/clients")
 }
 
-func (a *Admin) handleClientUpdate(w http.ResponseWriter, r *http.Request) {
-	u := ctxGetUser(r)
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	tokenHash := r.FormValue("token_hash")
-	if tokenHash == "" {
-		http.Error(w, "missing token", http.StatusBadRequest)
-		return
-	}
-	ct, ok := a.state.LookupClientTokenByHash(tokenHash)
-	if !ok || (u.Role != "admin" && ct.Owner != u.Username) {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
-	n := a.hub.TriggerClientUpdate(tokenHash)
-	if n == 0 {
-		a.log.Warn("admin: trigger update - no clients connected", "actor", u.Username)
-	} else {
-		a.log.Info("admin: triggered client update", "actor", u.Username, "clients", n)
-	}
-	redirectOrRefresh(w, r, "/portal/clients")
-}
-
 func (a *Admin) handleClientTokenOwnerSlots(w http.ResponseWriter, r *http.Request) {
 	u := ctxGetUser(r)
 	if err := r.ParseForm(); err != nil {
