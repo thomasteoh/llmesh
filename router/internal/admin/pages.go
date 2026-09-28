@@ -533,6 +533,15 @@ type OAuthProviderSettings struct {
 	Scope       string
 	ConsoleHint string
 
+	// OIDC is set on the generic OpenID Connect card, which also asks for an
+	// issuer, a display name, and a token authentication method, and shows
+	// whether discovery has found the provider's endpoints.
+	OIDC           bool
+	OIDCIssuer     string
+	OIDCName       string
+	OIDCAuthMethod string
+	OIDCDiscovered bool
+
 	// The viewing user's own link.
 	Linked bool
 	Label  string
@@ -1290,6 +1299,7 @@ func (a *Admin) renderSettings(w http.ResponseWriter, r *http.Request, u User, f
 var oauthConsoleHints = map[string]string{
 	providerGitHub: "github.com/settings/developers → OAuth Apps",
 	providerGoogle: "console.cloud.google.com → APIs & Services → Credentials → OAuth client ID (Web application)",
+	providerOIDC:   "your identity provider's console (Zitadel: Projects → your project → New application → Web)",
 }
 
 // authSettings assembles the settings page's sign-in section.
@@ -1303,25 +1313,33 @@ func (a *Admin) authSettings(r *http.Request, u User) AuthSettings {
 	}
 	providers := make([]OAuthProviderSettings, 0, len(oauthProviderOrder))
 	for _, key := range oauthProviderOrder {
-		p, ok := a.providerFor(key)
-		if !ok {
+		p, cfg, ready := a.providerReady(key)
+		if p.key == "" {
 			continue
 		}
-		cfg := a.state.OAuth(key)
 		ident := p.get(u)
-		providers = append(providers, OAuthProviderSettings{
+		ps := OAuthProviderSettings{
 			Key:         key,
 			Name:        p.name,
 			Enabled:     cfg.Enabled,
 			ClientID:    cfg.ClientID,
 			HasSecret:   cfg.ClientSecret != "",
-			Configured:  cfg.Configured(),
+			Configured:  ready,
 			CallbackURL: a.OAuthCallbackURL(r, key),
 			Scope:       p.scope,
 			ConsoleHint: oauthConsoleHints[key],
 			Linked:      ident.ID != "",
 			Label:       ident.Label,
-		})
+		}
+		if key == providerOIDC {
+			oc := a.state.OIDC()
+			ps.OIDC = true
+			ps.OIDCIssuer = oc.Issuer
+			ps.OIDCName = oc.Name
+			ps.OIDCAuthMethod = oc.AuthMethod
+			ps.OIDCDiscovered = oc.Discovered()
+		}
+		providers = append(providers, ps)
 	}
 	return AuthSettings{
 		Providers: providers,

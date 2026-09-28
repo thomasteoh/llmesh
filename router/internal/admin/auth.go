@@ -214,8 +214,8 @@ type loginProvider struct {
 func (a *Admin) renderLoginWithEmail(w http.ResponseWriter, r *http.Request, notice, errMsg, email string) {
 	var providers []loginProvider
 	for _, key := range oauthProviderOrder {
-		p, ok := a.providerFor(key)
-		if !ok || !a.state.OAuth(key).Configured() {
+		p, _, ready := a.providerReady(key)
+		if !ready {
 			continue
 		}
 		providers = append(providers, loginProvider{Key: key, Name: p.name, Path: oauthStartPath(key)})

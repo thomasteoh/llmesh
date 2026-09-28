@@ -35,7 +35,7 @@ llmesh is self-hosted and its security depends on how it is deployed:
   creation and travel in request headers, so protect them in transit and at
   the caller.
 - **Guard the sign-in secrets in the state database.** OAuth client secrets
-  (GitHub, Google) and an SMTP password, if you configure those sign-in
+  (GitHub, Google, OpenID Connect) and an SMTP password, if you configure those sign-in
   methods, are stored in the settings table in plaintext — the router has no
   key to encrypt them under that it would not also store beside them. None is
   ever rendered back into the portal or written to the log, but anyone who can

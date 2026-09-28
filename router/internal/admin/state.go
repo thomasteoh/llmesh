@@ -51,6 +51,12 @@ type User struct {
 	// whoever inherits the mailbox.
 	GoogleUserID string `json:"google_user_id,omitempty"`
 	GoogleEmail  string `json:"google_email,omitempty"`
+
+	// OIDCSubject is the account at the configured OpenID Connect provider,
+	// stored as issuer#subject (see oidcSubjectID) because a subject is only
+	// unique within its issuer. OIDCLabel is kept only to display.
+	OIDCSubject string `json:"oidc_subject,omitempty"`
+	OIDCLabel   string `json:"oidc_label,omitempty"`
 }
 
 // APIKey is a stored API key. The key material itself is never persisted:
@@ -250,7 +256,9 @@ func createSchema(db *sql.DB) error {
 			github_user_id    TEXT NOT NULL DEFAULT '',
 			github_login      TEXT NOT NULL DEFAULT '',
 			google_user_id    TEXT NOT NULL DEFAULT '',
-			google_email      TEXT NOT NULL DEFAULT ''
+			google_email      TEXT NOT NULL DEFAULT '',
+			oidc_subject      TEXT NOT NULL DEFAULT '',
+			oidc_label        TEXT NOT NULL DEFAULT ''
 		);
 		CREATE TABLE IF NOT EXISTS api_keys (
 			key_hash       TEXT PRIMARY KEY,
@@ -361,6 +369,8 @@ func createSchema(db *sql.DB) error {
 	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN github_login TEXT NOT NULL DEFAULT ''`)
 	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN google_user_id TEXT NOT NULL DEFAULT ''`)
 	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN google_email TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN oidc_subject TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN oidc_label TEXT NOT NULL DEFAULT ''`)
 	// An identity must resolve to exactly one account, so the database — not
 	// just the handler that happens to write it — refuses a second claim on the
 	// same GitHub account or the same verified address. Unverified duplicates
@@ -375,6 +385,12 @@ func createSchema(db *sql.DB) error {
 	if _, err := db.Exec(
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_user_id
 		 ON users(google_user_id) WHERE google_user_id <> ''`,
+	); err != nil {
+		return err
+	}
+	if _, err := db.Exec(
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oidc_subject
+		 ON users(oidc_subject) WHERE oidc_subject <> ''`,
 	); err != nil {
 		return err
 	}
@@ -662,7 +678,8 @@ func (s *State) NeedsSetup() bool {
 // pair of definitions rather than each of the three queries that read a user.
 const userColumns = `username, password_hash, role, disabled, csrf_token,
 	send_isolation, receive_isolation, email, email_verified,
-	github_user_id, github_login, google_user_id, google_email`
+	github_user_id, github_login, google_user_id, google_email,
+	oidc_subject, oidc_label`
 
 // rowScanner is satisfied by both *sql.Row and *sql.Rows.
 type rowScanner interface{ Scan(dest ...any) error }
@@ -672,7 +689,8 @@ func scanUser(sc rowScanner) (User, error) {
 	var disabled, sendIso, recvIso, emailVerified int
 	err := sc.Scan(&u.Username, &u.PasswordHash, &u.Role, &disabled, &u.CSRFToken,
 		&sendIso, &recvIso, &u.Email, &emailVerified,
-		&u.GitHubUserID, &u.GitHubLogin, &u.GoogleUserID, &u.GoogleEmail)
+		&u.GitHubUserID, &u.GitHubLogin, &u.GoogleUserID, &u.GoogleEmail,
+		&u.OIDCSubject, &u.OIDCLabel)
 	if err != nil {
 		return User{}, err
 	}
@@ -698,6 +716,7 @@ func (s *State) LookupUser(username string) (User, bool) {
 var oauthIDColumns = map[string]string{
 	"github": "github_user_id",
 	"google": "google_user_id",
+	"oidc":   "oidc_subject",
 }
 
 // LookupUserByOAuth returns the account linked to a provider account id. An
@@ -786,11 +805,13 @@ func (s *State) UpdateUser(username string, fn func(*User)) error {
 	_, err := s.db.Exec(
 		`UPDATE users SET password_hash = ?, role = ?, disabled = ?, csrf_token = ?,
 		 send_isolation = ?, receive_isolation = ?, email = ?, email_verified = ?,
-		 github_user_id = ?, github_login = ?, google_user_id = ?, google_email = ?
+		 github_user_id = ?, github_login = ?, google_user_id = ?, google_email = ?,
+		 oidc_subject = ?, oidc_label = ?
 		 WHERE username = ?`,
 		u.PasswordHash, u.Role, boolInt(u.Disabled), u.CSRFToken,
 		boolInt(u.SendIsolation), boolInt(u.ReceiveIsolation), u.Email, boolInt(u.EmailVerified),
-		u.GitHubUserID, u.GitHubLogin, u.GoogleUserID, u.GoogleEmail, username,
+		u.GitHubUserID, u.GitHubLogin, u.GoogleUserID, u.GoogleEmail,
+		u.OIDCSubject, u.OIDCLabel, username,
 	)
 	if err != nil {
 		return identityConflictError(err)
@@ -811,6 +832,8 @@ func identityConflictError(err error) error {
 		return fmt.Errorf("that GitHub account is already linked to another user")
 	case strings.Contains(msg, "users.google_user_id"):
 		return fmt.Errorf("that Google account is already linked to another user")
+	case strings.Contains(msg, "users.oidc_subject"):
+		return fmt.Errorf("that single sign-on account is already linked to another user")
 	case strings.Contains(msg, "users.email"):
 		return fmt.Errorf("that email address is already in use by another user")
 	}

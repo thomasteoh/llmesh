@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
@@ -79,6 +80,16 @@ type oauthProvider struct {
 	// wants and another does not.
 	extraAuthParams  map[string]string
 	extraTokenParams map[string]string
+	// pkce sends a PKCE challenge (RFC 7636, S256) with the authorization and
+	// its verifier with the code exchange, so an intercepted code cannot be
+	// redeemed by anyone who did not start the flow.
+	pkce bool
+	// basicAuth sends the client credentials in an Authorization header rather
+	// than the token request body.
+	basicAuth bool
+	// subjectPrefix scopes a provider's account ids, for providers whose ids
+	// are unique only within some namespace. See oidcSubjectID.
+	subjectPrefix string
 
 	// identity reads the provider's user document.
 	identity func([]byte) (oauthIdentity, error)
@@ -93,6 +104,17 @@ func (a *Admin) providerFor(key string) (oauthProvider, bool) {
 	p, ok := oauthProviders[key]
 	if !ok {
 		return oauthProvider{}, false
+	}
+	if key == providerOIDC {
+		c := a.state.OIDC()
+		p.name = c.DisplayName()
+		p.authorizeURL = c.AuthorizeURL
+		p.tokenURL = c.TokenURL
+		p.userInfoURL = c.UserInfoURL
+		p.basicAuth = c.AuthMethod == oidcAuthBasic
+		if c.Issuer != "" {
+			p.subjectPrefix = oidcSubjectID(c.Issuer, "")
+		}
 	}
 	if o, ok := a.oauthOverrides[key]; ok {
 		if o.authorizeURL != "" {
@@ -114,6 +136,20 @@ type oauthEndpoints struct {
 	authorizeURL string
 	tokenURL     string
 	userInfoURL  string
+}
+
+// providerReady returns a provider and its credentials when both are complete
+// enough to run a sign-in: switched on, with a client ID and secret, and with
+// endpoints to send the browser and the code to. The last only ever fails for
+// OIDC, whose endpoints come from discovery.
+func (a *Admin) providerReady(key string) (oauthProvider, OAuthConfig, bool) {
+	p, ok := a.providerFor(key)
+	if !ok {
+		return oauthProvider{}, OAuthConfig{}, false
+	}
+	cfg := a.state.OAuth(key)
+	ready := cfg.Configured() && p.authorizeURL != "" && p.tokenURL != "" && p.userInfoURL != ""
+	return p, cfg, ready
 }
 
 func (a *Admin) oauthClient() *http.Client {
@@ -141,18 +177,32 @@ func (a *Admin) OAuthCallbackURL(r *http.Request, provider string) string {
 	return a.portalBaseURL(r) + oauthCallbackPath(provider)
 }
 
-// setOAuthState starts an authorization: it mints a nonce, remembers it along
-// with the provider and flow in a short-lived cookie, and returns the nonce to
-// send to the provider.
-func (a *Admin) setOAuthState(w http.ResponseWriter, r *http.Request, provider, mode string) string {
-	b := make([]byte, 24)
+// randomToken returns n random bytes, base64url-encoded without padding. The
+// alphabet has no ':', which the state cookie uses as its separator.
+func randomToken(n int) string {
+	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
 		panic("crypto/rand unavailable: " + err.Error())
 	}
-	nonce := base64.RawURLEncoding.EncodeToString(b)
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+// pkceChallenge is the S256 code challenge for a verifier (RFC 7636 §4.2).
+func pkceChallenge(verifier string) string {
+	sum := sha256.Sum256([]byte(verifier))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// setOAuthState starts an authorization: it mints a nonce, remembers it along
+// with the provider and flow in a short-lived cookie, and returns the nonce to
+// send to the provider. verifier is the PKCE code verifier, or empty for a
+// provider that does not use PKCE; it rides in the same cookie, so it is
+// bound to the same browser and spent with the same state.
+func (a *Admin) setOAuthState(w http.ResponseWriter, r *http.Request, provider, mode, verifier string) string {
+	nonce := randomToken(24)
 	http.SetCookie(w, &http.Cookie{
 		Name:     oauthStateCookie,
-		Value:    provider + ":" + mode + ":" + nonce,
+		Value:    provider + ":" + mode + ":" + nonce + ":" + verifier,
 		Path:     "/portal",
 		HttpOnly: true,
 		Secure:   a.isSecure(r),
@@ -171,45 +221,45 @@ func (a *Admin) setOAuthState(w http.ResponseWriter, r *http.Request, provider, 
 // provider must not be spendable at another's callback, or a provider willing
 // to hand out an id of someone else's choosing could complete a flow begun
 // against a provider that is not.
-func (a *Admin) takeOAuthState(w http.ResponseWriter, r *http.Request, provider string) (mode string, ok bool) {
+func (a *Admin) takeOAuthState(w http.ResponseWriter, r *http.Request, provider string) (mode, verifier string, ok bool) {
 	c, err := r.Cookie(oauthStateCookie)
 	http.SetCookie(w, &http.Cookie{Name: oauthStateCookie, Path: "/portal", MaxAge: -1})
 	if err != nil {
-		return "", false
+		return "", "", false
 	}
-	gotProvider, rest, found := strings.Cut(c.Value, ":")
-	if !found {
-		return "", false
+	parts := strings.Split(c.Value, ":")
+	if len(parts) != 4 {
+		return "", "", false
 	}
-	mode, nonce, found := strings.Cut(rest, ":")
-	if !found || nonce == "" {
-		return "", false
-	}
-	if gotProvider != provider {
-		return "", false
+	gotProvider, mode, nonce, verifier := parts[0], parts[1], parts[2], parts[3]
+	if nonce == "" || gotProvider != provider {
+		return "", "", false
 	}
 	if subtle.ConstantTimeCompare([]byte(nonce), []byte(r.URL.Query().Get("state"))) != 1 {
-		return "", false
+		return "", "", false
 	}
 	if mode != oauthModeLogin && mode != oauthModeLink {
-		return "", false
+		return "", "", false
 	}
-	return mode, true
+	return mode, verifier, true
 }
 
 // beginOAuth redirects the browser to the provider's authorization screen.
 func (a *Admin) beginOAuth(w http.ResponseWriter, r *http.Request, providerKey, mode string) {
-	p, ok := a.providerFor(providerKey)
-	if !ok {
+	p, cfg, ready := a.providerReady(providerKey)
+	if p.key == "" {
 		http.NotFound(w, r)
 		return
 	}
-	cfg := a.state.OAuth(providerKey)
-	if !cfg.Configured() {
+	if !ready {
 		http.Error(w, p.name+" sign-in is not configured", http.StatusNotFound)
 		return
 	}
-	nonce := a.setOAuthState(w, r, providerKey, mode)
+	verifier := ""
+	if p.pkce {
+		verifier = randomToken(32)
+	}
+	nonce := a.setOAuthState(w, r, providerKey, mode, verifier)
 	q := url.Values{
 		"client_id":     {cfg.ClientID},
 		"redirect_uri":  {a.OAuthCallbackURL(r, providerKey)},
@@ -219,6 +269,10 @@ func (a *Admin) beginOAuth(w http.ResponseWriter, r *http.Request, providerKey, 
 	}
 	for k, v := range p.extraAuthParams {
 		q.Set(k, v)
+	}
+	if verifier != "" {
+		q.Set("code_challenge", pkceChallenge(verifier))
+		q.Set("code_challenge_method", "S256")
 	}
 	http.Redirect(w, r, p.authorizeURL+"?"+q.Encode(), http.StatusFound)
 }
@@ -247,17 +301,16 @@ func (a *Admin) handleOAuthLink(providerKey string) http.HandlerFunc {
 
 func (a *Admin) handleOAuthCallback(providerKey string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		p, ok := a.providerFor(providerKey)
-		if !ok {
+		p, cfg, ready := a.providerReady(providerKey)
+		if p.key == "" {
 			http.NotFound(w, r)
 			return
 		}
-		cfg := a.state.OAuth(providerKey)
-		if !cfg.Configured() {
+		if !ready {
 			http.Error(w, p.name+" sign-in is not configured", http.StatusNotFound)
 			return
 		}
-		mode, ok := a.takeOAuthState(w, r, providerKey)
+		mode, verifier, ok := a.takeOAuthState(w, r, providerKey)
 		if !ok {
 			a.oauthFailure(w, r, oauthModeLogin,
 				"That "+p.name+" sign-in attempt could not be verified. Please try again.")
@@ -274,7 +327,15 @@ func (a *Admin) handleOAuthCallback(providerKey string) http.HandlerFunc {
 			return
 		}
 
-		ident, err := a.exchangeOAuthCode(r.Context(), p, cfg, code, a.OAuthCallbackURL(r, providerKey))
+		// A provider that uses PKCE must have had a verifier minted for this
+		// flow; a state cookie without one was not written by beginOAuth for it.
+		if p.pkce && verifier == "" {
+			a.oauthFailure(w, r, mode,
+				"That "+p.name+" sign-in attempt could not be verified. Please try again.")
+			return
+		}
+
+		ident, err := a.exchangeOAuthCode(r.Context(), p, cfg, code, a.OAuthCallbackURL(r, providerKey), verifier)
 		if err != nil {
 			a.log.Error("admin: oauth exchange", "provider", providerKey, "mode", mode, "error", err)
 			a.oauthFailure(w, r, mode, "Could not complete "+p.name+" sign-in. Please try again.")
@@ -366,12 +427,17 @@ func (a *Admin) handleOAuthUnlink(providerKey string) http.HandlerFunc {
 
 // exchangeOAuthCode trades the authorization code for a token and reads the
 // identity behind it.
-func (a *Admin) exchangeOAuthCode(ctx context.Context, p oauthProvider, cfg OAuthConfig, code, redirectURI string) (oauthIdentity, error) {
+func (a *Admin) exchangeOAuthCode(ctx context.Context, p oauthProvider, cfg OAuthConfig, code, redirectURI, verifier string) (oauthIdentity, error) {
 	form := url.Values{
-		"client_id":     {cfg.ClientID},
-		"client_secret": {cfg.ClientSecret},
-		"code":          {code},
-		"redirect_uri":  {redirectURI},
+		"code":         {code},
+		"redirect_uri": {redirectURI},
+	}
+	if !p.basicAuth {
+		form.Set("client_id", cfg.ClientID)
+		form.Set("client_secret", cfg.ClientSecret)
+	}
+	if verifier != "" {
+		form.Set("code_verifier", verifier)
 	}
 	for k, v := range p.extraTokenParams {
 		form.Set(k, v)
@@ -379,6 +445,11 @@ func (a *Admin) exchangeOAuthCode(ctx context.Context, p oauthProvider, cfg OAut
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.tokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return oauthIdentity{}, err
+	}
+	if p.basicAuth {
+		// RFC 6749 §2.3.1: each half is form-encoded before the pair is, so a
+		// secret containing ':' or '%' survives the trip.
+		req.SetBasicAuth(url.QueryEscape(cfg.ClientID), url.QueryEscape(cfg.ClientSecret))
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
@@ -433,6 +504,7 @@ func (a *Admin) fetchOAuthIdentity(ctx context.Context, p oauthProvider, accessT
 	if ident.ID == "" {
 		return oauthIdentity{}, fmt.Errorf("%s returned no account id", p.key)
 	}
+	ident.ID = p.subjectPrefix + ident.ID
 	return ident, nil
 }
 

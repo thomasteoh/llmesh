@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -54,22 +55,79 @@ func (a *Admin) handleOAuthSettingsUpdate(providerKey string) http.HandlerFunc {
 			ClientID:     r.FormValue("client_id"),
 			ClientSecret: r.FormValue("client_secret"),
 		}
+		auditTarget := "enabled=" + strconv.FormatBool(cfg.Enabled)
+
+		// OIDC's endpoints are discovered before anything is stored, so a
+		// mistyped issuer is reported here and leaves the working
+		// configuration as it was.
+		var oidc OIDCConfig
+		if providerKey == providerOIDC {
+			var err error
+			oidc, err = a.oidcFromForm(r, cfg.Enabled)
+			if err != nil {
+				a.renderSettings(w, r, u, "", err.Error())
+				return
+			}
+			p.name = oidc.DisplayName()
+			auditTarget += " issuer=" + oidc.Issuer
+		}
+
 		if err := a.state.SetOAuth(providerKey, p.name, cfg); err != nil {
 			a.renderSettings(w, r, u, "", err.Error())
 			return
 		}
+		relink := ""
+		if providerKey == providerOIDC {
+			previous := a.state.OIDC().Issuer
+			if err := a.state.SetOIDC(oidc); err != nil {
+				a.renderSettings(w, r, u, "", err.Error())
+				return
+			}
+			// Links are scoped to their issuer, so moving to another one
+			// detaches every existing link at once. Say so, rather than let
+			// users find out at the login page.
+			if previous != "" && previous != oidc.Issuer {
+				relink = " Accounts linked to " + previous + " must be linked again."
+			}
+		}
 		// The secret is deliberately absent from the audit target.
-		a.state.RecordAudit(u.Username, "settings.auth."+providerKey,
-			"enabled="+strconv.FormatBool(cfg.Enabled), a.clientIP(r))
+		a.state.RecordAudit(u.Username, "settings.auth."+providerKey, auditTarget, a.clientIP(r))
 		a.log.Info("admin: oauth sign-in settings updated",
 			"actor", u.Username, "provider", providerKey, "enabled", cfg.Enabled)
 		if cfg.Enabled {
 			a.renderSettings(w, r, u,
-				p.name+" sign-in is on. Users can link their account under Sign-in methods.", "")
+				p.name+" sign-in is on. Users can link their account under Sign-in methods."+relink, "")
 			return
 		}
-		a.renderSettings(w, r, u, p.name+" sign-in settings saved.", "")
+		a.renderSettings(w, r, u, p.name+" sign-in settings saved."+relink, "")
 	}
+}
+
+// oidcFromForm reads the OIDC-specific settings and discovers the issuer's
+// endpoints. An empty issuer is allowed only while sign-in stays off, so an
+// admin can save a name or method ahead of pointing it at a provider.
+func (a *Admin) oidcFromForm(r *http.Request, enabling bool) (OIDCConfig, error) {
+	method := r.FormValue("auth_method")
+	if method == "" {
+		method = oidcAuthBasic
+	}
+	if !oidcAuthMethods[method] {
+		return OIDCConfig{}, fmt.Errorf("unknown token authentication method %q", method)
+	}
+	oc := OIDCConfig{Name: strings.TrimSpace(r.FormValue("name")), AuthMethod: method}
+	issuer := normalizeIssuer(r.FormValue("issuer"))
+	if issuer == "" {
+		if enabling {
+			return OIDCConfig{}, fmt.Errorf("an issuer URL is required to enable %s sign-in", oc.DisplayName())
+		}
+		return oc, nil
+	}
+	d, err := a.discoverOIDC(r.Context(), issuer)
+	if err != nil {
+		return OIDCConfig{}, fmt.Errorf("could not use issuer %s: %v", issuer, err)
+	}
+	oc.Issuer, oc.AuthorizeURL, oc.TokenURL, oc.UserInfoURL = d.Issuer, d.AuthorizeURL, d.TokenURL, d.UserInfoURL
+	return oc, nil
 }
 
 func (a *Admin) handleSMTPUpdate(w http.ResponseWriter, r *http.Request) {

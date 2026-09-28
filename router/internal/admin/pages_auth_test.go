@@ -20,19 +20,30 @@ func postAs(t *testing.T, a *Admin, username, path string, form url.Values, hand
 	return rr
 }
 
+// settingsForm adds what a provider's settings form needs beyond the shared
+// credential fields. For OIDC that is an issuer, served by a fake discovery
+// endpoint so the save can complete.
+func settingsForm(t *testing.T, a *Admin, key string, form url.Values) url.Values {
+	t.Helper()
+	if key == providerOIDC && form.Get("issuer") == "" {
+		form.Set("issuer", startFakeIssuer(t, a).URL)
+	}
+	return form
+}
+
 func TestOAuthSettingsForm(t *testing.T) {
 	forEachProvider(t, func(t *testing.T, key string) {
 		a := newTestAdmin(t)
 		addTestUser(t, a, "admin", "admin")
 		path := "/portal/settings/auth/" + key
 
-		rr := postAs(t, a, "admin", path, url.Values{
+		rr := postAs(t, a, "admin", path, settingsForm(t, a, key, url.Values{
 			"enabled": {"on"}, "client_id": {"cid-1"}, "client_secret": {"shh"},
-		}, a.handleOAuthSettingsUpdate(key))
+		}), a.handleOAuthSettingsUpdate(key))
 		if rr.Code != http.StatusOK {
 			t.Fatalf("got %d: %s", rr.Code, rr.Body.String())
 		}
-		if !a.state.OAuth(key).Configured() {
+		if _, _, ready := a.providerReady(key); !ready {
 			t.Fatal("saving an enabled config did not configure this sign-in")
 		}
 		// The secret must not come back out in the rendered page.
@@ -42,17 +53,17 @@ func TestOAuthSettingsForm(t *testing.T) {
 
 		// Editing the client ID with the secret field left blank — what the
 		// form submits every time after the first — must not blank the secret.
-		postAs(t, a, "admin", path, url.Values{
+		postAs(t, a, "admin", path, settingsForm(t, a, key, url.Values{
 			"enabled": {"on"}, "client_id": {"cid-2"},
-		}, a.handleOAuthSettingsUpdate(key))
+		}), a.handleOAuthSettingsUpdate(key))
 		if got := a.state.OAuth(key); got.ClientSecret != "shh" || got.ClientID != "cid-2" {
 			t.Fatalf("re-save mangled the config: %+v", got)
 		}
 
 		// Unchecking the box switches it off without losing the credentials.
-		postAs(t, a, "admin", path, url.Values{
+		postAs(t, a, "admin", path, settingsForm(t, a, key, url.Values{
 			"client_id": {"cid-2"},
-		}, a.handleOAuthSettingsUpdate(key))
+		}), a.handleOAuthSettingsUpdate(key))
 		if got := a.state.OAuth(key); got.Configured() || got.ClientSecret == "" {
 			t.Fatalf("disabling should keep credentials and stop offering sign-in: %+v", got)
 		}
@@ -87,7 +98,7 @@ func TestOAuthSettingsRejectEnableWithoutCredentials(t *testing.T) {
 		a := newTestAdmin(t)
 		addTestUser(t, a, "admin", "admin")
 		rr := postAs(t, a, "admin", "/portal/settings/auth/"+key,
-			url.Values{"enabled": {"on"}}, a.handleOAuthSettingsUpdate(key))
+			settingsForm(t, a, key, url.Values{"enabled": {"on"}}), a.handleOAuthSettingsUpdate(key))
 		if !strings.Contains(rr.Body.String(), "client ID is required") {
 			t.Fatalf("expected a validation error, got:\n%s", rr.Body.String())
 		}
