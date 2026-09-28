@@ -367,7 +367,7 @@ func main() {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		ct, ok := adminHandler.State().LookupClientToken(token)
+		ct, ok := adminHandler.State().LookupActiveClientToken(token)
 		if !ok {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return

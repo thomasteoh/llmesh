@@ -1062,9 +1062,19 @@ func (s *State) APIKeyCount() int {
 	return count
 }
 
+// ValidAPIKey reports whether a key may be used to make requests. A key whose
+// owner is disabled is refused: disabling a user is how an admin cuts off
+// access, and a key that outlived it would leave the user able to spend the
+// router's capacity with nothing in the portal showing why. A key with no
+// owning user row (a legacy key from before accounts existed) is unaffected.
 func (s *State) ValidAPIKey(key string) bool {
-	_, ok := s.LookupAPIKey(key)
-	return ok
+	var one int
+	err := s.db.QueryRow(
+		`SELECT 1 FROM api_keys k LEFT JOIN users u ON u.username = k.owner
+		 WHERE k.key_hash = ? AND COALESCE(u.disabled, 0) = 0`,
+		HashSecret(key),
+	).Scan(&one)
+	return err == nil
 }
 
 func (s *State) PriorityFor(key string) types.Priority {
@@ -1097,6 +1107,22 @@ func (s *State) LabelFor(key string) string {
 // a connecting client.
 func (s *State) LookupClientToken(token string) (ClientToken, bool) {
 	return s.LookupClientTokenByHash(HashSecret(token))
+}
+
+// LookupActiveClientToken is LookupClientToken for authenticating a client
+// connection: a token whose owner is disabled is refused, for the same reason
+// ValidAPIKey refuses their keys. The portal's own lookups go through
+// LookupClientToken, so an admin can still see and manage a disabled user's
+// tokens.
+func (s *State) LookupActiveClientToken(token string) (ClientToken, bool) {
+	ct, ok := s.LookupClientToken(token)
+	if !ok {
+		return ClientToken{}, false
+	}
+	if u, found := s.LookupUser(ct.Owner); found && u.Disabled {
+		return ClientToken{}, false
+	}
+	return ct, true
 }
 
 // LookupClientTokenByHash finds a token record by its stored hash — the
