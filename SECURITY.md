@@ -52,6 +52,8 @@ llmesh is self-hosted and its security depends on how it is deployed:
   a provider permits it, widens where an authorization code can be delivered.
 - **Restrict the local client API** (`local_api_addr`) to a loopback bind, or
   set `local_api_token`, since it serves unauthenticated inference otherwise.
+  It refuses browser requests, so a web page open on the machine cannot reach
+  it through cross-site requests or DNS rebinding.
 - **Clients never update themselves.** A router cannot change the code running
   on a client machine; upgrade a client by pulling a new image or replacing the
   binary yourself.

@@ -13,10 +13,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	clientPkg "llmesh/client"
@@ -68,10 +71,14 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 }
 
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
-	if !s.authorized(r) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, `{"error":"unauthorized"}`)
+	if !s.admit(w, r) {
+		return
+	}
+
+	// Requiring JSON makes this a non-simple request under CORS, so a web page
+	// cannot fire it cross-origin without a preflight the server never answers.
+	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
+		writeError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
 		return
 	}
 
@@ -157,6 +164,48 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	proxy.ServeHTTP(w, r)
 }
 
+// admit runs the checks every local request must pass and writes the refusal
+// when one fails. Browsers are not supported callers: the endpoint sends no
+// CORS headers, so a legitimate page could never read a response anyway, and
+// refusing them closes off drive-by use of the GPU by whatever site is open on
+// the machine.
+func (s *Server) admit(w http.ResponseWriter, r *http.Request) bool {
+	if r.Header.Get("Origin") != "" {
+		writeError(w, http.StatusForbidden, "browser requests are not accepted")
+		return false
+	}
+	if s.cfg.LocalAPIToken == "" && !hostIsAddress(r.Host) {
+		writeError(w, http.StatusForbidden, "host not allowed")
+		return false
+	}
+	if !s.authorized(r) {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return false
+	}
+	return true
+}
+
+// hostIsAddress reports whether a Host header names localhost or an IP literal.
+// DNS rebinding needs a hostname the attacker controls, so without a token the
+// endpoint only answers to names that cannot be rebound. With a token the check
+// is unnecessary: a rebound page still cannot present it.
+func hostIsAddress(host string) bool {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	return net.ParseIP(host) != nil
+}
+
+func writeError(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
 // authorized reports whether the request may use the local endpoint. When no
 // local_api_token is configured the endpoint is open (intended for loopback
 // binds); otherwise a matching bearer token is required, compared in constant
@@ -175,10 +224,7 @@ func (s *Server) authorized(r *http.Request) bool {
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
-	if !s.authorized(r) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, `{"error":"unauthorized"}`)
+	if !s.admit(w, r) {
 		return
 	}
 
