@@ -107,13 +107,30 @@
     <div class="settings-narrow">
       {{range $i, $p := .Auth.Providers}}
       <div class="card{{if $i}} mt-3{{end}}">
+        {{if $p.OIDC}}
+        <div class="card-title">OpenID Connect sign-in</div>
+        <p class="table-hint mb-3">Connect an OpenID Connect provider such as Zitadel, Keycloak, Authentik, or Entra ID. Register a web application there using the authorization code flow, then enter its issuer and credentials here. Once this is on, the login page offers &ldquo;Continue with {{$p.Name}}&rdquo; and each user links their own account under Settings &rarr; Account. An account at the provider that is not linked to a user here cannot sign in, and no account is created for it.</p>
+        {{else}}
         <div class="card-title">{{template "provider-icon" $p.Key}} {{$p.Name}} sign-in</div>
         <p class="table-hint mb-3">Register an OAuth app with {{$p.Name}}, then enter its credentials here. Once this is on, the login page offers &ldquo;Continue with {{$p.Name}}&rdquo; and each user links their own {{$p.Name}} account under Settings &rarr; Account. A {{$p.Name}} account that is not linked to a user here cannot sign in, and no account is created for it.</p>
+        {{end}}
         {{if $p.ConsoleHint}}<p class="table-hint mb-2">Create the app at <code>{{$p.ConsoleHint}}</code>.</p>{{end}}
         <p class="table-hint mb-2">Set its authorized redirect URI to:</p>
         <div class="mb-3">{{template "endpoint-display" dict "URL" $p.CallbackURL}}</div>
         <form method="POST" action="/portal/settings/auth/{{$p.Key}}">
           <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+          {{if $p.OIDC}}
+          <div class="form-group mb-3">
+            <label>Issuer URL</label>
+            <input name="issuer" value="{{$p.OIDCIssuer}}" placeholder="https://your-instance.zitadel.cloud" autocomplete="off">
+            <p class="field-desc">The provider's endpoints are read from <code>&lt;issuer&gt;/.well-known/openid-configuration</code> when you save.{{if $p.OIDCIssuer}} {{if $p.OIDCDiscovered}}Endpoints found.{{else}}<strong>Endpoints not found; save again to retry.</strong>{{end}}{{end}} Changing the issuer detaches every account linked to the previous one.</p>
+          </div>
+          <div class="form-group mb-3">
+            <label>Display name</label>
+            <input name="name" value="{{$p.OIDCName}}" placeholder="Single sign-on" autocomplete="off">
+            <p class="field-desc">Shown on the login button, e.g. &ldquo;Continue with Zitadel&rdquo;.</p>
+          </div>
+          {{end}}
           <div class="form-group mb-3">
             <label>Client ID</label>
             <input name="client_id" value="{{$p.ClientID}}" autocomplete="off">
@@ -123,6 +140,40 @@
             <input name="client_secret" type="password" autocomplete="new-password" placeholder="{{if $p.HasSecret}}•••••••• (stored — leave blank to keep){{else}}not set{{end}}">
             <p class="field-desc">Stored secrets are never shown again. Leave blank to keep the current one.</p>
           </div>
+          {{if $p.OIDC}}
+          <div class="form-group mb-3">
+            <label>Token authentication method</label>
+            <select name="auth_method">
+              <option value="client_secret_basic" {{if eq $p.OIDCAuthMethod "client_secret_basic"}}selected{{end}}>client_secret_basic (Zitadel &ldquo;Basic&rdquo;)</option>
+              <option value="client_secret_post" {{if eq $p.OIDCAuthMethod "client_secret_post"}}selected{{end}}>client_secret_post (Zitadel &ldquo;Post&rdquo;)</option>
+            </select>
+            <p class="field-desc">Must match the method set on the application at the provider. PKCE is always sent as well.</p>
+          </div>
+          <div class="form-group mb-3">
+            <label>Additional scopes <span class="muted">(optional)</span></label>
+            <input name="extra_scopes" value="{{$p.OIDCScopes}}" placeholder="urn:zitadel:iam:org:projects:roles" autocomplete="off">
+            <p class="field-desc">Requested alongside <code>openid email profile</code>, for providers that only release roles when asked.</p>
+          </div>
+          <div class="form-group mb-3">
+            <label>Roles claim <span class="muted">(optional — turns on access control)</span></label>
+            <input name="roles_claim" value="{{$p.OIDCRolesClaim}}" placeholder="urn:zitadel:iam:org:project:roles" autocomplete="off">
+            <p class="field-desc">The userinfo claim holding the user's roles: a list, a string, or an object keyed by role. A dotted name reaches into nested objects (<code>realm_access.roles</code>). When set, a sign-in with neither role below is refused.</p>
+          </div>
+          <div class="form-row mb-3">
+            <div class="form-group">
+              <label>Member role</label>
+              <input name="member_role" value="{{$p.OIDCMemberRole}}" placeholder="llmesh-user" autocomplete="off">
+            </div>
+            <div class="form-group">
+              <label>Admin role</label>
+              <input name="admin_role" value="{{$p.OIDCAdminRole}}" placeholder="llmesh-admin" autocomplete="off">
+            </div>
+          </div>
+          <div class="form-group mb-3">
+            <label><input type="checkbox" name="provision" {{if $p.OIDCProvision}}checked{{end}}> Create an account on first sign-in</label>
+            <p class="field-desc">Requires a roles claim. Accounts created this way are managed by {{$p.Name}}: their role follows it on every sign-in, and they can sign in no other way. Accounts made here and linked keep the role set here. Resetting a managed account's password hands it back to this router.</p>
+          </div>
+          {{end}}
           <div class="form-group mb-4">
             <label><input type="checkbox" name="enabled" {{if $p.Enabled}}checked{{end}}> Offer {{$p.Name}} sign-in on the login page</label>
             {{if $p.Scope}}<p class="field-desc">Requests the <code>{{$p.Scope}}</code> scope — enough to read an account id and a name to display, nothing else.</p>{{end}}
@@ -223,7 +274,7 @@
             {{range .Users}}
             <tr{{if .Disabled}} class="row-dim"{{end}}>
               <td>{{.Username}}{{if .IsSelf}} <span class="muted">(you)</span>{{end}}</td>
-              <td>{{template "status-badge" dict "Class" .Role "Label" .Role}}</td>
+              <td>{{template "status-badge" dict "Class" .Role "Label" .Role}}{{if .ManagedBy}} <span class="badge muted-badge" title="Created by single sign-on; role follows the identity provider">SSO</span>{{end}}</td>
               <td>{{if .Disabled}}{{template "status-badge" dict "Class" "disabled" "Label" "disabled"}}{{else}}{{template "status-badge" dict "Class" "active" "Label" "active"}}{{end}}</td>
               <td>
                 <div class="flex gap-1">
@@ -246,9 +297,13 @@
                     {{template "action-button" dict "Action" "/portal/settings/users/enable" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Class" "btn-success" "Label" "Enable"}}
                     {{template "action-button" dict "Action" "/portal/settings/users/delete" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Confirm" (printf "Delete %s permanently? Their API keys and client tokens will be revoked. This cannot be undone." .Username) "Class" "btn-danger" "Label" "Delete"}}
                   {{else}}
+                    {{if .ManagedBy}}
+                    {{template "action-button" dict "Action" "/portal/settings/users/reset-password" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Confirm" (printf "Set a password for %s? The account stops being managed by single sign-on: its role will no longer follow the identity provider and it can sign in any way. A temporary password will be shown once." .Username) "Class" "btn-secondary" "Label" "Take over"}}
+                    {{else}}
                     {{if eq .Role "admin"}}{{template "action-button" dict "Action" "/portal/settings/users/demote" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Confirm" (printf "Demote %s from admin to member?" .Username) "Class" "btn-secondary" "Label" "Demote"}}{{end}}
                     {{if eq .Role "member"}}{{template "action-button" dict "Action" "/portal/settings/users/promote" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Class" "btn-secondary" "Label" "Promote"}}{{end}}
                     {{template "action-button" dict "Action" "/portal/settings/users/reset-password" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Confirm" (printf "Reset the password for %s? A temporary password will be shown once." .Username) "Class" "btn-secondary" "Label" "Reset password"}}
+                    {{end}}
                     {{template "action-button" dict "Action" "/portal/settings/users/disable" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Confirm" (printf "Disable %s? They will not be able to sign in." .Username) "Class" "btn-danger" "Label" "Disable"}}
                   {{end}}
                 </div>

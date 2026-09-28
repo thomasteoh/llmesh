@@ -533,6 +533,20 @@ type OAuthProviderSettings struct {
 	Scope       string
 	ConsoleHint string
 
+	// OIDC is set on the generic OpenID Connect card, which also asks for an
+	// issuer, a display name, and a token authentication method, and shows
+	// whether discovery has found the provider's endpoints.
+	OIDC           bool
+	OIDCIssuer     string
+	OIDCName       string
+	OIDCAuthMethod string
+	OIDCDiscovered bool
+	OIDCScopes     string
+	OIDCRolesClaim string
+	OIDCMemberRole string
+	OIDCAdminRole  string
+	OIDCProvision  bool
+
 	// The viewing user's own link.
 	Linked bool
 	Label  string
@@ -1290,6 +1304,7 @@ func (a *Admin) renderSettings(w http.ResponseWriter, r *http.Request, u User, f
 var oauthConsoleHints = map[string]string{
 	providerGitHub: "github.com/settings/developers → OAuth Apps",
 	providerGoogle: "console.cloud.google.com → APIs & Services → Credentials → OAuth client ID (Web application)",
+	providerOIDC:   "your identity provider's console (Zitadel: Projects → your project → New application → Web)",
 }
 
 // authSettings assembles the settings page's sign-in section.
@@ -1303,25 +1318,38 @@ func (a *Admin) authSettings(r *http.Request, u User) AuthSettings {
 	}
 	providers := make([]OAuthProviderSettings, 0, len(oauthProviderOrder))
 	for _, key := range oauthProviderOrder {
-		p, ok := a.providerFor(key)
-		if !ok {
+		p, cfg, ready := a.providerReady(key)
+		if p.key == "" {
 			continue
 		}
-		cfg := a.state.OAuth(key)
 		ident := p.get(u)
-		providers = append(providers, OAuthProviderSettings{
+		ps := OAuthProviderSettings{
 			Key:         key,
 			Name:        p.name,
 			Enabled:     cfg.Enabled,
 			ClientID:    cfg.ClientID,
 			HasSecret:   cfg.ClientSecret != "",
-			Configured:  cfg.Configured(),
+			Configured:  ready,
 			CallbackURL: a.OAuthCallbackURL(r, key),
 			Scope:       p.scope,
 			ConsoleHint: oauthConsoleHints[key],
 			Linked:      ident.ID != "",
 			Label:       ident.Label,
-		})
+		}
+		if key == providerOIDC {
+			oc := a.state.OIDC()
+			ps.OIDC = true
+			ps.OIDCIssuer = oc.Issuer
+			ps.OIDCName = oc.Name
+			ps.OIDCAuthMethod = oc.AuthMethod
+			ps.OIDCDiscovered = oc.Discovered()
+			ps.OIDCScopes = oc.ExtraScopes
+			ps.OIDCRolesClaim = oc.RolesClaim
+			ps.OIDCMemberRole = oc.MemberRole
+			ps.OIDCAdminRole = oc.AdminRole
+			ps.OIDCProvision = oc.Provision
+		}
+		providers = append(providers, ps)
 	}
 	return AuthSettings{
 		Providers: providers,
@@ -1637,6 +1665,10 @@ func (a *Admin) handleUserPromote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	target := r.FormValue("username")
+	if msg := a.roleManagedElsewhere(target); msg != "" {
+		a.renderSettings(w, r, u, "", msg)
+		return
+	}
 	if err := a.state.UpdateUser(target, func(user *User) { user.Role = "admin" }); err != nil {
 		a.renderSettings(w, r, u, "", err.Error())
 		return
@@ -1652,6 +1684,10 @@ func (a *Admin) handleUserDemote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	target := r.FormValue("username")
+	if msg := a.roleManagedElsewhere(target); msg != "" {
+		a.renderSettings(w, r, u, "", msg)
+		return
+	}
 	if err := a.state.DemoteUser(u.Username, target); err != nil {
 		a.renderSettings(w, r, u, "", err.Error())
 		return
@@ -1685,12 +1721,37 @@ func (a *Admin) handleUserResetPassword(w http.ResponseWriter, r *http.Request) 
 		a.renderSettings(w, r, u, "", "Internal error.")
 		return
 	}
-	if err := a.state.UpdateUser(target, func(user *User) { user.PasswordHash = hash }); err != nil {
+	// A password on a provider-managed account would be a way around the
+	// provider, so setting one hands the account back to this router: its role
+	// stops following the provider and every sign-in method works again. It
+	// is the recovery path for when the provider is gone or misconfigured.
+	target0, _ := a.state.LookupUser(target)
+	released := target0.ManagedBy != ""
+	if err := a.state.UpdateUser(target, func(user *User) {
+		user.PasswordHash = hash
+		user.ManagedBy = ""
+	}); err != nil {
 		a.renderSettings(w, r, u, "", err.Error())
 		return
 	}
 	a.state.RecordAudit(u.Username, "user.password_reset", target, a.clientIP(r))
-	a.renderSettings(w, r, u, fmt.Sprintf("Temporary password for %q: %s — copy it now, it will not be shown again. The user should change it after signing in.", target, temp), "")
+	msg := fmt.Sprintf("Temporary password for %q: %s — copy it now, it will not be shown again. The user should change it after signing in.", target, temp)
+	if released {
+		a.state.RecordAudit(u.Username, "user.release_managed", target, a.clientIP(r))
+		msg += " The account is no longer managed by single sign-on."
+	}
+	a.renderSettings(w, r, u, msg, "")
+}
+
+// roleManagedElsewhere returns why target's role may not be changed here, or
+// "" if it may. A managed account's role follows its provider, and a change
+// made here would silently revert at the user's next sign-in.
+func (a *Admin) roleManagedElsewhere(target string) string {
+	t, ok := a.state.LookupUser(target)
+	if !ok || t.ManagedBy == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s's role is managed by single sign-on; change it at the identity provider.", target)
 }
 
 func (a *Admin) handleUserDelete(w http.ResponseWriter, r *http.Request) {
