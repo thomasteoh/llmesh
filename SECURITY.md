@@ -34,6 +34,17 @@ llmesh is self-hosted and its security depends on how it is deployed:
   recovered from a stolen state database — but they are shown exactly once at
   creation and travel in request headers, so protect them in transit and at
   the caller.
+- **Guard the sign-in secrets in the state database.** A GitHub OAuth client
+  secret and an SMTP password, if you configure those sign-in methods, are
+  stored in the settings table in plaintext — the router has no key to encrypt
+  them under that it would not also store beside them. Neither is ever rendered
+  back into the portal or written to the log, but anyone who can read the
+  database file can read them. Clear either from **Settings → Sign-in** when
+  rotating or decommissioning the credential.
+- **Serve the portal over TLS before enabling email sign-in.** A sign-in link
+  is a bearer credential in transit; it lasts 15 minutes, works once, and is
+  invalidated by requesting another, but over plain HTTP it is readable by
+  anything on the path. The same applies to the GitHub callback.
 - **Restrict the local client API** (`local_api_addr`) to a loopback bind, or
   set `local_api_token`, since it serves unauthenticated inference otherwise.
 - **Serve the update endpoint over HTTPS.** The client only auto-updates over

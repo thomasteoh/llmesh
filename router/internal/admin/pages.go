@@ -474,6 +474,39 @@ type SettingsPage struct {
 	PortalHost string
 	Pricing    []ModelPricingRow
 	Currency   string
+	// Auth carries both halves of sign-in configuration: the router-wide
+	// settings only an admin sees, and the identities the viewing user has
+	// linked to their own account.
+	Auth AuthSettings
+}
+
+// AuthSettings is the settings page's view of alternative sign-in.
+//
+// The two secrets are represented by HasSecret/HasPassword booleans rather than
+// their values. A secret that is never sent to the browser cannot be read out of
+// a page source, a screenshot, or a proxy log, and an admin has no reason to
+// read one back — only to replace it.
+type AuthSettings struct {
+	GitHubEnabled     bool
+	GitHubClientID    string
+	GitHubHasSecret   bool
+	GitHubConfigured  bool
+	GitHubCallbackURL string
+
+	SMTPEnabled     bool
+	SMTPHost        string
+	SMTPPort        int
+	SMTPUsername    string
+	SMTPHasPassword bool
+	SMTPFrom        string
+	SMTPSecurity    string
+	SMTPConfigured  bool
+
+	// The viewing user's own identities.
+	Email         string
+	EmailVerified bool
+	GitHubLogin   string
+	GitHubLinked  bool
 }
 
 // ModelPricingRow is one model's token rate, as displayed and edited.
@@ -1243,7 +1276,41 @@ func (a *Admin) renderSettings(w http.ResponseWriter, r *http.Request, u User, f
 		PortalHost: a.state.PortalHost(),
 		Pricing:    modelPricingRows(pricing, activeModels, usageModels),
 		Currency:   a.state.CostCurrency(),
+		Auth:       a.authSettings(r, u),
 	})
+}
+
+// authSettings assembles the settings page's sign-in section.
+func (a *Admin) authSettings(r *http.Request, u User) AuthSettings {
+	gh := a.state.GitHubAuth()
+	smtp := a.state.SMTP()
+	// Re-read the user: the context copy predates any identity change made by
+	// the request now rendering this page, so linking a GitHub account would
+	// otherwise render as still unlinked.
+	if fresh, ok := a.state.LookupUser(u.Username); ok {
+		u = fresh
+	}
+	return AuthSettings{
+		GitHubEnabled:     gh.Enabled,
+		GitHubClientID:    gh.ClientID,
+		GitHubHasSecret:   gh.ClientSecret != "",
+		GitHubConfigured:  gh.Configured(),
+		GitHubCallbackURL: a.GitHubCallbackURL(r),
+
+		SMTPEnabled:     smtp.Enabled,
+		SMTPHost:        smtp.Host,
+		SMTPPort:        smtp.Port,
+		SMTPUsername:    smtp.Username,
+		SMTPHasPassword: smtp.Password != "",
+		SMTPFrom:        smtp.From,
+		SMTPSecurity:    smtp.Security,
+		SMTPConfigured:  smtp.Configured(),
+
+		Email:         u.Email,
+		EmailVerified: u.EmailVerified,
+		GitHubLogin:   u.GitHubLogin,
+		GitHubLinked:  u.GitHubUserID != "",
+	}
 }
 
 // handleModelPricingUpdate upserts one model's token rates.

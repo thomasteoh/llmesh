@@ -77,6 +77,74 @@ func TestTemplatesRenderAgainstRealStructs(t *testing.T) {
 		renderPage(t, "clients", ClientTokensPage{basePage: memberBase, Tokens: tokens})
 	})
 
+	// The settings page grew a section per sign-in method, each rendered only
+	// in some states. Every combination is executed here, since the template is
+	// the only place several of these fields are read.
+	t.Run("settings", func(t *testing.T) {
+		sb := bp
+		sb.Page = "settings"
+		users := []UserRow{
+			{User: User{Username: "alice", Role: "admin"}, IsSelf: true},
+			{User: User{Username: "bob", Role: "member", Disabled: true}},
+		}
+		base := SettingsPage{
+			basePage:  sb,
+			Users:     users,
+			Upstreams: []UpstreamRouterRow{{UpstreamRouter: UpstreamRouter{Name: "orch", URL: "https://orch.example.com", Priority: "high"}, Connected: true}},
+			Currency:  "AUD",
+			Pricing:   []ModelPricingRow{{Model: "llama3", InputRate: "1", OutputRate: "2", Basis: "estimated", Live: true, Configured: true}},
+		}
+
+		fullyConfigured := AuthSettings{
+			GitHubEnabled: true, GitHubClientID: "iv1.abc", GitHubHasSecret: true,
+			GitHubConfigured: true, GitHubCallbackURL: "https://llm.example.com/portal/auth/github/callback",
+			SMTPEnabled: true, SMTPHost: "smtp.example.com", SMTPPort: 587,
+			SMTPUsername: "llmesh", SMTPHasPassword: true, SMTPFrom: "llmesh@example.com",
+			SMTPSecurity: "starttls", SMTPConfigured: true,
+			Email: "alice@example.com", EmailVerified: true,
+			GitHubLogin: "octocat", GitHubLinked: true,
+		}
+		// Configured but with nothing linked and an address still unverified,
+		// which is what a user sees between claiming one and confirming it.
+		pending := fullyConfigured
+		pending.EmailVerified = false
+		pending.GitHubLinked = false
+		pending.GitHubLogin = ""
+		pending.GitHubHasSecret = false
+		pending.SMTPHasPassword = false
+		// Nothing configured at all: the page must fall back to the password
+		// card alone and never reach a sign-in-method field.
+		off := AuthSettings{SMTPSecurity: "starttls"}
+
+		for name, auth := range map[string]AuthSettings{
+			"configured": fullyConfigured, "pending": pending, "off": off,
+		} {
+			page := base
+			page.Auth = auth
+			t.Run(name, func(t *testing.T) { renderPage(t, "settings", page) })
+
+			member := page
+			member.IsAdmin = false
+			t.Run(name+"/member", func(t *testing.T) { renderPage(t, "settings", member) })
+		}
+	})
+
+	t.Run("login", func(t *testing.T) {
+		for _, p := range []loginPage{
+			{},
+			{Error: "Invalid credentials."},
+			{Notice: "Check your mail.", GitHubEnabled: true, EmailEnabled: true, EmailSubmitted: "a@b.com"},
+			{GitHubEnabled: true},
+			{EmailEnabled: true},
+		} {
+			renderStandalonePage(t, "login", p)
+		}
+	})
+
+	t.Run("magic-confirm", func(t *testing.T) {
+		renderStandalonePage(t, "magic-confirm", magicConfirmPage{Token: "tok"})
+	})
+
 	t.Run("dashboard", func(t *testing.T) {
 		db := bp
 		db.Page = "dashboard"

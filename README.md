@@ -163,7 +163,7 @@ server:
 docker compose up -d
 ```
 
-The state database (admin users, API keys, client tokens, aliases, audit log) is an embedded SQLite file created automatically on first run. It is mounted as a volume and persists across container restarts. A legacy `state.json` from older releases is imported automatically on first startup.
+The state database (admin users, API keys, client tokens, aliases, sign-in settings, audit log) is an embedded SQLite file created automatically on first run. It is mounted as a volume and persists across container restarts. A legacy `state.json` from older releases is imported automatically on first startup.
 
 **First-run setup**
 
@@ -172,8 +172,23 @@ Navigate to `http://[HOST]:[PORT]/portal`. On first run you are redirected to th
 From the admin dashboard you can:
 - **Clients** → Create client tokens (needed to configure each `llmesh-client` or `llmesh-shim`); also shows your worker connection URL and manages model aliases
 - **API Keys** → Create API keys (needed by callers to authenticate requests); shows your API endpoint URL
-- **Settings** → Manage users, configure upstream routers, and set per-model token pricing
+- **Settings** → Manage users, configure sign-in methods and upstream routers, and set per-model token pricing
 - **Help** → Full API reference and setup guide
+
+**Sign-in methods**
+
+Username and password always works. Two alternatives can be added under **Settings → Sign-in**, and each appears on the login page only once an admin has configured *and* enabled it — a router with neither set up shows exactly the login form it always did.
+
+| Method | What an admin configures | What a user does |
+|---|---|---|
+| **GitHub** | An OAuth app's client ID and secret. The page shows the exact callback URL to register with GitHub. | Links their own GitHub account under **Settings → Account**, then signs in with **Continue with GitHub**. |
+| **Email link** | An SMTP relay (host, port, transport security, From address, optional credentials), with a **Send test** button that reports the relay's own error. | Adds an address under **Settings → Account** and confirms it by following the link sent to it, then requests a sign-in link from the login page. |
+
+Both are ways to reach an existing account, never a way to obtain one. A GitHub account nobody has linked and an address nobody has verified are both refused, and neither creates a user — accounts are still made by an admin under **Settings → Users**. Each identity belongs to one account: a second claim on the same GitHub account or the same verified address is rejected.
+
+An address is only a sign-in identity once its owner has followed a link sent to it, so claiming someone else's gets you nothing. Sign-in links last 15 minutes, work once, and are invalidated by requesting another or by changing the address. Requesting one tells you nothing about whether the address has an account here.
+
+The GitHub client secret and the SMTP password are stored in the state database in plaintext, as upstream router tokens already are. Neither is ever rendered back into the portal — the form shows only whether one is stored, and leaving its field blank keeps it. Protect the database file accordingly.
 
 ---
 

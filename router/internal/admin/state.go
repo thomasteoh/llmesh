@@ -30,6 +30,19 @@ type User struct {
 	// own requests. Both default off; see types.UserIsolation.
 	SendIsolation    bool `json:"send_isolation,omitempty"`
 	ReceiveIsolation bool `json:"receive_isolation,omitempty"`
+
+	// Email is the address this user signs in with when email sign-in is
+	// configured. It is only accepted as an identity once EmailVerified is set,
+	// which happens when the user follows a verification link sent to it — so
+	// claiming someone else's address gets you nothing.
+	Email         string `json:"email,omitempty"`
+	EmailVerified bool   `json:"email_verified,omitempty"`
+
+	// GitHubUserID is GitHub's immutable numeric account id, the identity a
+	// linked GitHub sign-in is matched on. GitHubLogin is the handle at link
+	// time, kept only to display; a user who renames on GitHub stays linked.
+	GitHubUserID string `json:"github_user_id,omitempty"`
+	GitHubLogin  string `json:"github_login,omitempty"`
 }
 
 // APIKey is a stored API key. The key material itself is never persisted:
@@ -223,7 +236,11 @@ func createSchema(db *sql.DB) error {
 			disabled          INTEGER NOT NULL DEFAULT 0,
 			csrf_token        TEXT NOT NULL DEFAULT '',
 			send_isolation    INTEGER NOT NULL DEFAULT 0,
-			receive_isolation INTEGER NOT NULL DEFAULT 0
+			receive_isolation INTEGER NOT NULL DEFAULT 0,
+			email             TEXT NOT NULL DEFAULT '',
+			email_verified    INTEGER NOT NULL DEFAULT 0,
+			github_user_id    TEXT NOT NULL DEFAULT '',
+			github_login      TEXT NOT NULL DEFAULT ''
 		);
 		CREATE TABLE IF NOT EXISTS api_keys (
 			key_hash       TEXT PRIMARY KEY,
@@ -325,6 +342,30 @@ func createSchema(db *sql.DB) error {
 	// Non-destructive migration: per-user request-isolation flags.
 	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN send_isolation INTEGER NOT NULL DEFAULT 0`)
 	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN receive_isolation INTEGER NOT NULL DEFAULT 0`)
+	// Non-destructive migration: federated sign-in identities. Both default
+	// empty, so an existing database keeps password-only sign-in until someone
+	// links an identity.
+	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0`)
+	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN github_user_id TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN github_login TEXT NOT NULL DEFAULT ''`)
+	// An identity must resolve to exactly one account, so the database — not
+	// just the handler that happens to write it — refuses a second claim on the
+	// same GitHub account or the same verified address. Unverified duplicates
+	// are allowed and simply never become sign-in identities. Both indexes are
+	// created after the ALTERs above so an upgraded database has the columns.
+	if _, err := db.Exec(
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_github_user_id
+		 ON users(github_user_id) WHERE github_user_id <> ''`,
+	); err != nil {
+		return err
+	}
+	if _, err := db.Exec(
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_verified_email
+		 ON users(email) WHERE email <> '' AND email_verified = 1`,
+	); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -598,19 +639,66 @@ func (s *State) NeedsSetup() bool {
 
 // --- Users ---
 
-func (s *State) LookupUser(username string) (User, bool) {
+// userColumns is the column list every user read selects, in the order
+// scanUser expects. Keeping the two together means adding a column touches one
+// pair of definitions rather than each of the three queries that read a user.
+const userColumns = `username, password_hash, role, disabled, csrf_token,
+	send_isolation, receive_isolation, email, email_verified, github_user_id, github_login`
+
+// rowScanner is satisfied by both *sql.Row and *sql.Rows.
+type rowScanner interface{ Scan(dest ...any) error }
+
+func scanUser(sc rowScanner) (User, error) {
 	var u User
-	var disabled, sendIso, recvIso int
-	err := s.db.QueryRow(
-		`SELECT username, password_hash, role, disabled, csrf_token, send_isolation, receive_isolation FROM users WHERE username = ?`,
-		username,
-	).Scan(&u.Username, &u.PasswordHash, &u.Role, &disabled, &u.CSRFToken, &sendIso, &recvIso)
+	var disabled, sendIso, recvIso, emailVerified int
+	err := sc.Scan(&u.Username, &u.PasswordHash, &u.Role, &disabled, &u.CSRFToken,
+		&sendIso, &recvIso, &u.Email, &emailVerified, &u.GitHubUserID, &u.GitHubLogin)
 	if err != nil {
-		return User{}, false
+		return User{}, err
 	}
 	u.Disabled = disabled != 0
 	u.SendIsolation = sendIso != 0
 	u.ReceiveIsolation = recvIso != 0
+	u.EmailVerified = emailVerified != 0
+	return u, nil
+}
+
+func (s *State) LookupUser(username string) (User, bool) {
+	u, err := scanUser(s.db.QueryRow(
+		`SELECT `+userColumns+` FROM users WHERE username = ?`, username))
+	if err != nil {
+		return User{}, false
+	}
+	return u, true
+}
+
+// LookupUserByGitHubID returns the account linked to a GitHub numeric user id.
+// An empty id never matches, so an unlinked account cannot be reached by one.
+func (s *State) LookupUserByGitHubID(id string) (User, bool) {
+	if id == "" {
+		return User{}, false
+	}
+	u, err := scanUser(s.db.QueryRow(
+		`SELECT `+userColumns+` FROM users WHERE github_user_id = ?`, id))
+	if err != nil {
+		return User{}, false
+	}
+	return u, true
+}
+
+// LookupUserByVerifiedEmail returns the account that has proved control of an
+// address. Unverified claims are invisible here, which is what stops one user
+// from receiving another's sign-in links by typing their address.
+func (s *State) LookupUserByVerifiedEmail(email string) (User, bool) {
+	email = NormalizeEmail(email)
+	if email == "" {
+		return User{}, false
+	}
+	u, err := scanUser(s.db.QueryRow(
+		`SELECT `+userColumns+` FROM users WHERE email = ? AND email_verified = 1`, email))
+	if err != nil {
+		return User{}, false
+	}
 	return u, true
 }
 
@@ -659,30 +747,52 @@ func (s *State) UpdateUser(username string, fn func(*User)) error {
 		return fmt.Errorf("user not found: %s", username)
 	}
 	fn(&u)
+	u.Email = NormalizeEmail(u.Email)
+	if u.Email == "" {
+		// Verification describes an address; with none claimed there is nothing
+		// to have verified, so the flag cannot outlive the address it refers to.
+		u.EmailVerified = false
+	}
 	_, err := s.db.Exec(
-		`UPDATE users SET password_hash = ?, role = ?, disabled = ?, csrf_token = ?, send_isolation = ?, receive_isolation = ? WHERE username = ?`,
-		u.PasswordHash, u.Role, boolInt(u.Disabled), u.CSRFToken, boolInt(u.SendIsolation), boolInt(u.ReceiveIsolation), username,
+		`UPDATE users SET password_hash = ?, role = ?, disabled = ?, csrf_token = ?,
+		 send_isolation = ?, receive_isolation = ?, email = ?, email_verified = ?,
+		 github_user_id = ?, github_login = ? WHERE username = ?`,
+		u.PasswordHash, u.Role, boolInt(u.Disabled), u.CSRFToken,
+		boolInt(u.SendIsolation), boolInt(u.ReceiveIsolation), u.Email, boolInt(u.EmailVerified),
+		u.GitHubUserID, u.GitHubLogin, username,
 	)
-	if err == nil {
-		s.isoCache.Store(nil) // isolation flags may have changed; rebuild on next read
+	if err != nil {
+		return identityConflictError(err)
+	}
+	s.isoCache.Store(nil) // isolation flags may have changed; rebuild on next read
+	return nil
+}
+
+// identityConflictError turns the unique-index violation raised by a second
+// claim on a GitHub account or verified address into something the portal can
+// show a user, since "constraint failed: ..." explains nothing to them.
+func identityConflictError(err error) error {
+	// SQLite names the offending column rather than the partial index, so the
+	// match is on the column.
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "users.github_user_id"):
+		return fmt.Errorf("that GitHub account is already linked to another user")
+	case strings.Contains(msg, "users.email"):
+		return fmt.Errorf("that email address is already in use by another user")
 	}
 	return err
 }
 
 func (s *State) Users() []User {
-	rows, err := s.db.Query(`SELECT username, password_hash, role, disabled, csrf_token, send_isolation, receive_isolation FROM users ORDER BY username`)
+	rows, err := s.db.Query(`SELECT ` + userColumns + ` FROM users ORDER BY username`)
 	if err != nil {
 		return nil
 	}
 	defer rows.Close()
 	var out []User
 	for rows.Next() {
-		var u User
-		var disabled, sendIso, recvIso int
-		if err := rows.Scan(&u.Username, &u.PasswordHash, &u.Role, &disabled, &u.CSRFToken, &sendIso, &recvIso); err == nil {
-			u.Disabled = disabled != 0
-			u.SendIsolation = sendIso != 0
-			u.ReceiveIsolation = recvIso != 0
+		if u, err := scanUser(rows); err == nil {
 			out = append(out, u)
 		}
 	}

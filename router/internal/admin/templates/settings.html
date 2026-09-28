@@ -5,9 +5,10 @@
 </div>
 <div class="tab-container">
   <div class="tab-bar underline">
-    <button class="tab-btn active" data-tab-target="tab-password" data-tab-hash>Password</button>
+    <button class="tab-btn active" data-tab-target="tab-password" data-tab-hash>Account</button>
     {{if .IsAdmin}}
     <button class="tab-btn" data-tab-target="tab-general" data-tab-hash>General</button>
+    <button class="tab-btn" data-tab-target="tab-signin" data-tab-hash>Sign-in</button>
     <button class="tab-btn" data-tab-target="tab-users" data-tab-hash>Users</button>
     <button class="tab-btn" data-tab-target="tab-upstreams" data-tab-hash>Upstreams</button>
     <button class="tab-btn" data-tab-target="tab-optimization" data-tab-hash>Optimization</button>
@@ -29,6 +30,55 @@
           <button type="submit" class="btn">Update password</button>
         </form>
       </div>
+
+      {{/* Sign-in methods appear only for the methods an admin has switched on,
+           so a user on a password-only router sees the password card alone. */}}
+      {{if or .Auth.GitHubConfigured .Auth.SMTPConfigured}}
+      <div class="card mt-3">
+        <div class="card-title">Sign-in methods</div>
+        <p class="table-hint mb-3">Link an identity to this account to sign in without typing a password. Your password keeps working either way.</p>
+
+        {{if .Auth.SMTPConfigured}}
+        <div class="form-group mb-2"><label>Email address</label></div>
+        <form method="POST" action="/portal/settings/email">
+          <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+          <div class="form-row mb-2">
+            <div class="form-group">
+              <input name="email" type="email" autocomplete="email" value="{{.Auth.Email}}" placeholder="you@example.com">
+            </div>
+            <button type="submit" class="btn">Save</button>
+          </div>
+        </form>
+        {{if .Auth.Email}}
+          {{if .Auth.EmailVerified}}
+          <p class="table-hint mb-4">{{template "status-badge" dict "Class" "connected" "Label" "✓ verified"}} You can request a sign-in link at the login page. Clear the field and save to remove it.</p>
+          {{else}}
+          <div class="identity-row mb-4">
+            <p class="table-hint">{{template "status-badge" dict "Class" "offline" "Label" "unverified"}} Follow the link sent to this address to finish. Until then it cannot be used to sign in.</p>
+            {{template "action-button" dict "Action" "/portal/settings/email/resend" "CSRF" $.CSRFToken "Class" "btn-secondary btn-xs" "Label" "Resend link"}}
+          </div>
+          {{end}}
+        {{else}}
+        <p class="table-hint mb-4">No address set. Add one to sign in with an emailed link.</p>
+        {{end}}
+        {{end}}
+
+        {{if .Auth.GitHubConfigured}}
+        <div class="form-group mb-2"><label>GitHub</label></div>
+        {{if .Auth.GitHubLinked}}
+        <div class="identity-row">
+          <p class="table-hint">{{template "status-badge" dict "Class" "connected" "Label" "✓ linked"}} Signed in as <strong>@{{.Auth.GitHubLogin}}</strong> on GitHub.</p>
+          {{template "action-button" dict "Action" "/portal/settings/github/unlink" "CSRF" $.CSRFToken "Confirm" "Unlink this GitHub account? You will no longer be able to sign in with it." "Class" "btn-danger btn-xs" "Label" "Unlink"}}
+        </div>
+        {{else}}
+        <div class="identity-row">
+          <p class="table-hint">Not linked. Linking sends you to GitHub to authorize this router, then returns you here.</p>
+          {{template "action-button" dict "Action" "/portal/settings/github/link" "CSRF" $.CSRFToken "Class" "btn-secondary btn-xs" "Label" "Link GitHub account"}}
+        </div>
+        {{end}}
+        {{end}}
+      </div>
+      {{end}}
     </div>
   </div>
 
@@ -48,6 +98,104 @@
           <p class="table-hint mb-3">Currently in effect: <code>{{.Host}}</code>{{if eq .PortalHost ""}} <span class="muted">(auto-detected)</span>{{end}}</p>
           <button type="submit" class="btn">Save public address</button>
         </form>
+      </div>
+    </div>
+  </div>
+
+  {{/* ── Sign-in tab ── */}}
+  <div id="tab-signin" class="tab-panel">
+    <div class="settings-narrow">
+      <div class="card">
+        <div class="card-title">GitHub sign-in</div>
+        <p class="table-hint mb-3">Register an OAuth app on GitHub, then enter its credentials here. Once this is on, the login page offers &ldquo;Continue with GitHub&rdquo; and each user links their own GitHub account under Settings &rarr; Account. A GitHub account that is not linked to a user here cannot sign in and no account is created for it.</p>
+        <p class="table-hint mb-2">Set the OAuth app&rsquo;s authorization callback URL to:</p>
+        <div class="mb-3">{{template "endpoint-display" dict "URL" .Auth.GitHubCallbackURL}}</div>
+        <form method="POST" action="/portal/settings/auth/github">
+          <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+          <div class="form-group mb-3">
+            <label>Client ID</label>
+            <input name="client_id" value="{{.Auth.GitHubClientID}}" autocomplete="off" placeholder="Iv1.0123456789abcdef">
+          </div>
+          <div class="form-group mb-3">
+            <label>Client secret</label>
+            <input name="client_secret" type="password" autocomplete="new-password" placeholder="{{if .Auth.GitHubHasSecret}}•••••••• (stored — leave blank to keep){{else}}not set{{end}}">
+            <p class="field-desc">Stored secrets are never shown again. Leave blank to keep the current one.</p>
+          </div>
+          <div class="form-group mb-4">
+            <label><input type="checkbox" name="enabled" {{if .Auth.GitHubEnabled}}checked{{end}}> Offer GitHub sign-in on the login page</label>
+          </div>
+          <div class="flex gap-2">
+            <button type="submit" class="btn">Save GitHub settings</button>
+            {{if .Auth.GitHubHasSecret}}
+            {{template "action-button" dict "Action" "/portal/settings/auth/github" "CSRF" $.CSRFToken "Fields" (dict "clear_secret" "1") "Confirm" "Clear the stored client secret? GitHub sign-in will be switched off." "Class" "btn-secondary" "Label" "Clear secret"}}
+            {{end}}
+          </div>
+        </form>
+      </div>
+
+      <div class="card mt-3">
+        <div class="card-title">Email sign-in</div>
+        <p class="table-hint mb-3">Configure an SMTP relay to let users sign in with a link emailed to them. Without one, the login page does not offer it and users cannot verify an address. A link is only ever sent to an address a user has verified on their own account.</p>
+        <form method="POST" action="/portal/settings/auth/smtp">
+          <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+          <div class="form-row mb-3">
+            <div class="form-group">
+              <label>Host</label>
+              <input name="host" value="{{.Auth.SMTPHost}}" placeholder="smtp.example.com">
+            </div>
+            <div class="form-group">
+              <label>Port</label>
+              <input name="port" value="{{if .Auth.SMTPPort}}{{.Auth.SMTPPort}}{{end}}" placeholder="587" inputmode="numeric">
+            </div>
+          </div>
+          <div class="form-group mb-3">
+            <label>Transport security</label>
+            <select name="security">
+              <option value="starttls" {{if eq .Auth.SMTPSecurity "starttls"}}selected{{end}}>STARTTLS (submission, usually port 587)</option>
+              <option value="tls" {{if eq .Auth.SMTPSecurity "tls"}}selected{{end}}>Implicit TLS (usually port 465)</option>
+              <option value="none" {{if eq .Auth.SMTPSecurity "none"}}selected{{end}}>None (unencrypted)</option>
+            </select>
+            <p class="field-desc">Leave the port blank to use the default for the selected transport.</p>
+          </div>
+          <div class="form-group mb-3">
+            <label>From address</label>
+            <input name="from" type="email" value="{{.Auth.SMTPFrom}}" placeholder="llmesh@example.com">
+          </div>
+          <div class="form-group mb-3">
+            <label>Username <span class="muted">(blank for a relay that needs no authentication)</span></label>
+            <input name="username" value="{{.Auth.SMTPUsername}}" autocomplete="off">
+          </div>
+          <div class="form-group mb-3">
+            <label>Password</label>
+            <input name="password" type="password" autocomplete="new-password" placeholder="{{if .Auth.SMTPHasPassword}}•••••••• (stored — leave blank to keep){{else}}not set{{end}}">
+            <p class="field-desc">Leave blank to keep the current one.</p>
+          </div>
+          <div class="form-group mb-4">
+            <label><input type="checkbox" name="enabled" {{if .Auth.SMTPEnabled}}checked{{end}}> Offer email sign-in on the login page</label>
+          </div>
+          <div class="flex gap-2">
+            <button type="submit" class="btn">Save SMTP settings</button>
+            {{if .Auth.SMTPHasPassword}}
+            {{template "action-button" dict "Action" "/portal/settings/auth/smtp" "CSRF" $.CSRFToken "Fields" (dict "clear_password" "1") "Confirm" "Clear the stored SMTP password?" "Class" "btn-secondary" "Label" "Clear password"}}
+            {{end}}
+          </div>
+        </form>
+
+        {{if .Auth.SMTPHost}}
+        <div class="mt-4">
+          <div class="card-title">Send a test message</div>
+          <p class="table-hint mb-3">Uses the saved settings above, so save first. Delivery failures are reported here in the relay&rsquo;s own words.</p>
+          <form method="POST" action="/portal/settings/auth/smtp/test">
+            <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+            <div class="form-row">
+              <div class="form-group">
+                <input name="to" type="email" value="{{.Auth.Email}}" placeholder="you@example.com">
+              </div>
+              <button type="submit" class="btn-secondary">Send test</button>
+            </div>
+          </form>
+        </div>
+        {{end}}
       </div>
     </div>
   </div>
