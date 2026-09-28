@@ -47,13 +47,13 @@ llmesh is self-hosted and its security depends on how it is deployed:
   readable by anything on the path. The same applies to an OAuth callback,
   which carries an authorization code, and Google will not accept a plain-HTTP
   redirect URI except on localhost.
-- **Register the redirect URI exactly.** Each provider's callback URL is shown
-  on the settings page. Registering a broader pattern than the one shown, where
-  a provider permits it, widens where an authorization code can be delivered.
 - **Provider roles take effect at sign-in, not instantly.** With OpenID
   Connect access control on, removing a user's role at the provider stops
   their next sign-in, but not a portal session already open or their API
   keys. Disable the user here as well when access must end now.
+- **Register the redirect URI exactly.** Each provider's callback URL is shown
+  on the settings page. Registering a broader pattern than the one shown, where
+  a provider permits it, widens where an authorization code can be delivered.
 - **Restrict the local client API** (`local_api_addr`) to a loopback bind, or
   set `local_api_token`, since it serves unauthenticated inference otherwise.
   It refuses browser requests, so a web page open on the machine cannot reach
