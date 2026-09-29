@@ -180,22 +180,12 @@
           <div class="form-group mb-3">
             <label>Roles claim <span class="muted">(optional — turns on access control)</span></label>
             <input name="roles_claim" value="{{$p.OIDCRolesClaim}}" placeholder="urn:zitadel:iam:org:project:roles" autocomplete="off">
-            <p class="field-desc">The userinfo claim holding the user's roles: a list, a string, or an object keyed by role. A dotted name reaches into nested objects (<code>realm_access.roles</code>). When set, a sign-in with neither role below is refused.</p>
-          </div>
-          <div class="form-row mb-3">
-            <div class="form-group">
-              <label>Member role</label>
-              <input name="member_role" value="{{$p.OIDCMemberRole}}" placeholder="llmesh-user" autocomplete="off">
-            </div>
-            <div class="form-group">
-              <label>Admin role</label>
-              <input name="admin_role" value="{{$p.OIDCAdminRole}}" placeholder="llmesh-admin" autocomplete="off">
-            </div>
+            <p class="field-desc">The userinfo claim holding the user's roles: a list, a string, or an object keyed by role. A dotted name reaches into nested objects (<code>realm_access.roles</code>). When set, a sign-in holding none of the mapped roles below is refused.</p>
           </div>
           <div class="form-group mb-3">
-            <label>More role mappings <span class="muted">(one <code>provider-role=llmesh-role</code> per line)</span></label>
-            <textarea name="role_map" rows="3" class="code-input" placeholder="llmesh-operator=operator&#10;llmesh-audit=auditor" spellcheck="false">{{$p.OIDCRoleMap}}</textarea>
-            <p class="field-desc">Any role here also grants access. Accounts created by sign-in hold exactly the roles the provider grants on every sign-in.</p>
+            <label>Role mapping <span class="muted">(one <code>provider-role=llmesh-role</code> per line)</span></label>
+            <textarea name="role_map" rows="3" class="code-input" placeholder="llmesh-user=member&#10;llmesh-admin=admin&#10;llmesh-operator=operator" spellcheck="false">{{$p.OIDCRoleMap}}</textarea>
+            <p class="field-desc">Each mapped role grants access. Accounts created by sign-in hold exactly the roles the provider grants on every sign-in.</p>
           </div>
           <div class="form-row mb-3">
             <div class="form-group"><label>Groups claim <span class="muted">(optional)</span></label><input name="groups_claim" value="{{$p.OIDCGroups}}" placeholder="groups" autocomplete="off"></div>

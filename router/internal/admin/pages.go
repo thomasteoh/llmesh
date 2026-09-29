@@ -586,8 +586,6 @@ type OAuthProviderSettings struct {
 	OIDCDiscovered bool
 	OIDCScopes     string
 	OIDCRolesClaim string
-	OIDCMemberRole string
-	OIDCAdminRole  string
 	OIDCProvision  bool
 	OIDCRoleMap    string // name=value lines
 	OIDCGroups     string
@@ -1457,8 +1455,6 @@ func (a *Admin) authSettings(r *http.Request, u User) AuthSettings {
 			ps.OIDCDiscovered = oc.Discovered()
 			ps.OIDCScopes = oc.ExtraScopes
 			ps.OIDCRolesClaim = oc.RolesClaim
-			ps.OIDCMemberRole = oc.MemberRole
-			ps.OIDCAdminRole = oc.AdminRole
 			ps.OIDCProvision = oc.Provision
 			ps.OIDCRoleMap = attrLines(oc.RoleMap)
 			ps.OIDCGroups = oc.GroupsClaim

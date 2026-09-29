@@ -70,8 +70,8 @@ func (a *Admin) handleOAuthSettingsUpdate(providerKey string) http.HandlerFunc {
 				return
 			}
 			p.name = oidc.DisplayName()
-			auditTarget += fmt.Sprintf(" issuer=%s roles_claim=%q member_role=%q admin_role=%q provision=%t",
-				oidc.Issuer, oidc.RolesClaim, oidc.MemberRole, oidc.AdminRole, oidc.Provision)
+			auditTarget += fmt.Sprintf(" issuer=%s roles_claim=%q roles=%d provision=%t",
+				oidc.Issuer, oidc.RolesClaim, len(oidc.RoleMap), oidc.Provision)
 		}
 
 		if err := a.state.SetOAuth(providerKey, p.name, cfg); err != nil {
@@ -121,8 +121,6 @@ func (a *Admin) oidcFromForm(r *http.Request, enabling bool) (OIDCConfig, error)
 		AuthMethod:  method,
 		ExtraScopes: r.FormValue("extra_scopes"),
 		RolesClaim:  strings.TrimSpace(r.FormValue("roles_claim")),
-		MemberRole:  strings.TrimSpace(r.FormValue("member_role")),
-		AdminRole:   strings.TrimSpace(r.FormValue("admin_role")),
 		Provision:   r.FormValue("provision") != "",
 		GroupsClaim: strings.TrimSpace(r.FormValue("groups_claim")),
 	}
@@ -130,14 +128,7 @@ func (a *Admin) oidcFromForm(r *http.Request, enabling bool) (OIDCConfig, error)
 	if oc.RoleMap, err = parseMapLines(r.FormValue("role_map")); err != nil {
 		return OIDCConfig{}, fmt.Errorf("role mapping: %w", err)
 	}
-	mapped := map[string]string{}
-	for k, v := range oc.RoleMap {
-		mapped[k] = v
-	}
-	if oc.AdminRole != "" {
-		mapped[oc.AdminRole] = authz.RoleAdmin
-	}
-	for provider, role := range mapped {
+	for provider, role := range oc.RoleMap {
 		if !a.state.roleExists(role) {
 			return OIDCConfig{}, fmt.Errorf("role mapping: %q maps to unknown role %q", provider, role)
 		}

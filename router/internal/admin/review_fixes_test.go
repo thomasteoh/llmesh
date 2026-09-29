@@ -34,7 +34,7 @@ func TestRoleMapNeedsGrantableRoles(t *testing.T) {
 	withRole(t, a, "adm", authz.RoleAdmin)
 	issuer := startFakeIssuer(t, a)
 	form := url.Values{"client_id": {"cid"}, "client_secret": {"shh"}, "issuer": {issuer.URL},
-		"roles_claim": {"roles"}, "member_role": {"u"}, "role_map": {"big=owner"}}
+		"roles_claim": {"roles"}, "role_map": {"u=member\nbig=owner"}}
 	rr := postAs(t, a, "adm", "/portal/settings/auth/oidc", form, a.handleOAuthSettingsUpdate(providerOIDC))
 	if !strings.Contains(rr.Body.String(), "you cannot map to") {
 		t.Fatalf("an admin mapped a provider role to owner: %.300s", rr.Body.String())

@@ -14,8 +14,7 @@ import (
 func zitadelSyncPolicy() OIDCConfig {
 	return OIDCConfig{
 		RolesClaim:        "urn:zitadel:iam:org:project:roles",
-		MemberRole:        "llmesh-user",
-		RoleMap:           map[string]string{"llmesh-ops": authz.RoleOperator, "llmesh-audit": authz.RoleAuditor},
+		RoleMap:           map[string]string{"llmesh-user": authz.RoleMember, "llmesh-ops": authz.RoleOperator, "llmesh-audit": authz.RoleAuditor},
 		Provision:         true,
 		GroupsClaim:       "groups",
 		TeamMap:           map[string]string{"research-staff": "research", "ops-staff": "ops"},
@@ -208,7 +207,7 @@ func TestOIDCSyncSettingsValidation(t *testing.T) {
 	issuer := startFakeIssuer(t, a)
 	base := func() url.Values {
 		return url.Values{"client_id": {"cid"}, "client_secret": {"shh"}, "issuer": {issuer.URL},
-			"roles_claim": {"roles"}, "member_role": {"u"}}
+			"roles_claim": {"roles"}, "role_map": {"u=member"}}
 	}
 	for _, tc := range []struct{ field, value, want string }{
 		{"role_map", "x=wizard", "unknown role"},

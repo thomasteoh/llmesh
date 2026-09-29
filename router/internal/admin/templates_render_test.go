@@ -258,7 +258,7 @@ func TestTemplatesRender(t *testing.T) {
 				OIDC:        true, OIDCIssuer: "https://acme.zitadel.cloud", OIDCName: "Zitadel",
 				OIDCAuthMethod: "client_secret_basic", OIDCDiscovered: true,
 				OIDCRolesClaim: "urn:zitadel:iam:org:project:roles",
-				OIDCMemberRole: "llmesh-user", OIDCAdminRole: "llmesh-admin", OIDCProvision: true,
+				OIDCProvision:  true,
 			}},
 			SMTPEnabled: true, SMTPHost: "smtp.example.com", SMTPPort: 587,
 			SMTPUsername: "llmesh", SMTPHasPassword: true, SMTPFrom: "llmesh@example.com",

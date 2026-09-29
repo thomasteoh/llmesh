@@ -15,8 +15,8 @@ import (
 // With a roles claim configured, the provider decides who may sign in and, for
 // accounts it created, what role they hold here:
 //
-//   - A sign-in whose roles include neither the admin role nor the member role
-//     is refused, whether or not the identity is linked.
+//   - A sign-in whose roles include none of the mapped roles is refused,
+//     whether or not the identity is linked.
 //   - With provisioning on, a permitted identity seen for the first time gets
 //     an account, marked as managed by the provider.
 //   - A managed account takes its role from the provider on every sign-in and
@@ -46,21 +46,8 @@ func (c OIDCConfig) validateAccess() error {
 	return nil
 }
 
-// roleMapping is every provider role that grants an llmesh role: the member
-// and admin roles, plus the role map.
-func (c OIDCConfig) roleMapping() map[string]string {
-	m := map[string]string{}
-	if c.MemberRole != "" {
-		m[c.MemberRole] = authz.RoleMember
-	}
-	if c.AdminRole != "" {
-		m[c.AdminRole] = authz.RoleAdmin
-	}
-	for k, v := range c.RoleMap {
-		m[k] = v
-	}
-	return m
-}
+// roleMapping is every provider role that grants an llmesh role.
+func (c OIDCConfig) roleMapping() map[string]string { return c.RoleMap }
 
 // rolesFor decides whether an identity may sign in and which llmesh roles
 // the provider grants it. With the policy off every identity is allowed and

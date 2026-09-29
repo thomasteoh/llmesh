@@ -48,8 +48,8 @@ func TestClaimRoles(t *testing.T) {
 }
 
 func TestRolesFor(t *testing.T) {
-	policy := OIDCConfig{RolesClaim: "roles", MemberRole: "user", AdminRole: "admin",
-		RoleMap: map[string]string{"ops": "operator", "audit": "auditor"}}
+	policy := OIDCConfig{RolesClaim: "roles",
+		RoleMap: map[string]string{"user": "member", "admin": "admin", "ops": "operator", "audit": "auditor"}}
 	cases := []struct {
 		doc         string
 		want        string
@@ -80,7 +80,7 @@ func TestValidateAccess(t *testing.T) {
 	if err := (OIDCConfig{Provision: true}).validateAccess(); err == nil {
 		t.Error("provisioning without a role requirement was accepted")
 	}
-	if err := (OIDCConfig{RolesClaim: "roles", MemberRole: "u", Provision: true}).validateAccess(); err != nil {
+	if err := (OIDCConfig{RolesClaim: "roles", RoleMap: map[string]string{"u": "member"}, Provision: true}).validateAccess(); err != nil {
 		t.Errorf("a valid policy was refused: %v", err)
 	}
 }
@@ -125,8 +125,7 @@ func oidcSignIn(t *testing.T, a *Admin) *httptest.ResponseRecorder {
 
 var zitadelPolicy = OIDCConfig{
 	RolesClaim: "urn:zitadel:iam:org:project:roles",
-	MemberRole: "llmesh-user",
-	AdminRole:  "llmesh-admin",
+	RoleMap:    map[string]string{"llmesh-user": "member", "llmesh-admin": "admin"},
 	Provision:  true,
 }
 
@@ -319,18 +318,43 @@ func TestOIDCSettingsAccessPolicy(t *testing.T) {
 	}
 
 	form.Set("roles_claim", "urn:zitadel:iam:org:project:roles")
-	form.Set("member_role", "llmesh-user")
+	form.Set("role_map", "llmesh-user=member")
 	form.Set("extra_scopes", "  urn:zitadel:iam:org:projects:roles  ")
 	rr = postAs(t, a, "admin", path, form, a.handleOAuthSettingsUpdate(providerOIDC))
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "sign-in is on") {
 		t.Fatalf("a valid policy was refused:\n%s", rr.Body.String())
 	}
 	got := a.state.OIDC()
-	if !got.Provision || got.MemberRole != "llmesh-user" || got.ExtraScopes != "urn:zitadel:iam:org:projects:roles" {
+	if !got.Provision || got.RoleMap["llmesh-user"] != "member" || got.ExtraScopes != "urn:zitadel:iam:org:projects:roles" {
 		t.Fatalf("stored policy is %+v", got)
 	}
 	p, _ := a.providerFor(providerOIDC)
 	if p.scope != "openid email profile urn:zitadel:iam:org:projects:roles" {
 		t.Fatalf("scope is %q", p.scope)
+	}
+}
+
+// The member and admin role settings from before the role map become role
+// map entries when read, and are cleared by the next save.
+func TestLegacyOIDCRolesFoldIntoRoleMap(t *testing.T) {
+	s := newTestState(t)
+	if err := s.putSettings(map[string]string{
+		oidcRolesClaimKey: "roles", oidcMemberRoleKey: "staff", oidcAdminRoleKey: "boss",
+		oidcRoleMapKey: `{"boss":"operator"}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := s.OIDC().RoleMap
+	if got["staff"] != "member" || got["boss"] != "operator" || len(got) != 2 {
+		t.Fatalf("role map = %v; want staff=member and the explicit boss=operator kept", got)
+	}
+	if err := s.SetOIDC(s.OIDC()); err != nil {
+		t.Fatal(err)
+	}
+	if v := s.settings(oidcMemberRoleKey, oidcAdminRoleKey); v[oidcMemberRoleKey] != "" || v[oidcAdminRoleKey] != "" {
+		t.Errorf("legacy role settings survived a save: %v", v)
+	}
+	if got := s.OIDC().RoleMap; got["staff"] != "member" || got["boss"] != "operator" {
+		t.Errorf("role map after save = %v", got)
 	}
 }
