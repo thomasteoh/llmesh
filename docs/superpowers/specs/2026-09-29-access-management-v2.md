@@ -514,3 +514,37 @@ and covered by tests.
   context; re-enabling a user and changing isolation apply the account-change
   rule; appointing a team maintainer takes router-wide `team.manage`.
 
+## Follow-up: pruning what access management replaced
+
+An adversarial review after the security fixes removed features that access
+management made redundant or unsafe:
+
+- **Upstream router federation (§8) is gone.** It collapsed every user of the
+  orchestrator into one member-level `router:<name>` principal here, so
+  per-user rules, teams, and per-requester caps could not tell them apart; with
+  the default everyone-may-use-every-model rule, a separately administered
+  router's key-holders could use every shared model, paid ones included. It
+  advertised every local model and slot, including Private clients' (the
+  "advertise only reachable models" line in §8 was never built), had no hop
+  limit or loop detection, and kept upstream tokens in plaintext. The
+  connector, `upstream.manage`, the `router` principal kind, and
+  `AuthorizeUpstreamJob` are removed; the `upstream_routers` table is dropped
+  at startup (URLs logged). Stored custom roles and policies naming
+  catalogue-less actions are pruned at startup so they still compile, and
+  `context.via_upstream` stays readable as always false. An older router that
+  still connects is an ordinary client, reported as `served_by_kind=router`.
+  `keySubject` no longer gives member rights to an owner with an unknown
+  prefix.
+- **Per-user isolation switches are gone.** They only wrote the §10 deny
+  policies; existing ones stay as ordinary policies. The scheduler has one
+  pairing path: without access management, `ownerPairing` (owner side is the
+  client's owner, the client's reserved slots held back from others) replaces
+  `isolationAllows` and the separate owner-slot counting.
+- **Reserved slots live only in the sharing setting.** `owner_slots` is read
+  only by the upgrade migration.
+- **Role bindings are the only record of roles.** The promote/demote endpoints
+  and `users.role` syncing are removed; `User.Role` is the role a new account
+  starts with.
+- **OIDC member/admin role fields are folded into the role map** when read,
+  and cleared on the next save.
+

@@ -55,6 +55,8 @@ llmesh sits between callers (agents, tools, scripts) and the machines that run y
 
 Callers only need to know the router URL. Workers connect *out* to the router, so no inbound ports are needed on worker machines.
 
+One router serves one fleet. Earlier releases could join a router to another as if it were a client (*upstream routers*). That was removed once teams, per-client sharing, and model access could divide one router between groups without losing who each request came from. On upgrade the upstream configuration is dropped, and the URLs are logged so their client tokens can be revoked on the other router. To draw on another llmesh router's capacity, run an `llmesh-shim` with an `http` backend pointed at that router's `/v1` and an API key it issued; that router's own access rules then apply to the traffic.
+
 ### Request Flow
 
 ```mermaid
@@ -83,12 +85,12 @@ The router dispatches requests to available clients using **client-centric affin
 2. **Priority tier** — requests can be tagged `high`, `normal`, or `low`
 3. **FIFO** — within the same tier, oldest first
 
-Affinity is a soft preference: by default any client can serve any user's requests once its owner's queue is clear. **Request isolation** turns that into a hard boundary, per user, in two independent directions (set under **Settings → Users** in the portal):
+Affinity is a soft preference: by default any client can serve any user's requests once its owner's queue is clear. Hard boundaries come from access management (see *Sharing capacity* and *Policies* below):
 
-- **Send isolation** — the user's requests may only run on clients they own. Useful when a user must not have their prompts processed on anyone else's machine.
-- **Receive isolation** — the user's clients may only serve that user's own requests. Useful when a user contributes hardware but does not want to process other people's work.
+- To keep a client serving only its owner, set its sharing to **Private** on the **Clients** page.
+- To keep someone's requests on their own hardware, add a deny policy on `client.use` for clients they do not own.
 
-A request whose owner matches the client's owner is always allowed regardless of either flag. An isolated user with no clients of their own simply waits (and eventually times out) rather than spilling onto shared hardware — that is the intended trade-off.
+A request that no client may serve waits (and eventually times out) rather than spilling onto hardware it is kept off — that is the intended trade-off. The per-user send and receive isolation switches of earlier releases were converted to exactly these policies on upgrade.
 
 Model aliases allow multiple clients serving different implementations of the same model to be addressed by a single logical name (e.g., `gpt-4o` → `unsloth/qwen3-30b` or `llama3.1:70b`).
 
@@ -173,12 +175,12 @@ From the admin dashboard you can:
 - **Clients** → Create client tokens (needed to configure each `llmesh-client` or `llmesh-shim`); also shows your worker connection URL and manages model aliases
 - **API Keys** → Create API keys (needed by callers to authenticate requests); shows your API endpoint URL
 - **Teams** → Teams own API keys and clients together. Admins create, disable, and delete teams; maintainers manage members; members share the team's keys and usage
-- **Settings** → Manage users and their roles, define custom roles, configure sign-in methods and upstream routers, set per-model token pricing, and see your own sessions
+- **Settings** → Manage users and their roles, define custom roles, configure sign-in methods, set per-model token pricing, and see your own sessions
 - **Help** → Full API reference and setup guide
 
 **Roles**
 
-Access is granted by roles, each a named set of permissions. The built-in roles are *owner* (everything), *admin* (everything except changing owners), *operator* (clients, aliases, queue, pricing, upstreams), *auditor* (read-only, including the audit log), *member* (own keys, clients, usage, and jobs), and *viewer* (own usage only). Within a team, *team maintainer* and *team member* apply to that team's keys, clients, and usage. Admins can define custom roles from the permission catalogue under **Settings → Roles**, but only with permissions they hold themselves. The same rule governs everything that hands out power: you can only grant or remove a role, change an account, or write an allow policy if you hold what that carries (beyond what every member has), and no policy may leave every owner unable to manage users, roles, and policies. On upgrade every existing admin becomes an owner and every member stays a member.
+Access is granted by roles, each a named set of permissions. The built-in roles are *owner* (everything), *admin* (everything except changing owners), *operator* (clients, aliases, queue, pricing), *auditor* (read-only, including the audit log), *member* (own keys, clients, usage, and jobs), and *viewer* (own usage only). Within a team, *team maintainer* and *team member* apply to that team's keys, clients, and usage. Admins can define custom roles from the permission catalogue under **Settings → Roles**, but only with permissions they hold themselves. The same rule governs everything that hands out power: you can only grant or remove a role, change an account, or write an allow policy if you hold what that carries (beyond what every member has), and no policy may leave every owner unable to manage users, roles, and policies. On upgrade every existing admin becomes an owner and every member stays a member.
 
 **Sharing capacity**
 
@@ -223,21 +225,21 @@ To use **Zitadel**: in your project, create an application of type *Web* with th
 
 **Access control from the identity provider.** Setting a *roles claim* on the OpenID Connect card hands the decision of who may sign in to the provider:
 
-- A sign-in whose roles include neither the configured *member role* nor *admin role* is refused, linked or not.
+- A sign-in whose roles include none of the provider roles in the *role mapping* is refused, linked or not.
 - With *Create an account on first sign-in* on, a permitted identity seen for the first time gets an account, named from its username at the provider. Provisioning requires a roles claim, so it never opens the router to everyone who can register at the provider.
-- Accounts created this way are **managed** (marked *SSO* under **Settings → Users**). Their role follows the provider on every sign-in (admin role wins), they cannot sign in by password, email link, or another provider, and their role cannot be changed in the portal. **Take over** sets a password and hands the account back to llmesh, which is the recovery path if the provider is gone.
+- Accounts created this way are **managed** (marked *SSO* under **Settings → Users**). Their roles follow the provider on every sign-in, they cannot sign in by password, email link, or another provider, and their role cannot be changed in the portal. **Take over** sets a password and hands the account back to llmesh, which is the recovery path if the provider is gone.
 - Accounts created in llmesh and linked afterwards keep the role set here, so a break-glass admin's rights never depend on the provider. They are still refused at the OIDC button without a role.
-- The last active admin is never demoted by the provider.
+- The last active owner or admin never loses that role to the provider.
 
-Changes at the provider take effect at the user's next OIDC sign-in. A portal session already open lasts until it expires (24 hours), and API keys and client tokens keep working until the user is disabled here. Disabling a user in llmesh cuts off all of those immediately. Everything finer than admin/member (models, priority, concurrency, isolation) is still set in llmesh.
+Changes at the provider take effect at the user's next OIDC sign-in. A portal session already open lasts until it expires (24 hours), and API keys and client tokens keep working until the user is disabled here. Disabling a user in llmesh cuts off all of those immediately. Model access, priority, and concurrency are still set in llmesh.
 
-For Zitadel: create roles such as `llmesh-user` and `llmesh-admin` in the project and grant them to users, enable *Assert Roles on Authentication* on the project, and set the roles claim to `urn:zitadel:iam:org:project:roles`. Enabling *Check authorization on Authentication* as well makes Zitadel itself refuse users with no role.
+For Zitadel: create roles such as `llmesh-user` and `llmesh-admin` in the project and grant them to users, enable *Assert Roles on Authentication* on the project, set the roles claim to `urn:zitadel:iam:org:project:roles`, and map the roles (`llmesh-user=member`, `llmesh-admin=admin`). Enabling *Check authorization on Authentication* as well makes Zitadel itself refuse users with no role.
 
-Beyond member and admin, **more role mappings** (`provider-role=llmesh-role`, one per line) grant any other llmesh role, including custom ones; a **groups claim** with a **team mapping** (`group=team-id`) puts managed accounts in the mapped teams and takes them out when the group goes; an **attribute mapping** (`claim=attribute`) copies claims such as `department` into the attributes policies read. With **Revalidate every N minutes** set, llmesh re-checks managed accounts with the provider using a refresh token and disables any the provider has deactivated or stripped of every mapped role — which ends their sessions and stops their API keys and clients at once. An account disabled this way is restored when the provider lets it sign in again; one an admin disabled is not.
+The **role mapping** (`provider-role=llmesh-role`, one per line) can grant any llmesh role the admin saving it could grant directly, custom roles included. The member and admin role fields of earlier releases are folded into it; a **groups claim** with a **team mapping** (`group=team-id`) puts managed accounts in the mapped teams and takes them out when the group goes; an **attribute mapping** (`claim=attribute`) copies claims such as `department` into the attributes policies read. With **Revalidate every N minutes** set, llmesh re-checks managed accounts with the provider using a refresh token and disables any the provider has deactivated or stripped of every mapped role — which ends their sessions and stops their API keys and clients at once. An account disabled this way is restored when the provider lets it sign in again; one an admin disabled is not.
 
 An address is only a sign-in identity once its owner has followed a link sent to it, so claiming someone else's gets you nothing. Sign-in links last 15 minutes, work once, and are invalidated by requesting another or by changing the address. Requesting one tells you nothing about whether the address has an account here.
 
-OAuth client secrets and the SMTP password are stored in the state database in plaintext, as upstream router tokens already are. None is ever rendered back into the portal — each form shows only whether a secret is stored, and leaving its field blank keeps it. Protect the database file accordingly.
+OAuth client secrets and the SMTP password are stored in the state database in plaintext. None is ever rendered back into the portal — each form shows only whether a secret is stored, and leaving its field blank keeps it. Protect the database file accordingly.
 
 ---
 
@@ -606,7 +608,7 @@ All `/v1/*` endpoints require `Authorization: Bearer <api-key>`.
 }
 ```
 
-`GET /health` needs no auth. Alongside the router-wide `status`, `version`, `clients`, `queue_depth`, `active_jobs` and `upstreams`, it reports every model the fleet is serving. Like `/metrics`, it names no client, owner, or API key.
+`GET /health` needs no auth. Alongside the router-wide `status`, `version`, `clients`, `queue_depth` and `active_jobs` (and `upstreams`, now always an empty list), it reports every model the fleet is serving. Like `/metrics`, it names no client, owner, or API key.
 
 ```json
 {
