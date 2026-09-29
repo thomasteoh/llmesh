@@ -66,7 +66,7 @@ func BuiltinRoles() []Role {
 			Description: "Runs the fleet: clients, aliases, queue, pricing, upstreams. No users, roles, or policies.",
 			Permissions: []string{
 				"model.use", "client.use",
-				"key.create.own", "key.manage.own", "key.view.own",
+				"key.create.own", "key.manage.own", "key.view.own", "key.limits.any",
 				"client.create.any", "client.manage.any", "client.view.any", "client.share.any",
 				"usage.view.any", "job.view.any", "job.cancel.any", "queue.cancel",
 				"fleet.view", "alias.manage", "pricing.manage", "upstream.manage",

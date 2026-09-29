@@ -1,6 +1,6 @@
 # Access management v2
 
-> **Status: approved 2026-09-29; phases 1–2 implemented.** Replaces the ad-hoc admin/member checks,
+> **Status: approved 2026-09-29; phases 1–3 implemented.** Replaces the ad-hoc admin/member checks,
 > per-user isolation flags, and per-token `owner_slots` with one authorization
 > model covering the portal, inference admission, and dispatch.
 
@@ -380,3 +380,18 @@ Implementation notes (phase 2):
   policies in the meantime.
 - Until phase 3, `users.role` remains what the portal reads; promotions,
   demotions, and OIDC role sync keep the bindings in step.
+
+Implementation notes (phase 3):
+
+- Portal decisions go through `Admin.can`; `requireAdmin` is gone. Routes use
+  `requirePerm(action)`; templates branch on a `Can` capability map.
+- Added `key.limits` (priority and concurrency on a key), which the portal
+  previously reserved for admins.
+- Bindings are now the source of truth; `users.role` is derived from them
+  ("admin" when owner or admin is held) for OIDC sync and the legacy
+  promote/demote endpoints.
+- Custom roles can only contain permissions the author holds (a `.team`
+  permission requires the `.any` scope to hand out).
+- Owners are protected: changing an owner's account or granting/removing the
+  owner role takes `owner.manage`. The router always keeps at least one enabled
+  owner or admin.

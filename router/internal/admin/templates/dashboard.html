@@ -3,7 +3,7 @@
        built from, rather than the script assembling alias badges and their
        admin forms a second time in JavaScript.
 
-       Expects the fields the page uses: ActiveModels, ModelAliases, IsAdmin
+       Expects the fields the page uses: ActiveModels, ModelAliases, CanManageAliases
        and CSRFToken. Referenced as $ below, so it works the same whether it is
        reached from the page or executed directly. */ -}}
 {{define "active-models-list"}}
@@ -15,12 +15,12 @@
         {{range (index $.ModelAliases $model)}}
         <span class="alias-badge">
           {{.}}
-          {{if $.IsAdmin}}
+          {{if $.CanManageAliases}}
           {{template "action-button" dict "Action" "/portal/model-aliases/delete" "CSRF" $.CSRFToken "Fields" (dict "alias" . "model" $model) "Confirm" (printf "Remove alias %s?" .) "Class" "alias-badge-del" "Label" "✕" "Title" "Remove alias"}}
           {{end}}
         </span>
         {{end}}
-        {{if $.IsAdmin}}
+        {{if $.CanManageAliases}}
         <form method="POST" action="/portal/model-aliases" class="model-add-alias">
           <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
           <input type="hidden" name="model" value="{{$model}}">
@@ -39,14 +39,14 @@
        the same reason as active-models-list — the reachable/no-worker badge on
        each target changes as workers come and go, which is exactly what the
        poll is for, and the reorder controls carry CSRF tokens that belong to
-       the server. Expects AliasChains, IsAdmin and CSRFToken. */ -}}
+       the server. Expects AliasChains, CanManageAliases and CSRFToken. */ -}}
 {{define "alias-chain-list"}}
     {{range .AliasChains}}
     {{$alias := .Alias}}
     <div class="alias-chain">
       <div class="alias-chain-name">
         <span class="alias-badge">{{$alias}}</span>
-        {{if $.IsAdmin}}
+        {{if $.CanManageAliases}}
         {{template "action-button" dict "Action" "/portal/model-aliases/delete" "CSRF" $.CSRFToken "Fields" (dict "alias" $alias) "Confirm" (printf "Remove the whole %s alias?" $alias) "Class" "alias-badge-del" "Label" "✕" "Title" "Remove this alias entirely"}}
         {{end}}
       </div>
@@ -61,7 +61,7 @@
           {{template "status-badge" dict "Class" "offline" "Label" "○ no worker"}}
           {{end}}
           {{if .Shared}}<span class="badge muted-badge" title="Shares a tier with another target, so load is spread across them instead of one being preferred.">shared tier</span>{{end}}
-          {{if $.IsAdmin}}
+          {{if $.CanManageAliases}}
           <span class="alias-tier-actions">
             {{if .CanUp}}{{template "action-button" dict "Action" "/portal/model-aliases/reorder" "CSRF" $.CSRFToken "Fields" (dict "alias" $alias "model" .Model "dir" "up") "Class" "alias-add-btn" "Label" "↑" "Title" "Prefer this target sooner"}}{{end}}
             {{if .CanDown}}{{template "action-button" dict "Action" "/portal/model-aliases/reorder" "CSRF" $.CSRFToken "Fields" (dict "alias" $alias "model" .Model "dir" "down") "Class" "alias-add-btn" "Label" "↓" "Title" "Prefer this target later"}}{{end}}
@@ -201,7 +201,7 @@
   </table>
 </div>
 
-{{if or .IsAdmin .QueueItems}}
+{{if or .Can.queue_cancel .QueueItems}}
 <div class="collapsible mt-6" id="queue-section-wrap">
   <div class="collapsible-header queue-header" data-toggle="queue-section" onclick="toggleSection('queue-section')">
     <span class="toggle-arrow">&#9662;</span>

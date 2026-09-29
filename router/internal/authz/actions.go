@@ -36,6 +36,7 @@ var catalogue = map[string]actionInfo{
 	"key.create":      {scoped: true},
 	"key.manage":      {scoped: true},
 	"key.view":        {scoped: true},
+	"key.limits":      {scoped: true}, // priority and concurrency on a key
 	"client.create":   {scoped: true},
 	"client.manage":   {scoped: true},
 	"client.view":     {scoped: true},

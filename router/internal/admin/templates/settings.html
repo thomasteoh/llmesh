@@ -6,15 +6,14 @@
 <div class="tab-container">
   <div class="tab-bar underline">
     <button class="tab-btn active" data-tab-target="tab-password" data-tab-hash>Account</button>
-    {{if .IsAdmin}}
-    <button class="tab-btn" data-tab-target="tab-general" data-tab-hash>General</button>
-    <button class="tab-btn" data-tab-target="tab-signin" data-tab-hash>Sign-in</button>
-    <button class="tab-btn" data-tab-target="tab-users" data-tab-hash>Users</button>
-    <button class="tab-btn" data-tab-target="tab-upstreams" data-tab-hash>Upstreams</button>
-    <button class="tab-btn" data-tab-target="tab-optimization" data-tab-hash>Optimization</button>
-    <button class="tab-btn" data-tab-target="tab-pricing" data-tab-hash>Pricing</button>
-    <button class="tab-btn" data-tab-target="tab-logs" data-tab-hash data-tab-onactivate="logs">Logs</button>
-    {{end}}
+    {{if .Can.settings_manage}}<button class="tab-btn" data-tab-target="tab-general" data-tab-hash>General</button>
+    <button class="tab-btn" data-tab-target="tab-signin" data-tab-hash>Sign-in</button>{{end}}
+    {{if .Can.user_view}}<button class="tab-btn" data-tab-target="tab-users" data-tab-hash>Users</button>
+    <button class="tab-btn" data-tab-target="tab-roles" data-tab-hash>Roles</button>{{end}}
+    {{if .Can.upstream_manage}}<button class="tab-btn" data-tab-target="tab-upstreams" data-tab-hash>Upstreams</button>{{end}}
+    {{if .Can.settings_manage}}<button class="tab-btn" data-tab-target="tab-optimization" data-tab-hash>Optimization</button>{{end}}
+    {{if .Can.pricing_manage}}<button class="tab-btn" data-tab-target="tab-pricing" data-tab-hash>Pricing</button>{{end}}
+    {{if .Can.settings_view}}<button class="tab-btn" data-tab-target="tab-logs" data-tab-hash data-tab-onactivate="logs">Logs</button>{{end}}
   </div>
 
   {{/* ── Password tab ── */}}
@@ -79,10 +78,31 @@
         {{end}}{{end}}
       </div>
       {{end}}
+      <div class="card mt-3">
+        <div class="card-title">Sessions</div>
+        <p class="table-hint mb-3">Where you are signed in. Changing your password signs out everywhere but here.{{if .MyTeams}} You belong to: {{range $i, $t := .MyTeams}}{{if $i}}, {{end}}<a href="/portal/teams">{{$t}}</a>{{end}}.{{end}}</p>
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead><tr><th>Device</th><th>Address</th><th>Signed in</th><th>Last active</th><th></th></tr></thead>
+            <tbody>
+              {{range .MySessions}}
+              <tr>
+                <td class="text-xs">{{if .UserAgent}}{{.UserAgent}}{{else}}<span class="muted">unknown</span>{{end}}</td>
+                <td class="text-mono text-xs">{{.IP}}</td>
+                <td class="muted">{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
+                <td class="muted">{{.LastSeenAt.Format "2006-01-02 15:04"}}</td>
+                <td class="cell-actions">{{if eq .IDHash $.CurrentSession}}<span class="badge muted-badge">this session</span>{{else}}{{template "action-button" dict "Action" "/portal/settings/sessions/revoke" "CSRF" $.CSRFToken "Fields" (dict "session" .IDHash) "Class" "btn-secondary btn-xs" "Label" "Sign out"}}{{end}}</td>
+              </tr>
+              {{end}}
+            </tbody>
+          </table>
+        </div>
+        {{if gt (len .MySessions) 1}}<div class="mt-2">{{template "action-button" dict "Action" "/portal/settings/sessions/revoke" "CSRF" $.CSRFToken "Fields" (dict "all_others" "1") "Confirm" "Sign out every other session?" "Class" "btn-secondary" "Label" "Sign out everywhere else"}}</div>{{end}}
+      </div>
     </div>
   </div>
 
-  {{if .IsAdmin}}
+  {{if .Can.settings_manage}}
   {{/* ── General tab ── */}}
   <div id="tab-general" class="tab-panel">
     <div class="settings-narrow">
@@ -102,6 +122,8 @@
     </div>
   </div>
 
+  {{end}}
+  {{if .Can.settings_manage}}
   {{/* ── Sign-in tab ── */}}
   <div id="tab-signin" class="tab-panel">
     <div class="settings-narrow">
@@ -255,56 +277,80 @@
     </div>
   </div>
 
+  {{end}}
+  {{if .Can.user_view}}
   {{/* ── Users tab ── */}}
   <div id="tab-users" class="tab-panel">
     <div class="mt-2">
       <div class="section-header">
         <div class="section-title">Users</div>
+        {{if .Can.user_manage}}
         <form method="POST" action="/portal/settings/users" class="inline-form">
           <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
           <input name="username" placeholder="username" class="inline-input">
           <input name="password" type="password" placeholder="password" class="inline-input">
           <button type="submit" class="btn">Add user</button>
         </form>
+        {{end}}
       </div>
       <div class="table-scroll">
         <table class="data-table">
-          <thead><tr><th>Username</th><th>Role</th><th>Status</th><th>Isolation</th><th></th></tr></thead>
+          <thead><tr><th>Username</th><th>Roles</th><th>Status</th><th>Isolation</th><th></th></tr></thead>
           <tbody>
-            {{range .Users}}
-            <tr{{if .Disabled}} class="row-dim"{{end}}>
-              <td>{{.Username}}{{if .IsSelf}} <span class="muted">(you)</span>{{end}}</td>
-              <td>{{template "status-badge" dict "Class" .Role "Label" .Role}}{{if .ManagedBy}} <span class="badge muted-badge" title="Created by single sign-on; role follows the identity provider">SSO</span>{{end}}</td>
-              <td>{{if .Disabled}}{{template "status-badge" dict "Class" "disabled" "Label" "disabled"}}{{else}}{{template "status-badge" dict "Class" "active" "Label" "active"}}{{end}}</td>
+            {{range $u := .Users}}
+            <tr{{if $u.Disabled}} class="row-dim"{{end}}>
+              <td>{{$u.Username}}{{if $u.IsSelf}} <span class="muted">(you)</span>{{end}}{{if $u.ManagedBy}} <span class="badge muted-badge" title="Created by single sign-on; role follows the identity provider">SSO</span>{{end}}</td>
               <td>
-                <div class="flex gap-1">
-                  {{if .SendIsolation}}
-                    {{template "action-button" dict "Action" "/portal/settings/users/isolation" "CSRF" $.CSRFToken "Fields" (dict "username" .Username "field" "send" "value" "0") "Class" "btn-danger btn-xs" "Label" "Send: isolated" "Title" "Requests run only on this user's own clients — click to share"}}
-                  {{else}}
-                    {{template "action-button" dict "Action" "/portal/settings/users/isolation" "CSRF" $.CSRFToken "Fields" (dict "username" .Username "field" "send" "value" "1") "Class" "btn-secondary btn-xs" "Label" "Send: shared" "Title" "Requests may use any client — click to isolate to own clients"}}
-                  {{end}}
-                  {{if .ReceiveIsolation}}
-                    {{template "action-button" dict "Action" "/portal/settings/users/isolation" "CSRF" $.CSRFToken "Fields" (dict "username" .Username "field" "receive" "value" "0") "Class" "btn-danger btn-xs" "Label" "Recv: isolated" "Title" "This user's clients serve only their own requests — click to share"}}
-                  {{else}}
-                    {{template "action-button" dict "Action" "/portal/settings/users/isolation" "CSRF" $.CSRFToken "Fields" (dict "username" .Username "field" "receive" "value" "1") "Class" "btn-secondary btn-xs" "Label" "Recv: shared" "Title" "This user's clients may serve anyone — click to isolate to own requests"}}
+                <div class="flex gap-1 items-center role-chips">
+                  {{range $u.Roles}}
+                  <span class="badge {{.}}">{{.}}{{if and $.Can.user_manage (eq $u.ManagedBy "")}}{{template "action-button" dict "Action" "/portal/settings/users/roles/remove" "CSRF" $.CSRFToken "Fields" (dict "username" $u.Username "role" .) "Confirm" (printf "Remove the %s role from %s?" . $u.Username) "Class" "chip-remove" "Label" "✕" "Title" "Remove role"}}{{end}}</span>
+                  {{else}}<span class="muted">none</span>{{end}}
+                  {{if and $.Can.user_manage (eq $u.ManagedBy "")}}
+                  <form method="POST" action="/portal/settings/users/roles/add" class="inline-flex items-center gap-1">
+                    <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+                    <input type="hidden" name="username" value="{{$u.Username}}">
+                    <select name="role" class="select-xs" aria-label="Add a role to {{$u.Username}}" required>
+                      <option value="" disabled selected>add role…</option>
+                      {{range $.Roles}}{{if not .TeamRole}}{{if or (ne .ID "owner") $.Can.owner_manage}}<option value="{{.ID}}">{{.Name}}</option>{{end}}{{end}}{{end}}
+                    </select>
+                    <button type="submit" class="btn-secondary btn-xs" title="Add role">+</button>
+                  </form>
                   {{end}}
                 </div>
               </td>
-              <td class="cell-actions">
-                {{if not .IsSelf}}
-                <div class="flex gap-1 justify-end">
-                  {{if .Disabled}}
-                    {{template "action-button" dict "Action" "/portal/settings/users/enable" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Class" "btn-success" "Label" "Enable"}}
-                    {{template "action-button" dict "Action" "/portal/settings/users/delete" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Confirm" (printf "Delete %s permanently? Their API keys and client tokens will be revoked. This cannot be undone." .Username) "Class" "btn-danger" "Label" "Delete"}}
+              <td>{{if $u.Disabled}}{{template "status-badge" dict "Class" "disabled" "Label" "disabled"}}{{else}}{{template "status-badge" dict "Class" "active" "Label" "active"}}{{end}}</td>
+              <td>
+                {{if $.Can.user_manage}}
+                <div class="flex gap-1">
+                  {{if $u.SendIsolation}}
+                    {{template "action-button" dict "Action" "/portal/settings/users/isolation" "CSRF" $.CSRFToken "Fields" (dict "username" $u.Username "field" "send" "value" "0") "Class" "btn-danger btn-xs" "Label" "Send: isolated" "Title" "Requests run only on this user's own clients — click to share"}}
                   {{else}}
-                    {{if .ManagedBy}}
-                    {{template "action-button" dict "Action" "/portal/settings/users/reset-password" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Confirm" (printf "Set a password for %s? The account stops being managed by single sign-on: its role will no longer follow the identity provider and it can sign in any way. A temporary password will be shown once." .Username) "Class" "btn-secondary" "Label" "Take over"}}
+                    {{template "action-button" dict "Action" "/portal/settings/users/isolation" "CSRF" $.CSRFToken "Fields" (dict "username" $u.Username "field" "send" "value" "1") "Class" "btn-secondary btn-xs" "Label" "Send: shared" "Title" "Requests may use any client — click to isolate to own clients"}}
+                  {{end}}
+                  {{if $u.ReceiveIsolation}}
+                    {{template "action-button" dict "Action" "/portal/settings/users/isolation" "CSRF" $.CSRFToken "Fields" (dict "username" $u.Username "field" "receive" "value" "0") "Class" "btn-danger btn-xs" "Label" "Recv: isolated" "Title" "This user's clients serve only their own requests — click to share"}}
+                  {{else}}
+                    {{template "action-button" dict "Action" "/portal/settings/users/isolation" "CSRF" $.CSRFToken "Fields" (dict "username" $u.Username "field" "receive" "value" "1") "Class" "btn-secondary btn-xs" "Label" "Recv: shared" "Title" "This user's clients may serve anyone — click to isolate to own requests"}}
+                  {{end}}
+                </div>
+                {{else}}
+                <span class="muted">{{if $u.SendIsolation}}send isolated{{end}}{{if and $u.SendIsolation $u.ReceiveIsolation}}, {{end}}{{if $u.ReceiveIsolation}}receive isolated{{end}}{{if not (or $u.SendIsolation $u.ReceiveIsolation)}}shared{{end}}</span>
+                {{end}}
+              </td>
+              <td class="cell-actions">
+                {{if and $.Can.user_manage (not $u.IsSelf)}}
+                <div class="flex gap-1 justify-end">
+                  {{if $u.Disabled}}
+                    {{template "action-button" dict "Action" "/portal/settings/users/enable" "CSRF" $.CSRFToken "Fields" (dict "username" $u.Username) "Class" "btn-success" "Label" "Enable"}}
+                    {{template "action-button" dict "Action" "/portal/settings/users/delete" "CSRF" $.CSRFToken "Fields" (dict "username" $u.Username) "Confirm" (printf "Delete %s permanently? Their API keys and client tokens will be revoked. This cannot be undone." $u.Username) "Class" "btn-danger" "Label" "Delete"}}
+                  {{else}}
+                    {{if $u.ManagedBy}}
+                    {{template "action-button" dict "Action" "/portal/settings/users/reset-password" "CSRF" $.CSRFToken "Fields" (dict "username" $u.Username) "Confirm" (printf "Set a password for %s? The account stops being managed by single sign-on: its role will no longer follow the identity provider and it can sign in any way. A temporary password will be shown once." $u.Username) "Class" "btn-secondary" "Label" "Take over"}}
                     {{else}}
-                    {{if eq .Role "admin"}}{{template "action-button" dict "Action" "/portal/settings/users/demote" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Confirm" (printf "Demote %s from admin to member?" .Username) "Class" "btn-secondary" "Label" "Demote"}}{{end}}
-                    {{if eq .Role "member"}}{{template "action-button" dict "Action" "/portal/settings/users/promote" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Class" "btn-secondary" "Label" "Promote"}}{{end}}
-                    {{template "action-button" dict "Action" "/portal/settings/users/reset-password" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Confirm" (printf "Reset the password for %s? A temporary password will be shown once." .Username) "Class" "btn-secondary" "Label" "Reset password"}}
+                    {{template "action-button" dict "Action" "/portal/settings/users/reset-password" "CSRF" $.CSRFToken "Fields" (dict "username" $u.Username) "Confirm" (printf "Reset the password for %s? A temporary password will be shown once, and they will be signed out everywhere." $u.Username) "Class" "btn-secondary" "Label" "Reset password"}}
                     {{end}}
-                    {{template "action-button" dict "Action" "/portal/settings/users/disable" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Confirm" (printf "Disable %s? They will not be able to sign in." .Username) "Class" "btn-danger" "Label" "Disable"}}
+                    {{template "action-button" dict "Action" "/portal/settings/users/sign-out" "CSRF" $.CSRFToken "Fields" (dict "username" $u.Username) "Confirm" (printf "Sign %s out of every session?" $u.Username) "Class" "btn-secondary" "Label" "Sign out"}}
+                    {{template "action-button" dict "Action" "/portal/settings/users/disable" "CSRF" $.CSRFToken "Fields" (dict "username" $u.Username) "Confirm" (printf "Disable %s? They will be signed out, and their keys and clients will stop working." $u.Username) "Class" "btn-danger" "Label" "Disable"}}
                   {{end}}
                 </div>
                 {{end}}
@@ -314,10 +360,60 @@
           </tbody>
         </table>
       </div>
-      <p class="table-hint">Cannot disable or demote yourself. At least one active admin must remain. Isolation limits a user's routing: <em>Send</em> keeps their requests on their own clients; <em>Recv</em> keeps their clients serving only their own requests. The two are independent.</p>
+      <p class="table-hint">Roles are named sets of permissions; see the Roles tab. Only an owner can grant the owner role or change an owner's account. At least one active admin or owner must remain. Isolation limits a user's routing: <em>Send</em> keeps their requests on their own clients; <em>Recv</em> keeps their clients serving only their own requests.</p>
     </div>
   </div>
 
+  {{end}}
+  {{if .Can.user_view}}
+  {{/* ── Roles tab ── */}}
+  <div id="tab-roles" class="tab-panel">
+    <div class="mt-2">
+      <div class="section-header"><div class="section-title">Roles</div></div>
+      <p class="table-hint mb-3">A role is a named set of permissions. Permissions ending <code>.own</code> reach what a user owns, <code>.team</code> what their teams own, and <code>.any</code> everything. Built-in roles cannot be changed; create a custom role to grant a different set. Which models someone may use is decided by model access rules, not roles.</p>
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>Role</th><th>Description</th><th>Permissions</th><th></th></tr></thead>
+          <tbody>
+            {{range .Roles}}
+            <tr>
+              <td><strong>{{.Name}}</strong><br><span class="muted text-mono text-xs">{{.ID}}</span>{{if .Builtin}} <span class="badge muted-badge">built-in</span>{{end}}{{if .TeamRole}} <span class="badge muted-badge">team</span>{{end}}</td>
+              <td class="muted">{{.Description}}</td>
+              <td class="text-xs text-mono">{{range $i, $p := .Permissions}}{{if $i}}, {{end}}{{$p}}{{end}}</td>
+              <td class="cell-actions">{{if and $.Can.role_manage (not .Builtin)}}{{template "action-button" dict "Action" "/portal/settings/roles/delete" "CSRF" $.CSRFToken "Fields" (dict "id" .ID) "Confirm" (printf "Delete the %s role? Everyone holding it loses its permissions." .ID) "Class" "btn-danger btn-xs icon-btn" "Label" "✕" "Title" "Delete"}}{{end}}</td>
+            </tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+      {{if .Can.role_manage}}
+      <div class="card mt-3">
+        <div class="card-title">Create or replace a custom role</div>
+        <form method="POST" action="/portal/settings/roles">
+          <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+          <div class="form-row mb-3">
+            <div class="form-group"><label>ID</label><input name="id" placeholder="billing" autocomplete="off"></div>
+            <div class="form-group flex-2"><label>Name</label><input name="name" placeholder="Billing" autocomplete="off"></div>
+          </div>
+          <div class="form-group mb-3"><label>Description</label><input name="description" autocomplete="off"></div>
+          <div class="perm-grid mb-3">
+            {{range .PermissionGroups}}
+            <fieldset class="perm-group">
+              <legend>{{.Resource}}</legend>
+              {{range .Permissions}}<label class="perm-item"><input type="checkbox" name="perm" value="{{.}}"> <code>{{.}}</code></label>{{end}}
+            </fieldset>
+            {{end}}
+          </div>
+          <p class="field-desc mb-3">You can only grant permissions you hold yourself. Saving an existing custom role's ID replaces it.</p>
+          <button type="submit" class="btn">Save role</button>
+        </form>
+      </div>
+      {{end}}
+    </div>
+  </div>
+
+  {{end}}
+  {{if .Can.upstream_manage}}
   {{/* ── Upstreams tab ── */}}
   <div id="tab-upstreams" class="tab-panel">
     <div class="mt-2">
@@ -373,6 +469,8 @@
     </div>
   </div>
 
+  {{end}}
+  {{if .Can.settings_manage}}
   {{/* ── Optimization tab ── */}}
   <div id="tab-optimization" class="tab-panel">
     <div class="settings-narrow">
@@ -413,6 +511,8 @@
     </div>
   </div>
 
+  {{end}}
+  {{if .Can.pricing_manage}}
   {{/* ── Pricing tab ── */}}
   <div id="tab-pricing" class="tab-panel">
     <div class="card">
@@ -481,6 +581,8 @@
     </div>
   </div>
 
+  {{end}}
+  {{if .Can.settings_view}}
   {{/* ── Logs tab ── */}}
   <div id="tab-logs" class="tab-panel">
     <div class="logs-toolbar">

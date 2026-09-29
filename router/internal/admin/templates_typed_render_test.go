@@ -16,7 +16,7 @@ import (
 // so they are the ones worth pinning to the real types.
 func TestTemplatesRenderAgainstRealStructs(t *testing.T) {
 	bp := basePage{
-		Page: "clients", Username: "alice", IsAdmin: true, CSRFToken: "csrf",
+		Page: "clients", Username: "alice", Can: allCaps(true), RoleBadge: "admin", CSRFToken: "csrf",
 		RouterVersion: "v1.2.3", Name: "llmesh", Host: "llm.example.com",
 	}
 	now := time.Now()
@@ -73,7 +73,7 @@ func TestTemplatesRenderAgainstRealStructs(t *testing.T) {
 		renderPage(t, "clients", adminPage)
 
 		memberBase := bp
-		memberBase.IsAdmin = false
+		memberBase.Can, memberBase.RoleBadge = allCaps(false), ""
 		renderPage(t, "clients", ClientTokensPage{basePage: memberBase, Tokens: tokens})
 	})
 
@@ -156,7 +156,7 @@ func TestTemplatesRenderAgainstRealStructs(t *testing.T) {
 			t.Run(name, func(t *testing.T) { renderPage(t, "settings", page) })
 
 			member := page
-			member.IsAdmin = false
+			member.Can, member.RoleBadge = allCaps(false), ""
 			t.Run(name+"/member", func(t *testing.T) { renderPage(t, "settings", member) })
 		}
 	})

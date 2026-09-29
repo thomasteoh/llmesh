@@ -11,6 +11,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 	"llmesh/pkg/types"
+	"llmesh/router/internal/authz"
 	"llmesh/router/internal/hub"
 	"llmesh/router/internal/stats"
 )
@@ -36,9 +37,13 @@ func clientStatusBadge(connCount int, hasLastSeen bool) (status, class, label st
 // --- Shared page data types ---
 
 type basePage struct {
-	Page          string
-	Username      string
-	IsAdmin       bool
+	Page     string
+	Username string
+	// Can holds the viewer's router-wide capabilities, keyed with '_' for
+	// '.' ("alias_manage"); see Admin.capabilities.
+	Can map[string]bool
+	// RoleBadge names the viewer's senior role when it is not plain member.
+	RoleBadge     string
 	Flash         string
 	Error         string
 	CSRFToken     string
@@ -69,7 +74,10 @@ type DashboardPage struct {
 	StatsByModel  []StatRow
 	StatsByUser   []StatRow
 	QueueLen      int
-	QueueItems    []QueuedJobRow // filtered to the requesting user's own items for non-admins
+	QueueItems    []QueuedJobRow // filtered to the jobs the viewer may see
+	// CanManageAliases draws the alias controls; shared with the poll's
+	// fragment data, which carries the same flag.
+	CanManageAliases bool
 }
 
 // AliasChainRow is one alias and its preference-ordered targets, for the
@@ -224,12 +232,10 @@ type ClientTokenRow struct {
 // by the Clients page and the connections API so a connection inserted by the
 // page's script carries the same fields, and the same cancel permissions, as one
 // the server rendered.
-func (a *Admin) buildConnRow(ci hub.ConnectedClientInfo, u User, t ClientToken, csrf string) ConnectedClientRow {
-	isAdmin := u.Role == "admin"
-	isTokenOwner := t.Owner == u.Username
+func (a *Admin) buildConnRow(r *http.Request, ci hub.ConnectedClientInfo, t ClientToken, csrf string) ConnectedClientRow {
 	var jobs []InFlightJobRow
 	for _, rec := range a.hub.InFlightJobsByClientID(ci.ID) {
-		canCancel := isAdmin || rec.Req.Owner == u.Username || isTokenOwner
+		_, canCancel := a.jobAccess(r, rec.Req.ID, rec.Req.Owner, t.Owner)
 		jobs = append(jobs, buildInFlightJobRow(rec, csrf, canCancel))
 	}
 	return ConnectedClientRow{
@@ -478,6 +484,15 @@ type SettingsPage struct {
 	// settings only an admin sees, and the identities the viewing user has
 	// linked to their own account.
 	Auth AuthSettings
+
+	// Access management: every role (for the Users tab's picker and the Roles
+	// tab), the permission catalogue for the role editor, and the viewer's own
+	// sessions and teams for the Account tab.
+	Roles            []RoleOption
+	PermissionGroups []PermissionGroup
+	MySessions       []SessionInfo
+	CurrentSession   string // id hash of the session viewing the page
+	MyTeams          []string
 }
 
 // AuthSettings is the settings page's view of alternative sign-in.
@@ -612,6 +627,8 @@ func modelPricingRows(pricing map[string]ModelPricing, liveModels, usageModels [
 type UserRow struct {
 	User
 	IsSelf bool
+	// Roles are the user's router-wide role ids.
+	Roles []string
 }
 
 // aliasChainRows builds the preference-ordered view of every alias. liveModels is
@@ -662,10 +679,13 @@ func (a *Admin) newBasePage(page string, u User, r *http.Request) basePage {
 	bp := basePage{
 		Page:          page,
 		Username:      u.Username,
-		IsAdmin:       u.Role == "admin",
+		Can:           a.capabilities(r),
 		RouterVersion: a.routerVersion,
 		Name:          a.name,
 		Host:          a.effectiveHost(r),
+	}
+	if role := topRole(a.subject(r)); role != authz.RoleMember {
+		bp.RoleBadge = role
 	}
 	// Read the session's CSRF token (set once at login, stable for the session).
 	// Session-scoped tokens let concurrent tabs for the same user operate independently.
@@ -681,13 +701,13 @@ func (a *Admin) newBasePage(page string, u User, r *http.Request) basePage {
 
 // filterQueueForUser returns only the queue items visible to u.
 // Admins see all items; members see only their own.
-func filterQueueForUser(items []types.InferenceRequest, u User) []types.InferenceRequest {
-	if u.Role == "admin" {
+func (a *Admin) filterQueue(r *http.Request, items []types.InferenceRequest) []types.InferenceRequest {
+	if a.canAny(r, "job.view") {
 		return items
 	}
 	var out []types.InferenceRequest
 	for _, req := range items {
-		if req.Owner == u.Username {
+		if a.can(r, "job.view", ownedResource("job", req.ID, req.Owner)) {
 			out = append(out, req)
 		}
 	}
@@ -797,9 +817,11 @@ func (a *Admin) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		StatsByModel:  statsRows(a.stats, true),
 		StatsByUser:   statsRows(a.stats, false),
 	}
+	data.CanManageAliases = a.canDo(r, "alias.manage")
 	if a.queue != nil {
 		snap := a.queue.Snapshot()
-		visible := filterQueueForUser(snap, u)
+		visible := a.filterQueue(r, snap)
+		canCancel := a.canDo(r, "queue.cancel")
 		data.QueueLen = len(snap) // total depth for header badge
 		data.QueueItems = make([]QueuedJobRow, 0, len(visible))
 		for _, req := range visible {
@@ -812,7 +834,7 @@ func (a *Admin) handleDashboard(w http.ResponseWriter, r *http.Request) {
 				EnqueuedAt:    humanTime(req.EnqueuedAt),
 				EnqueuedAtISO: req.EnqueuedAt.UTC().Format(time.RFC3339),
 				WordCount:     req.WordCount,
-				CanCancel:     u.Role == "admin",
+				CanCancel:     canCancel,
 			})
 		}
 	}
@@ -827,17 +849,12 @@ func (a *Admin) handleAPIKeys(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Admin) renderAPIKeys(w http.ResponseWriter, r *http.Request, u User, newKey, formErr string) {
-	keys := a.state.APIKeysFor(u.Username, u.Role == "admin")
 	page := APIKeysPage{
 		basePage:  a.newBasePage("api-keys", u, r),
-		Keys:      keys,
+		Keys:      a.visibleAPIKeys(r),
 		NewKey:    newKey,
 		FormError: formErr,
-	}
-	if u.Role == "admin" {
-		for _, us := range a.state.Users() {
-			page.Users = append(page.Users, us.Username)
-		}
+		Users:     a.ownerChoices(r, "key.create"),
 	}
 	a.render(w, "api-keys", page)
 }
@@ -857,18 +874,12 @@ func (a *Admin) handleAPIKeyCreate(w http.ResponseWriter, r *http.Request) {
 		a.renderAPIKeys(w, r, u, "", "Label is required.")
 		return
 	}
-	// Admins may create a key on behalf of another user.
-	owner := u.Username
-	if u.Role == "admin" {
-		if forUser := strings.TrimSpace(r.FormValue("for_user")); forUser != "" && forUser != u.Username {
-			if _, ok := a.state.LookupUser(forUser); !ok {
-				a.renderAPIKeys(w, r, u, "", fmt.Sprintf("User %q not found.", forUser))
-				return
-			}
-			owner = forUser
-		}
+	owner, msg := a.credentialOwner(r, "key.create", r.FormValue("for_user"))
+	if msg != "" {
+		a.renderAPIKeys(w, r, u, "", msg)
+		return
 	}
-	keyVal, err := GenAPIKeyValue(owner)
+	keyVal, err := GenAPIKeyValue(secretOwnerPart(owner))
 	if err != nil {
 		a.renderAPIKeys(w, r, u, "", "Failed to generate key.")
 		return
@@ -907,11 +918,13 @@ func (a *Admin) handleAPIKeyRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 	keyHash := r.FormValue("key_hash")
 	// Resolve the label before deletion so the audit entry names the key.
-	target := ""
-	if k, ok := a.state.LookupAPIKeyByHash(keyHash); ok {
-		target = k.Owner + "/" + k.Label
+	k, ok := a.state.LookupAPIKeyByHash(keyHash)
+	if !ok || !a.can(r, "key.manage", ownedResource("key", k.KeyHash, k.Owner)) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
 	}
-	if err := a.state.RevokeAPIKey(u.Username, keyHash, u.Role == "admin"); err != nil {
+	target := k.Owner + "/" + k.Label
+	if err := a.state.RevokeAPIKey(u.Username, keyHash, true); err != nil {
 		a.log.Warn("admin: api key revoke failed", "actor", u.Username, "error", err)
 	} else {
 		a.state.RecordAudit(u.Username, "api_key.revoke", target, a.clientIP(r))
@@ -929,16 +942,13 @@ func (a *Admin) handleClientTokens(w http.ResponseWriter, r *http.Request) {
 func (a *Admin) renderClientTokens(w http.ResponseWriter, r *http.Request, u User, newToken, formErr string) {
 	bp := a.newBasePage("clients", u, r)
 
-	rawTokens := a.state.ClientTokensFor(u.Username, u.Role == "admin")
+	rawTokens := a.visibleClientTokens(r)
 
 	// Recent performance per machine, fetched once for the whole page rather than
 	// per row. Members see only the speed of their own requests; admins see the
 	// machine's aggregate across every caller. A query failure degrades to a page
 	// without the perf columns instead of a page that won't render.
-	perfOwner := ""
-	if u.Role != "admin" {
-		perfOwner = u.Username
-	}
+	perfOwner := a.ownerScope(r, "usage.view")
 	perfUntil := time.Now()
 	perfSince := perfUntil.Add(-clientPerfWindow)
 	perfByClient, err := a.state.PerfByClient(perfSince, perfUntil, perfOwner)
@@ -961,7 +971,7 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, r *http.Request, u Use
 		if len(connInfos) > 0 {
 			row.Status, row.StatusClass, row.StatusLabel = clientStatusBadge(len(connInfos), false)
 			for _, ci := range connInfos {
-				conn := a.buildConnRow(ci, u, t, bp.CSRFToken)
+				conn := a.buildConnRow(r, ci, t, bp.CSRFToken)
 				if conn.IsRouter {
 					row.IsRouter = true
 				}
@@ -981,11 +991,9 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, r *http.Request, u Use
 		NewToken:  newToken,
 		FormError: formErr,
 	}
-	if u.Role == "admin" {
+	page.Users = a.ownerChoices(r, "client.create")
+	if a.canDo(r, "fleet.view") {
 		page.Groups = buildClientGroups(rows)
-		for _, us := range a.state.Users() {
-			page.Users = append(page.Users, us.Username)
-		}
 	} else {
 		page.Tokens = rows
 	}
@@ -1003,18 +1011,12 @@ func (a *Admin) handleClientTokenCreate(w http.ResponseWriter, r *http.Request) 
 		a.renderClientTokens(w, r, u, "", "Name is required.")
 		return
 	}
-	// Admins may create a token on behalf of another user.
-	owner := u.Username
-	if u.Role == "admin" {
-		if forUser := strings.TrimSpace(r.FormValue("for_user")); forUser != "" && forUser != u.Username {
-			if _, ok := a.state.LookupUser(forUser); !ok {
-				a.renderClientTokens(w, r, u, "", fmt.Sprintf("User %q not found.", forUser))
-				return
-			}
-			owner = forUser
-		}
+	owner, msg := a.credentialOwner(r, "client.create", r.FormValue("for_user"))
+	if msg != "" {
+		a.renderClientTokens(w, r, u, "", msg)
+		return
 	}
-	tokVal, err := GenClientTokenValue(owner)
+	tokVal, err := GenClientTokenValue(secretOwnerPart(owner))
 	if err != nil {
 		a.renderClientTokens(w, r, u, "", "Failed to generate token.")
 		return
@@ -1041,11 +1043,13 @@ func (a *Admin) handleClientTokenRevoke(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	tokenHash := r.FormValue("token_hash")
-	target := ""
-	if t, ok := a.state.LookupClientTokenByHash(tokenHash); ok {
-		target = t.Owner + "/" + t.Name
+	t, ok := a.state.LookupClientTokenByHash(tokenHash)
+	if !ok || !a.can(r, "client.manage", ownedResource("client", t.TokenHash, t.Owner)) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
 	}
-	if err := a.state.RevokeClientToken(u.Username, tokenHash, u.Role == "admin"); err != nil {
+	target := t.Owner + "/" + t.Name
+	if err := a.state.RevokeClientToken(u.Username, tokenHash, true); err != nil {
 		a.log.Warn("admin: client token revoke failed", "actor", u.Username, "error", err)
 	} else {
 		a.hub.CloseByToken(tokenHash)
@@ -1076,7 +1080,12 @@ func (a *Admin) handleClientTokenOwnerSlots(w http.ResponseWriter, r *http.Reque
 		}
 		slots = n
 	}
-	if err := a.state.SetClientTokenOwnerSlots(u.Username, tokenHash, model, slots, u.Role == "admin"); err != nil {
+	t, ok := a.state.LookupClientTokenByHash(tokenHash)
+	if !ok || !a.can(r, "client.share", ownedResource("client", t.TokenHash, t.Owner)) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if err := a.state.SetClientTokenOwnerSlots(u.Username, tokenHash, model, slots, true); err != nil {
 		a.log.Warn("admin: owner slots update rejected", "actor", u.Username, "error", err)
 		redirectOrRefresh(w, r, "/portal/clients")
 		return
@@ -1087,7 +1096,6 @@ func (a *Admin) handleClientTokenOwnerSlots(w http.ResponseWriter, r *http.Reque
 
 // handleClientTokenConfig serves a pre-filled config.yaml for the given token.
 func (a *Admin) handleClientTokenConfig(w http.ResponseWriter, r *http.Request) {
-	u := ctxGetUser(r)
 	token := r.URL.Query().Get("token")
 	if token == "" {
 		http.Error(w, "token required", http.StatusBadRequest)
@@ -1098,7 +1106,7 @@ func (a *Admin) handleClientTokenConfig(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "token not found", http.StatusNotFound)
 		return
 	}
-	if ct.Owner != u.Username && u.Role != "admin" {
+	if !a.can(r, "client.view", ownedResource("client", ct.TokenHash, ct.Owner)) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -1110,7 +1118,6 @@ func (a *Admin) handleClientTokenConfig(w http.ResponseWriter, r *http.Request) 
 
 // handleShimConfig serves a pre-filled shim config.yaml for the given client token.
 func (a *Admin) handleShimConfig(w http.ResponseWriter, r *http.Request) {
-	u := ctxGetUser(r)
 	token := r.URL.Query().Get("token")
 	if token == "" {
 		http.Error(w, "token required", http.StatusBadRequest)
@@ -1121,7 +1128,7 @@ func (a *Admin) handleShimConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "token not found", http.StatusNotFound)
 		return
 	}
-	if ct.Owner != u.Username && u.Role != "admin" {
+	if !a.can(r, "client.view", ownedResource("client", ct.TokenHash, ct.Owner)) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -1274,7 +1281,7 @@ func (a *Admin) renderSettings(w http.ResponseWriter, r *http.Request, u User, f
 	users := a.state.Users()
 	rows := make([]UserRow, 0, len(users))
 	for _, usr := range users {
-		rows = append(rows, UserRow{User: usr, IsSelf: usr.Username == u.Username})
+		rows = append(rows, UserRow{User: usr, IsSelf: usr.Username == u.Username, Roles: a.globalRoles(usr.Username)})
 	}
 	upstream := a.state.GetUpstreamRouters()
 	upstreamRows := make([]UpstreamRouterRow, 0, len(upstream))
@@ -1296,6 +1303,12 @@ func (a *Admin) renderSettings(w http.ResponseWriter, r *http.Request, u User, f
 	if err != nil {
 		a.log.Error("admin: usage models query", "error", err)
 	}
+	mySessions, _ := a.state.Sessions(u.Username)
+	current := ""
+	if c, err := r.Cookie(sessionCookie); err == nil {
+		current = hashToken(c.Value)
+	}
+	myTeams, _ := a.state.TeamsOf(u.Username)
 	a.render(w, "settings", SettingsPage{
 		basePage:   bp,
 		Users:      rows,
@@ -1305,6 +1318,12 @@ func (a *Admin) renderSettings(w http.ResponseWriter, r *http.Request, u User, f
 		Pricing:    modelPricingRows(pricing, activeModels, usageModels),
 		Currency:   a.state.CostCurrency(),
 		Auth:       a.authSettings(r, u),
+
+		Roles:            a.roleOptions(),
+		PermissionGroups: permissionGroups(),
+		MySessions:       mySessions,
+		CurrentSession:   current,
+		MyTeams:          myTeams,
 	})
 }
 
@@ -1642,8 +1661,16 @@ func (a *Admin) handleUserDisable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	target := r.FormValue("username")
+	if msg := a.userChangeRefused(r, target); msg != "" {
+		a.renderSettings(w, r, u, "", msg)
+		return
+	}
 	if target == u.Username {
 		a.renderSettings(w, r, u, "", "Cannot disable yourself.")
+		return
+	}
+	if a.state.isPrivileged(target) && a.state.otherActivePrivileged(target) == 0 {
+		a.renderSettings(w, r, u, "", "Cannot disable the last admin account.")
 		return
 	}
 	if err := a.state.UpdateUser(target, func(user *User) { user.Disabled = true }); err != nil {
@@ -1700,6 +1727,10 @@ func (a *Admin) handleUserDemote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	target := r.FormValue("username")
+	if msg := a.userChangeRefused(r, target); msg != "" {
+		a.renderSettings(w, r, u, "", msg)
+		return
+	}
 	if msg := a.roleManagedElsewhere(target); msg != "" {
 		a.renderSettings(w, r, u, "", msg)
 		return
@@ -1719,6 +1750,10 @@ func (a *Admin) handleUserResetPassword(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	target := r.FormValue("username")
+	if msg := a.userChangeRefused(r, target); msg != "" {
+		a.renderSettings(w, r, u, "", msg)
+		return
+	}
 	if target == u.Username {
 		a.renderSettings(w, r, u, "", "Use Change Password to update your own account.")
 		return
@@ -1778,6 +1813,10 @@ func (a *Admin) handleUserDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	target := r.FormValue("username")
+	if msg := a.userChangeRefused(r, target); msg != "" {
+		a.renderSettings(w, r, u, "", msg)
+		return
+	}
 	if err := a.state.DeleteUser(u.Username, target); err != nil {
 		a.renderSettings(w, r, u, "", err.Error())
 		return
@@ -1859,6 +1898,10 @@ func (a *Admin) handleAPIKeyPriority(w http.ResponseWriter, r *http.Request) {
 	}
 	keyHash := r.FormValue("key_hash")
 	priority := r.FormValue("priority")
+	if !a.canKeyLimits(r, keyHash) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
 	if err := a.state.UpdateAPIKeyPriority(keyHash, priority); err != nil {
 		http.Error(w, "could not update priority: "+err.Error(), http.StatusBadRequest)
 		return
@@ -1875,6 +1918,10 @@ func (a *Admin) handleAPIKeyMaxConcurrent(w http.ResponseWriter, r *http.Request
 	}
 	keyHash := r.FormValue("key_hash")
 	limitStr := strings.TrimSpace(r.FormValue("max_concurrent"))
+	if !a.canKeyLimits(r, keyHash) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
 	var limit int
 	if limitStr != "" {
 		n, err := strconv.Atoi(limitStr)
@@ -1922,14 +1969,11 @@ func buildClientGroups(rows []ClientTokenRow) []ClientUserGroup {
 // --- Job / Queue cancel ---
 
 func (a *Admin) handleJobCancel(w http.ResponseWriter, r *http.Request) {
-	u := ctxGetUser(r)
 	reqID := r.FormValue("request_id")
 	rec, ok := a.hub.LookupInFlightJob(reqID)
 	if ok {
 		// rec.ClientToken holds the token hash (the hub never sees plaintext).
-		ct, ctOK := a.state.LookupClientTokenByHash(rec.ClientToken)
-		isClientOwner := ctOK && ct.Owner == u.Username
-		if u.Role != "admin" && rec.Req.Owner != u.Username && !isClientOwner {
+		if _, cancel := a.jobAccess(r, rec.Req.ID, rec.Req.Owner, rec.ClientOwner); !cancel {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -1972,4 +2016,14 @@ func humanTime(t time.Time) string {
 	default:
 		return t.Format("2006-01-02")
 	}
+}
+
+// canKeyLimits reports whether the user may change a key's priority or
+// concurrency limit.
+func (a *Admin) canKeyLimits(r *http.Request, keyHash string) bool {
+	k, ok := a.state.LookupAPIKeyByHash(keyHash)
+	if !ok {
+		return false
+	}
+	return a.can(r, "key.limits", ownedResource("key", k.KeyHash, k.Owner))
 }

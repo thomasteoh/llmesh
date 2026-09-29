@@ -33,9 +33,9 @@
         <label>Label</label>
         <div class="prefix-wrap"><span class="prefix">{{.Username}}/</span><input name="label" placeholder="prod-agents"></div>
       </div>
-      {{if .IsAdmin}}
+      {{if .Users}}
       <div class="form-group" style="flex:1;">
-        <label>For user <span class="muted">(optional)</span></label>
+        <label>Owner <span class="muted">(optional: a user or team:&lt;id&gt;)</span></label>
         <input name="for_user" list="user-list" placeholder="{{.Username}}">
         <datalist id="user-list">{{range .Users}}<option value="{{.}}">{{end}}</datalist>
       </div>
@@ -62,7 +62,7 @@
         <td data-label="Label"><span class="muted">{{.Owner}}/</span>{{.Label}}</td>
         <td data-label="Key" class="muted text-mono text-xs">{{.KeyPrefix}}</td>
         <td data-label="Priority">
-          {{if $.IsAdmin}}
+          {{if $.Can.key_limits_any}}
           <form method="POST" action="/portal/api-keys/priority" class="inline-flex items-center gap-1">
             <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
             <input type="hidden" name="key_hash" value="{{.KeyHash}}">
@@ -90,5 +90,5 @@
     </tbody>
   </table>
 </div>
-<p class="table-hint">Keys shown truncated. Click &#10697; to copy full value. Keys cannot be recovered after leaving this page.{{if .IsAdmin}} Admins can change priority using the ✓ button.{{end}}</p>
+<p class="table-hint">Keys shown truncated. Click &#10697; to copy full value. Keys cannot be recovered after leaving this page.{{if .Can.key_limits_any}} You can change priority using the ✓ button.{{end}}</p>
 {{end}}

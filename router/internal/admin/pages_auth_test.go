@@ -247,7 +247,7 @@ func TestSignInConfigurationIsAdminOnly(t *testing.T) {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.AddCookie(signIn(a, "bob"))
 		rr := httptest.NewRecorder()
-		a.requireAdmin(tc.handler)(rr, req)
+		a.requirePerm("settings.manage", tc.handler)(rr, req)
 		if rr.Code != http.StatusForbidden {
 			t.Errorf("%s: a member got %d, want 403", tc.path, rr.Code)
 		}

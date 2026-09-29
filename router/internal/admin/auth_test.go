@@ -139,13 +139,13 @@ func TestHandleLogout_MethodNotAllowed(t *testing.T) {
 	}
 }
 
-func TestRequireAdmin_Forbidden(t *testing.T) {
+func TestRequirePerm_Forbidden(t *testing.T) {
 	a := newTestAdmin(t)
 	hash, _ := bcrypt.GenerateFromPassword([]byte("pw"), bcrypt.MinCost)
 	a.state.AddUser(User{Username: "carol", PasswordHash: string(hash), Role: "member"})
 	sid := a.sessions.create("carol")
 
-	protected := a.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+	protected := a.requirePerm("settings.manage", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
 	})
 	req := httptest.NewRequest("GET", "/admin/settings", nil)

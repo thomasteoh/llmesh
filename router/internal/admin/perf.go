@@ -348,7 +348,7 @@ func perfStatsTargets(p *PerfStats) []any {
 // daily=true aggregates the hourly buckets into days (bucket format YYYY-MM-DD);
 // otherwise buckets are RFC3339 hours. If owner is non-empty, only that owner's
 // requests are included.
-func (s *State) QueryPerf(since, until time.Time, groupBy string, daily bool, owner string) ([]PerfRow, error) {
+func (s *State) QueryPerf(since, until time.Time, groupBy string, daily bool, owners []string) ([]PerfRow, error) {
 	nameCol, err := perfGroupColumn(groupBy)
 	if err != nil {
 		return nil, err
@@ -360,10 +360,7 @@ func (s *State) QueryPerf(since, until time.Time, groupBy string, daily bool, ow
 	q := `SELECT ` + bucketExpr + ` AS b, ` + nameCol + `, ` + perfSumColumns + `
 		FROM perf_hourly WHERE bucket >= ? AND bucket < ?`
 	args := []any{since.UTC().Format(time.RFC3339), until.UTC().Format(time.RFC3339)}
-	if owner != "" {
-		q += ` AND owner = ?`
-		args = append(args, owner)
-	}
+	q, args = ownerClause(q, args, "owner", owners)
 	q += ` GROUP BY b, ` + nameCol + ` ORDER BY b, ` + nameCol
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
@@ -384,13 +381,10 @@ func (s *State) QueryPerf(since, until time.Time, groupBy string, daily bool, ow
 
 // PerfTotals sums performance counters between since and until for one owner
 // ("" = all), without bucketing.
-func (s *State) PerfTotals(since, until time.Time, owner string) (PerfStats, error) {
+func (s *State) PerfTotals(since, until time.Time, owners []string) (PerfStats, error) {
 	q := `SELECT ` + perfSumColumns + ` FROM perf_hourly WHERE bucket >= ? AND bucket < ?`
 	args := []any{since.UTC().Format(time.RFC3339), until.UTC().Format(time.RFC3339)}
-	if owner != "" {
-		q += ` AND owner = ?`
-		args = append(args, owner)
-	}
+	q, args = ownerClause(q, args, "owner", owners)
 	var p PerfStats
 	err := s.db.QueryRow(q, args...).Scan(perfStatsTargets(&p)...)
 	return p, err
@@ -399,14 +393,11 @@ func (s *State) PerfTotals(since, until time.Time, owner string) (PerfStats, err
 // PerfByClient returns per-client performance counters between since and until,
 // keyed by the client's "owner/name". Restricted to one requesting owner when
 // owner is non-empty. Used by the Clients page to show each machine's speed.
-func (s *State) PerfByClient(since, until time.Time, owner string) (map[string]PerfStats, error) {
+func (s *State) PerfByClient(since, until time.Time, owners []string) (map[string]PerfStats, error) {
 	q := `SELECT client, ` + perfSumColumns + ` FROM perf_hourly
 		WHERE bucket >= ? AND bucket < ? AND client <> ''`
 	args := []any{since.UTC().Format(time.RFC3339), until.UTC().Format(time.RFC3339)}
-	if owner != "" {
-		q += ` AND owner = ?`
-		args = append(args, owner)
-	}
+	q, args = ownerClause(q, args, "owner", owners)
 	q += ` GROUP BY client`
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
@@ -429,14 +420,11 @@ func (s *State) PerfByClient(since, until time.Time, owner string) (map[string]P
 // PerfByClientModel returns per-(client, model) performance counters, so the
 // Clients page can break a machine's speed down by the model that produced it.
 // The outer key is the client's "owner/name", the inner key the model.
-func (s *State) PerfByClientModel(since, until time.Time, owner string) (map[string]map[string]PerfStats, error) {
+func (s *State) PerfByClientModel(since, until time.Time, owners []string) (map[string]map[string]PerfStats, error) {
 	q := `SELECT client, model, ` + perfSumColumns + ` FROM perf_hourly
 		WHERE bucket >= ? AND bucket < ? AND client <> ''`
 	args := []any{since.UTC().Format(time.RFC3339), until.UTC().Format(time.RFC3339)}
-	if owner != "" {
-		q += ` AND owner = ?`
-		args = append(args, owner)
-	}
+	q, args = ownerClause(q, args, "owner", owners)
 	q += ` GROUP BY client, model`
 	rows, err := s.db.Query(q, args...)
 	if err != nil {

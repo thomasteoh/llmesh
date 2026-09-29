@@ -115,7 +115,6 @@ func (a *Admin) handleDashboardJSON(w http.ResponseWriter, r *http.Request) {
 
 	// The cards carry admin controls, so they are rendered with the caller's own
 	// role and CSRF token — never a cached copy built for someone else.
-	u := ctxGetUser(r)
 	var csrf string
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		if token, ok := a.sessions.getCSRF(c.Value); ok {
@@ -125,12 +124,12 @@ func (a *Admin) handleDashboardJSON(w http.ResponseWriter, r *http.Request) {
 	frag := dashboardFragmentData{
 		// Built by the same function the page uses, so a row the poll swaps in
 		// describes the fleet exactly as a rendered one does.
-		Clients:      a.dashboardClientRows(),
-		ActiveModels: activeModels,
-		ModelAliases: invertAliasMap(a.state.AliasMap()),
-		AliasChains:  aliasChainRows(a.state.AliasTargets(), activeModels),
-		IsAdmin:      u.Role == "admin",
-		CSRFToken:    csrf,
+		Clients:          a.dashboardClientRows(),
+		ActiveModels:     activeModels,
+		ModelAliases:     invertAliasMap(a.state.AliasMap()),
+		AliasChains:      aliasChainRows(a.state.AliasTargets(), activeModels),
+		CanManageAliases: a.canDo(r, "alias.manage"),
+		CSRFToken:        csrf,
 	}
 
 	resp := dashboardJSON{
@@ -151,12 +150,12 @@ func (a *Admin) handleDashboardJSON(w http.ResponseWriter, r *http.Request) {
 // dashboardFragmentData is the subset of DashboardPage the refreshed templates
 // read, so the poll can render them without assembling a whole page.
 type dashboardFragmentData struct {
-	Clients      []ClientRow
-	ActiveModels []string
-	ModelAliases map[string][]string
-	AliasChains  []AliasChainRow
-	IsAdmin      bool
-	CSRFToken    string
+	Clients          []ClientRow
+	ActiveModels     []string
+	ModelAliases     map[string][]string
+	AliasChains      []AliasChainRow
+	CanManageAliases bool
+	CSRFToken        string
 }
 
 // renderDashboardFragment renders one of the Dashboard's named list templates.
@@ -218,7 +217,6 @@ func (a *Admin) handleJobsJSON(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	u := ctxGetUser(r)
 	known := make(map[string]bool)
 	for _, id := range strings.Split(r.URL.Query().Get("known"), ",") {
 		if id != "" {
@@ -233,14 +231,13 @@ func (a *Admin) handleJobsJSON(w http.ResponseWriter, r *http.Request) {
 			csrf = token
 		}
 	}
-	isAdmin := u.Role == "admin"
-
 	out := jobsJSON{Jobs: []jobStatJSON{}, Connections: []connCapacityJSON{}}
 	for _, rec := range a.hub.AllInFlightJobs() {
-		if !isAdmin && rec.Req.Owner != u.Username && rec.ClientOwner != u.Username {
+		view, cancel := a.jobAccess(r, rec.Req.ID, rec.Req.Owner, rec.ClientOwner)
+		if !view {
 			continue
 		}
-		row := buildInFlightJobRow(rec, csrf, isAdmin || rec.Req.Owner == u.Username || rec.ClientOwner == u.Username)
+		row := buildInFlightJobRow(rec, csrf, cancel)
 		stat := jobStatJSON{
 			ID:              row.ID,
 			Phase:           row.Phase,
@@ -256,7 +253,7 @@ func (a *Admin) handleJobsJSON(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, c := range a.hub.ConnectionsLoad() {
-		if !isAdmin && c.Owner != u.Username {
+		if !a.can(r, "client.view", ownedResource("client", c.ID, c.Owner)) {
 			continue
 		}
 		out.Connections = append(out.Connections, connCapacityJSON{
@@ -314,7 +311,6 @@ func (a *Admin) handleConnectionsJSON(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	u := ctxGetUser(r)
 	known := make(map[string]bool)
 	for _, n := range strings.Split(r.URL.Query().Get("known"), ",") {
 		if n != "" {
@@ -329,12 +325,8 @@ func (a *Admin) handleConnectionsJSON(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	owner := ""
-	if u.Role != "admin" {
-		owner = u.Username // non-admins only ever see their own tokens
-	}
 	out := connectionsJSON{Tokens: []tokenConnsJSON{}, New: []newConnJSON{}}
-	for _, t := range a.state.ClientTokensFor(owner, u.Role == "admin") {
+	for _, t := range a.visibleClientTokens(r) {
 		infos := a.hub.ConnectedClientsByToken(t.TokenHash)
 		ls := a.hub.LastSeenTime(t.TokenHash)
 		_, class, label := clientStatusBadge(len(infos), !ls.IsZero())
@@ -350,7 +342,7 @@ func (a *Admin) handleConnectionsJSON(w http.ResponseWriter, r *http.Request) {
 		for _, ci := range infos {
 			tc.Conns = append(tc.Conns, ci.ID)
 			if !known[ci.ID] {
-				if html := a.renderConnRow(a.buildConnRow(ci, u, t, csrf)); html != "" {
+				if html := a.renderConnRow(a.buildConnRow(r, ci, t, csrf)); html != "" {
 					out.New = append(out.New, newConnJSON{
 						TokenHash: t.TokenHash,
 						ID:        ci.ID,
@@ -476,7 +468,6 @@ func (a *Admin) handleUsageJSON(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	u := ctxGetUser(r)
 
 	rng := r.URL.Query().Get("range")
 	if rng == "" {
@@ -495,11 +486,7 @@ func (a *Admin) handleUsageJSON(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid range", http.StatusBadRequest)
 		return
 	}
-	ownerFilter := ""
-	if u.Role != "admin" {
-		ownerFilter = u.Username
-	}
-	rows, err := a.state.QueryUsage(since, until, groupBy, daily, ownerFilter)
+	rows, err := a.state.QueryUsage(since, until, groupBy, daily, a.ownerScope(r, "usage.view"))
 	if err != nil {
 		a.log.Error("admin: usage query", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -678,7 +665,6 @@ func (a *Admin) handlePerfJSON(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	u := ctxGetUser(r)
 
 	rng := r.URL.Query().Get("range")
 	if rng == "" {
@@ -702,7 +688,7 @@ func (a *Admin) handlePerfJSON(w http.ResponseWriter, r *http.Request) {
 	// may have been served by anyone's hardware, so the series names would still
 	// disclose the fleet — which the Clients page deliberately does not show a
 	// member. Admin-only, matching that page's scoping.
-	if group == "client" && u.Role != "admin" {
+	if group == "client" && !a.canDo(r, "fleet.view") {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -717,10 +703,7 @@ func (a *Admin) handlePerfJSON(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid range", http.StatusBadRequest)
 		return
 	}
-	ownerFilter := ""
-	if u.Role != "admin" {
-		ownerFilter = u.Username
-	}
+	ownerFilter := a.ownerScope(r, "usage.view")
 	rows, err := a.state.QueryPerf(since, until, groupBy, daily, ownerFilter)
 	if err != nil {
 		a.log.Error("admin: perf query", "error", err)

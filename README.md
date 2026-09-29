@@ -172,8 +172,13 @@ Navigate to `http://[HOST]:[PORT]/portal`. On first run you are redirected to th
 From the admin dashboard you can:
 - **Clients** → Create client tokens (needed to configure each `llmesh-client` or `llmesh-shim`); also shows your worker connection URL and manages model aliases
 - **API Keys** → Create API keys (needed by callers to authenticate requests); shows your API endpoint URL
-- **Settings** → Manage users, configure sign-in methods and upstream routers, and set per-model token pricing
+- **Teams** → Create teams that own API keys and clients together; maintainers manage members, members share the team's keys and usage
+- **Settings** → Manage users and their roles, define custom roles, configure sign-in methods and upstream routers, set per-model token pricing, and see your own sessions
 - **Help** → Full API reference and setup guide
+
+**Roles**
+
+Access is granted by roles, each a named set of permissions. The built-in roles are *owner* (everything), *admin* (everything except changing owners), *operator* (clients, aliases, queue, pricing, upstreams), *auditor* (read-only, including the audit log), *member* (own keys, clients, usage, and jobs), and *viewer* (own usage only). Within a team, *team maintainer* and *team member* apply to that team's keys, clients, and usage. Admins can define custom roles from the permission catalogue under **Settings → Roles**, but only with permissions they hold themselves. On upgrade every existing admin becomes an owner and every member stays a member.
 
 **Sign-in methods**
 

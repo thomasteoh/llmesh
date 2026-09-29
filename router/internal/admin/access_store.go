@@ -349,21 +349,48 @@ func (s *State) Bind(b RoleBinding) error {
 		b.Principal, b.Role, b.Team); err != nil {
 		return err
 	}
+	s.refreshLegacyRole(b.Principal)
 	return s.bumpAuthz()
 }
 
 // Unbind removes a binding. The last active owner cannot lose the owner role.
 func (s *State) Unbind(b RoleBinding) error {
-	if b.Role == authz.RoleOwner && b.Team == "" {
-		if s.activeOwnerCount(b.Principal) == 0 {
+	if b.Team == "" && (b.Role == authz.RoleOwner || b.Role == authz.RoleAdmin) {
+		if b.Role == authz.RoleOwner && s.activeOwnerCount(b.Principal) == 0 {
 			return fmt.Errorf("cannot remove the last active owner")
+		}
+		// Removing this binding must not leave the router with no enabled
+		// owner or admin at all.
+		if username, ok := strings.CutPrefix(b.Principal, "user:"); ok && s.otherActivePrivileged(username) == 0 {
+			var n int
+			_ = s.db.QueryRow(`SELECT COUNT(*) FROM role_bindings WHERE principal = ? AND team = '' AND role IN (?, ?) AND role <> ?`,
+				b.Principal, authz.RoleOwner, authz.RoleAdmin, b.Role).Scan(&n)
+			if n == 0 {
+				return fmt.Errorf("cannot remove the last active admin")
+			}
 		}
 	}
 	if _, err := s.db.Exec(`DELETE FROM role_bindings WHERE principal = ? AND role = ? AND team = ?`,
 		b.Principal, b.Role, b.Team); err != nil {
 		return err
 	}
+	s.refreshLegacyRole(b.Principal)
 	return s.bumpAuthz()
+}
+
+// refreshLegacyRole rewrites users.role from a user's bindings, for the code
+// that still reads it (OIDC role sync, the promote/demote endpoints): "admin"
+// when they hold owner or admin router-wide, "member" otherwise.
+func (s *State) refreshLegacyRole(principal string) {
+	username, ok := strings.CutPrefix(principal, "user:")
+	if !ok {
+		return
+	}
+	role := "member"
+	if s.isPrivileged(username) {
+		role = "admin"
+	}
+	_, _ = s.db.Exec(`UPDATE users SET role = ? WHERE username = ?`, role, username)
 }
 
 // activeOwnerCount counts enabled users holding the owner role, excluding one
@@ -809,4 +836,33 @@ func (s *State) DeletePolicy(id string) error {
 		return err
 	}
 	return s.bumpAuthz()
+}
+
+// isPrivileged reports whether a user holds the owner or admin role
+// router-wide.
+func (s *State) isPrivileged(username string) bool {
+	var n int
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM role_bindings WHERE principal = ? AND team = '' AND role IN (?, ?)`,
+		userPrincipal(username), authz.RoleOwner, authz.RoleAdmin).Scan(&n)
+	return n > 0
+}
+
+// otherActivePrivileged counts enabled users other than excluding who hold
+// the owner or admin role router-wide. The guards that keep a router from
+// losing its last administrator use it.
+func (s *State) otherActivePrivileged(excluding string) int {
+	var n int
+	_ = s.db.QueryRow(`SELECT COUNT(DISTINCT u.username) FROM role_bindings b
+		JOIN users u ON b.principal = 'user:' || u.username
+		WHERE b.team = '' AND b.role IN (?, ?) AND u.disabled = 0 AND u.username <> ?`,
+		authz.RoleOwner, authz.RoleAdmin, excluding).Scan(&n)
+	return n
+}
+
+// IsOwner reports whether a user holds the owner role router-wide.
+func (s *State) IsOwner(username string) bool {
+	var n int
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM role_bindings WHERE principal = ? AND team = '' AND role = ?`,
+		userPrincipal(username), authz.RoleOwner).Scan(&n)
+	return n > 0
 }

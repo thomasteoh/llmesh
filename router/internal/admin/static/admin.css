@@ -630,7 +630,7 @@ main {
 /* ─── Buttons ───────────────────────────────────────────────── */
 
 .btn,
-button[type="submit"]:not(.seg-btn):not(.tab-btn):not(.alias-add-btn):not(.alias-badge-del):not(.btn-secondary):not(.btn-danger):not(.btn-copy):not(.btn-xs) {
+button[type="submit"]:not(.seg-btn):not(.tab-btn):not(.alias-add-btn):not(.alias-badge-del):not(.btn-secondary):not(.btn-danger):not(.btn-copy):not(.btn-xs):not(.chip-remove) {
   background: var(--accent);
   color: #fff;
   border: 1px solid var(--accent-strong);
@@ -642,7 +642,7 @@ button[type="submit"]:not(.seg-btn):not(.tab-btn):not(.alias-add-btn):not(.alias
   transition: filter .12s ease;
 }
 .btn:hover,
-button[type="submit"]:not(.seg-btn):not(.tab-btn):not(.alias-add-btn):not(.alias-badge-del):not(.btn-secondary):not(.btn-danger):not(.btn-copy):not(.btn-xs):hover { filter: brightness(1.08); }
+button[type="submit"]:not(.seg-btn):not(.tab-btn):not(.alias-add-btn):not(.alias-badge-del):not(.btn-secondary):not(.btn-danger):not(.btn-copy):not(.btn-xs):not(.chip-remove):hover { filter: brightness(1.08); }
 
 .btn-secondary {
   background: var(--surface-2);
@@ -1262,3 +1262,26 @@ label { font-size: 12.5px; font-weight: 600; color: var(--text-muted); display: 
   }
   .data-table tbody td:not([data-label]) { justify-content: flex-end; }
 }
+
+/* Access management: role chips, the role editor's permission grid. */
+.role-chips { flex-wrap: wrap; }
+.role-chips .badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: var(--surface-3); color: var(--text-muted); border-color: var(--border-strong);
+}
+.role-chips .badge.owner, .role-chips .badge.admin {
+  background: var(--accent-soft); color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.role-chips .badge.operator, .role-chips .badge.auditor {
+  background: var(--success-soft); color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 40%, transparent);
+}
+.role-chips form { display: inline; }
+.chip-remove { background: none; border: 0; padding: 0 2px; cursor: pointer; color: inherit; opacity: .6; font-size: 11px; line-height: 1; }
+.chip-remove:hover { opacity: 1; }
+.select-xs { font-size: 12px; padding: 2px 4px; }
+.perm-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.perm-group { border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; }
+.perm-group legend { font-weight: 600; font-size: 12px; padding: 0 4px; }
+.perm-item { display: block; font-size: 12px; }

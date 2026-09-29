@@ -201,9 +201,9 @@
         <label>Name</label>
         <div class="prefix-wrap"><span class="prefix">{{.Username}}/</span><input name="name" placeholder="macbook-pro"></div>
       </div>
-      {{if .IsAdmin}}
+      {{if .Users}}
       <div class="form-group">
-        <label>For user <span class="muted">(optional)</span></label>
+        <label>Owner <span class="muted">(optional: a user or team:&lt;id&gt;)</span></label>
         <input name="for_user" list="client-user-list" placeholder="{{.Username}}">
         <datalist id="client-user-list">{{range .Users}}<option value="{{.}}">{{end}}</datalist>
       </div>
@@ -214,7 +214,7 @@
   </form>
 </div>
 
-{{if .IsAdmin}}
+{{if .Can.fleet_view}}
 {{/* ─── Admin grouped view with filter + pagination ─── */}}
 <div class="filter-bar">
   <input type="text" id="client-filter" placeholder="Filter users and clients&hellip;" autocomplete="off" spellcheck="false" aria-label="Filter users and clients">

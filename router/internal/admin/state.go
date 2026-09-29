@@ -1040,7 +1040,7 @@ func (s *State) DemoteUser(actor, target string) error {
 	if actor == target {
 		return fmt.Errorf("cannot demote yourself")
 	}
-	if s.ActiveAdminCount() <= 1 {
+	if s.otherActivePrivileged(target) == 0 {
 		return fmt.Errorf("cannot demote: at least one active admin must remain")
 	}
 	res, err := s.db.Exec(`UPDATE users SET role = 'member' WHERE username = ?`, target)
@@ -1070,12 +1070,8 @@ func (s *State) DeleteUser(actor, target string) error {
 	if !u.Disabled {
 		return fmt.Errorf("only disabled users can be deleted; disable %q first", target)
 	}
-	if u.Role == "admin" {
-		var admins int
-		s.db.QueryRow(`SELECT COUNT(*) FROM users WHERE role = 'admin'`).Scan(&admins)
-		if admins <= 1 {
-			return fmt.Errorf("cannot delete the last admin account")
-		}
+	if s.isPrivileged(target) && s.otherActivePrivileged(target) == 0 {
+		return fmt.Errorf("cannot delete the last admin account")
 	}
 	tx, err := s.db.Begin()
 	if err != nil {

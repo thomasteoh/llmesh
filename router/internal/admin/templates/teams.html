@@ -1,0 +1,81 @@
+{{define "content"}}
+<div class="page-head">
+  <div class="page-title">Teams</div>
+  <div class="page-sub">Groups that own API keys and clients together</div>
+</div>
+
+{{if .CanCreate}}
+<div class="card">
+  <div class="card-title">Create a team</div>
+  <p class="field-desc mb-3">A team can own API keys and client tokens. Its maintainers manage those and its members; its members use them and see the team's usage. You maintain any team you create.</p>
+  <form method="POST" action="/portal/teams">
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+    <div class="form-row">
+      <div class="form-group"><label>ID</label><input name="id" placeholder="research" autocomplete="off"></div>
+      <div class="form-group flex-2"><label>Name</label><input name="name" placeholder="Research" autocomplete="off"></div>
+      <div class="form-group flex-2"><label>Description <span class="muted">(optional)</span></label><input name="description" autocomplete="off"></div>
+      <button type="submit" class="btn">Create team</button>
+    </div>
+  </form>
+</div>
+{{end}}
+
+{{range $t := .Teams}}
+<div class="card{{if $t.Disabled}} row-dim{{end}}">
+  <div class="section-header">
+    <div class="card-title">{{$t.Name}} <span class="muted text-mono text-xs">team:{{$t.ID}}</span>{{if $t.Disabled}} {{template "status-badge" dict "Class" "disabled" "Label" "disabled"}}{{end}}{{if $t.ManagedBy}} <span class="badge muted-badge">SSO</span>{{end}}</div>
+    {{if $t.CanManage}}
+    <div class="flex gap-1">
+      {{if $t.Disabled}}
+      {{template "action-button" dict "Action" "/portal/teams/state" "CSRF" $.CSRFToken "Fields" (dict "team" $t.ID "action" "enable") "Class" "btn-success btn-xs" "Label" "Enable"}}
+      {{else}}
+      {{template "action-button" dict "Action" "/portal/teams/state" "CSRF" $.CSRFToken "Fields" (dict "team" $t.ID "action" "disable") "Confirm" (printf "Disable %s? Its keys and clients stop working until it is enabled." $t.Name) "Class" "btn-secondary btn-xs" "Label" "Disable"}}
+      {{end}}
+      {{template "action-button" dict "Action" "/portal/teams/state" "CSRF" $.CSRFToken "Fields" (dict "team" $t.ID "action" "delete") "Confirm" (printf "Delete %s permanently, with its API keys and client tokens? This cannot be undone." $t.Name) "Class" "btn-danger btn-xs" "Label" "Delete"}}
+    </div>
+    {{end}}
+  </div>
+  {{if $t.Description}}<p class="field-desc mb-3">{{$t.Description}}</p>{{end}}
+  <div class="table-scroll">
+    <table class="data-table">
+      <thead><tr><th>Member</th><th>Role in team</th><th></th></tr></thead>
+      <tbody>
+        {{range $t.Members}}
+        <tr>
+          <td>{{.Username}}</td>
+          <td>{{if .Maintainer}}<span class="badge admin">maintainer</span>{{else}}<span class="badge member">member</span>{{end}}</td>
+          <td class="cell-actions">
+            {{if $t.CanManage}}
+            <div class="flex gap-1 justify-end">
+              {{if .Maintainer}}
+              {{template "action-button" dict "Action" "/portal/teams/members/add" "CSRF" $.CSRFToken "Fields" (dict "team" $t.ID "username" .Username) "Class" "btn-secondary btn-xs" "Label" "Make member"}}
+              {{else}}
+              {{template "action-button" dict "Action" "/portal/teams/members/add" "CSRF" $.CSRFToken "Fields" (dict "team" $t.ID "username" .Username "maintainer" "1") "Class" "btn-secondary btn-xs" "Label" "Make maintainer"}}
+              {{end}}
+              {{template "action-button" dict "Action" "/portal/teams/members/remove" "CSRF" $.CSRFToken "Fields" (dict "team" $t.ID "username" .Username) "Confirm" (printf "Remove %s from %s?" .Username $t.Name) "Class" "btn-danger btn-xs icon-btn" "Label" "✕" "Title" "Remove"}}
+            </div>
+            {{end}}
+          </td>
+        </tr>
+        {{else}}
+        <tr><td colspan="3" class="muted">No members.</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{if $t.CanManage}}
+  <form method="POST" action="/portal/teams/members/add" class="inline-form mt-2">
+    <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+    <input type="hidden" name="team" value="{{$t.ID}}">
+    <input name="username" list="team-user-list" placeholder="username" class="inline-input" aria-label="Add a member to {{$t.Name}}">
+    <label class="muted"><input type="checkbox" name="maintainer" value="1"> maintainer</label>
+    <button type="submit" class="btn-secondary">Add member</button>
+  </form>
+  {{end}}
+  <p class="table-hint mt-2">Create keys and client tokens for this team on the API Keys and Clients pages by choosing <code>team:{{$t.ID}}</code> as the owner.</p>
+</div>
+{{else}}
+<p class="muted">{{if .CanCreate}}No teams yet.{{else}}You do not belong to any team.{{end}}</p>
+{{end}}
+<datalist id="team-user-list">{{range .Users}}<option value="{{.}}">{{end}}</datalist>
+{{end}}

@@ -199,7 +199,7 @@ func (a *Admin) parseTemplates() error {
 		},
 	}
 
-	layoutPages := []string{"dashboard", "api-keys", "clients", "settings", "help"}
+	layoutPages := []string{"dashboard", "api-keys", "clients", "teams", "settings", "help"}
 	a.tmpls = make(map[string]*template.Template)
 	for _, name := range layoutPages {
 		t, err := template.New("layout.html").Funcs(funcMap).ParseFS(
@@ -270,7 +270,7 @@ func (a *Admin) registerRoutes() {
 		mux.HandleFunc("/portal/settings/"+key+"/unlink",
 			a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleOAuthUnlink(key))), 10))
 		mux.HandleFunc("/portal/settings/auth/"+key,
-			a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleOAuthSettingsUpdate(key))), 20))
+			a.requireRateLimit(a.requirePerm("settings.manage", a.postWithCSRF(a.handleOAuthSettingsUpdate(key))), 20))
 	}
 
 	// Logout requires auth + CSRF
@@ -298,8 +298,8 @@ func (a *Admin) registerRoutes() {
 		}
 	}))
 	mux.HandleFunc("/portal/api-keys/revoke", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleAPIKeyRevoke)), 20))
-	mux.HandleFunc("/portal/api-keys/priority", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleAPIKeyPriority)), 20))
-	mux.HandleFunc("/portal/api-keys/max-concurrent", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleAPIKeyMaxConcurrent)), 20))
+	mux.HandleFunc("/portal/api-keys/priority", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleAPIKeyPriority)), 20))
+	mux.HandleFunc("/portal/api-keys/max-concurrent", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleAPIKeyMaxConcurrent)), 20))
 
 	mux.HandleFunc("/portal/clients", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
@@ -325,38 +325,58 @@ func (a *Admin) registerRoutes() {
 		a.handleShimConfig(w, r)
 	}))
 
-	mux.HandleFunc("/portal/model-aliases", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleModelAliasCreate)), 20))
-	mux.HandleFunc("/portal/model-aliases/delete", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleModelAliasDelete)), 20))
-	mux.HandleFunc("/portal/model-aliases/reorder", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleModelAliasReorder)), 30))
+	mux.HandleFunc("/portal/model-aliases", a.requireRateLimit(a.requirePerm("alias.manage", a.postWithCSRF(a.handleModelAliasCreate)), 20))
+	mux.HandleFunc("/portal/model-aliases/delete", a.requireRateLimit(a.requirePerm("alias.manage", a.postWithCSRF(a.handleModelAliasDelete)), 20))
+	mux.HandleFunc("/portal/model-aliases/reorder", a.requireRateLimit(a.requirePerm("alias.manage", a.postWithCSRF(a.handleModelAliasReorder)), 30))
 
 	mux.HandleFunc("/portal/jobs/cancel", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleJobCancel)), 20))
-	mux.HandleFunc("/portal/queue/cancel", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleQueueCancel)), 20))
+	mux.HandleFunc("/portal/queue/cancel", a.requireRateLimit(a.requirePerm("queue.cancel", a.postWithCSRF(a.handleQueueCancel)), 20))
 
 	// Help page.
 	mux.HandleFunc("/portal/help", a.requireAuth(a.handleHelp))
 
 	mux.HandleFunc("/portal/settings", a.requireAuth(a.handleSettings))
 	mux.HandleFunc("/portal/settings/password", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleChangePassword)), 10))
-	mux.HandleFunc("/portal/settings/users", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleAddUser)), 20))
-	mux.HandleFunc("/portal/settings/users/disable", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleUserDisable)), 20))
-	mux.HandleFunc("/portal/settings/users/enable", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleUserEnable)), 20))
-	mux.HandleFunc("/portal/settings/users/promote", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleUserPromote)), 20))
-	mux.HandleFunc("/portal/settings/users/demote", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleUserDemote)), 20))
-	mux.HandleFunc("/portal/settings/users/reset-password", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleUserResetPassword)), 20))
-	mux.HandleFunc("/portal/settings/users/delete", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleUserDelete)), 20))
-	mux.HandleFunc("/portal/settings/users/isolation", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleUserIsolation)), 20))
-	mux.HandleFunc("/portal/settings/upstream/add", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleUpstreamAdd)), 20))
-	mux.HandleFunc("/portal/settings/upstream/remove", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleUpstreamRemove)), 20))
-	mux.HandleFunc("/portal/settings/optimization", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleOptimizationUpdate)), 20))
-	mux.HandleFunc("/portal/settings/host", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleHostUpdate)), 20))
-	mux.HandleFunc("/portal/settings/pricing", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleModelPricingUpdate)), 30))
-	mux.HandleFunc("/portal/settings/pricing/delete", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleModelPricingDelete)), 30))
-	mux.HandleFunc("/portal/settings/currency", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleCostCurrencyUpdate)), 20))
+	mux.HandleFunc("/portal/settings/users", a.requireRateLimit(a.requirePerm("user.manage", a.postWithCSRF(a.handleAddUser)), 20))
+	mux.HandleFunc("/portal/settings/users/disable", a.requireRateLimit(a.requirePerm("user.manage", a.postWithCSRF(a.handleUserDisable)), 20))
+	mux.HandleFunc("/portal/settings/users/enable", a.requireRateLimit(a.requirePerm("user.manage", a.postWithCSRF(a.handleUserEnable)), 20))
+	mux.HandleFunc("/portal/settings/users/promote", a.requireRateLimit(a.requirePerm("user.manage", a.postWithCSRF(a.handleUserPromote)), 20))
+	mux.HandleFunc("/portal/settings/users/demote", a.requireRateLimit(a.requirePerm("user.manage", a.postWithCSRF(a.handleUserDemote)), 20))
+	mux.HandleFunc("/portal/settings/users/reset-password", a.requireRateLimit(a.requirePerm("user.manage", a.postWithCSRF(a.handleUserResetPassword)), 20))
+	mux.HandleFunc("/portal/settings/users/delete", a.requireRateLimit(a.requirePerm("user.manage", a.postWithCSRF(a.handleUserDelete)), 20))
+	mux.HandleFunc("/portal/settings/users/roles/add", a.requireRateLimit(a.requirePerm("user.manage", a.postWithCSRF(a.handleUserRoleAdd)), 20))
+	mux.HandleFunc("/portal/settings/users/roles/remove", a.requireRateLimit(a.requirePerm("user.manage", a.postWithCSRF(a.handleUserRoleRemove)), 20))
+	mux.HandleFunc("/portal/settings/users/sign-out", a.requireRateLimit(a.requirePerm("user.manage", a.postWithCSRF(a.handleUserSignOut)), 20))
+	mux.HandleFunc("/portal/settings/sessions/revoke", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleSessionRevoke)), 20))
+	mux.HandleFunc("/portal/settings/roles", a.requireRateLimit(a.requirePerm("role.manage", a.postWithCSRF(a.handleRoleSave)), 20))
+	mux.HandleFunc("/portal/settings/roles/delete", a.requireRateLimit(a.requirePerm("role.manage", a.postWithCSRF(a.handleRoleDelete)), 20))
+	mux.HandleFunc("/portal/teams", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			if !a.canDo(r, "team.create") {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			a.requireRateLimit(a.postWithCSRF(a.handleTeamCreate), 10)(w, r)
+			return
+		}
+		a.handleTeams(w, r)
+	}))
+	mux.HandleFunc("/portal/teams/members/add", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleTeamMemberAdd)), 20))
+	mux.HandleFunc("/portal/teams/members/remove", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleTeamMemberRemove)), 20))
+	mux.HandleFunc("/portal/teams/state", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleTeamState)), 20))
+	mux.HandleFunc("/portal/settings/users/isolation", a.requireRateLimit(a.requirePerm("user.manage", a.postWithCSRF(a.handleUserIsolation)), 20))
+	mux.HandleFunc("/portal/settings/upstream/add", a.requireRateLimit(a.requirePerm("upstream.manage", a.postWithCSRF(a.handleUpstreamAdd)), 20))
+	mux.HandleFunc("/portal/settings/upstream/remove", a.requireRateLimit(a.requirePerm("upstream.manage", a.postWithCSRF(a.handleUpstreamRemove)), 20))
+	mux.HandleFunc("/portal/settings/optimization", a.requireRateLimit(a.requirePerm("settings.manage", a.postWithCSRF(a.handleOptimizationUpdate)), 20))
+	mux.HandleFunc("/portal/settings/host", a.requireRateLimit(a.requirePerm("settings.manage", a.postWithCSRF(a.handleHostUpdate)), 20))
+	mux.HandleFunc("/portal/settings/pricing", a.requireRateLimit(a.requirePerm("pricing.manage", a.postWithCSRF(a.handleModelPricingUpdate)), 30))
+	mux.HandleFunc("/portal/settings/pricing/delete", a.requireRateLimit(a.requirePerm("pricing.manage", a.postWithCSRF(a.handleModelPricingDelete)), 30))
+	mux.HandleFunc("/portal/settings/currency", a.requireRateLimit(a.requirePerm("settings.manage", a.postWithCSRF(a.handleCostCurrencyUpdate)), 20))
 
 	// Email sign-in configuration (admin) and the address a user sets on their
 	// own account. The per-provider equivalents are registered above.
-	mux.HandleFunc("/portal/settings/auth/smtp", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleSMTPUpdate)), 20))
-	mux.HandleFunc("/portal/settings/auth/smtp/test", a.requireRateLimit(a.requireAdmin(a.postWithCSRF(a.handleSMTPTest)), 5))
+	mux.HandleFunc("/portal/settings/auth/smtp", a.requireRateLimit(a.requirePerm("settings.manage", a.postWithCSRF(a.handleSMTPUpdate)), 20))
+	mux.HandleFunc("/portal/settings/auth/smtp/test", a.requireRateLimit(a.requirePerm("settings.manage", a.postWithCSRF(a.handleSMTPTest)), 5))
 	mux.HandleFunc("/portal/settings/email", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleEmailUpdate)), 5))
 	mux.HandleFunc("/portal/settings/email/resend", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleEmailResend)), 3))
 
@@ -374,10 +394,10 @@ func (a *Admin) registerRoutes() {
 	mux.HandleFunc("/portal/api/perf", a.requireAuth(a.handlePerfJSON))
 
 	// Logs JSON API (admin-only)
-	mux.HandleFunc("/portal/api/logs", a.requireAdmin(a.handleLogsJSON))
+	mux.HandleFunc("/portal/api/logs", a.requirePerm("settings.view", a.handleLogsJSON))
 
 	// Audit log JSON API (admin-only)
-	mux.HandleFunc("/portal/api/audit", a.requireAdmin(a.handleAuditLogJSON))
+	mux.HandleFunc("/portal/api/audit", a.requirePerm("audit.view", a.handleAuditLogJSON))
 
 	a.mux = mux
 }

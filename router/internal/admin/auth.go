@@ -59,20 +59,9 @@ func (a *Admin) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			http.Redirect(w, r, "/portal/login", http.StatusFound)
 			return
 		}
-		next(w, r.WithContext(context.WithValue(r.Context(), ctxUser, u)))
+		r = r.WithContext(context.WithValue(r.Context(), ctxUser, u))
+		next(w, a.withSubject(r, u))
 	}
-}
-
-// requireAdmin wraps a handler, returning 403 if the session user is not an admin.
-func (a *Admin) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
-	return a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
-		u := r.Context().Value(ctxUser).(User)
-		if u.Role != "admin" {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
-		}
-		next(w, r)
-	})
 }
 
 // requireCSRF wraps a handler, validating the CSRF token on POST requests.

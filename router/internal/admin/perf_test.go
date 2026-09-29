@@ -48,7 +48,7 @@ func TestPerf_AddDeltaUpsertAccumulatesAndTakesMax(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rows, err := s.QueryPerf(bucket.Add(-time.Hour), bucket.Add(time.Hour), "model", false, "")
+	rows, err := s.QueryPerf(bucket.Add(-time.Hour), bucket.Add(time.Hour), "model", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestPerf_QueryGroupingAndOwnerFilter(t *testing.T) {
 		{"key", map[string]int64{"alice/prod": 5, "bob/dev": 2}},
 		{"client", map[string]int64{"alice/mac": 5, "bob/box": 2}},
 	} {
-		rows, err := s.QueryPerf(since, until, tc.group, false, "")
+		rows, err := s.QueryPerf(since, until, tc.group, false, nil)
 		if err != nil {
 			t.Fatalf("group %s: %v", tc.group, err)
 		}
@@ -198,7 +198,7 @@ func TestPerf_QueryGroupingAndOwnerFilter(t *testing.T) {
 	}
 
 	// Restricting to one owner hides the other's requests entirely.
-	rows, err := s.QueryPerf(since, until, "model", false, "alice")
+	rows, err := s.QueryPerf(since, until, "model", false, []string{"alice"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func TestPerf_QueryGroupingAndOwnerFilter(t *testing.T) {
 		t.Fatalf("owner-filtered total: got %d, want 5", total)
 	}
 
-	if _, err := s.QueryPerf(since, until, "nonsense", false, ""); err == nil {
+	if _, err := s.QueryPerf(since, until, "nonsense", false, nil); err == nil {
 		t.Fatal("expected an error for an unknown grouping")
 	}
 }
@@ -227,7 +227,7 @@ func TestPerf_QueryDailyRollup(t *testing.T) {
 			Samples: 1, DecodeSamples: 1, DecodeMSSum: 1000, DecodeTokens: 30,
 		})
 	}
-	rows, err := s.QueryPerf(day, day.AddDate(0, 0, 1), "model", true, "")
+	rows, err := s.QueryPerf(day, day.AddDate(0, 0, 1), "model", true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,7 @@ func TestPerf_TotalsOverEmptyRangeIsZeroNotError(t *testing.T) {
 	now := time.Now()
 	// An ungrouped SUM over zero rows returns a row of NULLs; the query has to
 	// coalesce those or scanning fails.
-	got, err := s.PerfTotals(now.Add(-time.Hour), now, "")
+	got, err := s.PerfTotals(now.Add(-time.Hour), now, nil)
 	if err != nil {
 		t.Fatalf("totals over an empty table: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestPerf_Totals(t *testing.T) {
 	})
 	s.AddPerfDelta(PerfDelta{Bucket: b, Owner: "bob", Model: "llama", Samples: 1, TotalMSSum: 500, TotalMSMax: 500})
 
-	all, err := s.PerfTotals(b.Add(-time.Hour), b.Add(time.Hour), "")
+	all, err := s.PerfTotals(b.Add(-time.Hour), b.Add(time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +284,7 @@ func TestPerf_Totals(t *testing.T) {
 	// Only alice's two requests had backend-reported timings.
 	nearly(t, "backend fraction", all.BackendMeasuredFrac(), 2.0/3.0)
 
-	mine, err := s.PerfTotals(b.Add(-time.Hour), b.Add(time.Hour), "bob")
+	mine, err := s.PerfTotals(b.Add(-time.Hour), b.Add(time.Hour), []string{"bob"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +310,7 @@ func TestPerf_ByClientAndByClientModel(t *testing.T) {
 
 	since, until := b.Add(-time.Hour), b.Add(time.Hour)
 
-	byClient, err := s.PerfByClient(since, until, "")
+	byClient, err := s.PerfByClient(since, until, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +324,7 @@ func TestPerf_ByClientAndByClientModel(t *testing.T) {
 	nearly(t, "fast machine rate", byClient["alice/fast"].GenTokensPerSec(), 40)
 	nearly(t, "slow machine rate", byClient["alice/slow"].GenTokensPerSec(), 10)
 
-	byClientModel, err := s.PerfByClientModel(since, until, "")
+	byClientModel, err := s.PerfByClientModel(since, until, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,7 +345,7 @@ func TestPerf_PruneBefore(t *testing.T) {
 	if err := s.PrunePerfBefore(time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.PerfTotals(old.Add(-time.Hour), recent.Add(time.Hour), "")
+	got, err := s.PerfTotals(old.Add(-time.Hour), recent.Add(time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -371,7 +371,7 @@ func TestPerfRecorder_BuffersAndFlushes(t *testing.T) {
 	r.RecordPerf(PerfSample{Owner: "alice", TotalMS: 5000})
 
 	now := time.Now()
-	before, err := s.PerfTotals(now.Add(-time.Hour), now.Add(time.Hour), "")
+	before, err := s.PerfTotals(now.Add(-time.Hour), now.Add(time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +381,7 @@ func TestPerfRecorder_BuffersAndFlushes(t *testing.T) {
 
 	r.Flush()
 
-	after, err := s.PerfTotals(now.Add(-time.Hour), now.Add(time.Hour), "")
+	after, err := s.PerfTotals(now.Add(-time.Hour), now.Add(time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +405,7 @@ func TestPerfRecorder_MergesSameBucketAcrossFlushes(t *testing.T) {
 	r.Flush()
 
 	now := time.Now()
-	got, err := s.PerfTotals(now.Add(-time.Hour), now.Add(time.Hour), "")
+	got, err := s.PerfTotals(now.Add(-time.Hour), now.Add(time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -453,7 +453,7 @@ func perfRequest(t *testing.T, u User, query string, seed func(*State)) perfResp
 	a := &Admin{state: s, log: slog.Default()}
 
 	r := httptest.NewRequest(http.MethodGet, "/portal/api/perf?"+query, nil)
-	r = r.WithContext(context.WithValue(r.Context(), ctxUser, u))
+	r = actAs(t, a, r, u)
 	w := httptest.NewRecorder()
 	a.handlePerfJSON(w, r)
 
@@ -614,7 +614,7 @@ func TestPerfJSON_RejectsBadInput(t *testing.T) {
 		s, _ := LoadState(filepath.Join(t.TempDir(), "state.json"))
 		a := &Admin{state: s, log: slog.Default()}
 		r := httptest.NewRequest(http.MethodGet, "/portal/api/perf?"+q, nil)
-		r = r.WithContext(context.WithValue(r.Context(), ctxUser, User{Username: "root", Role: "admin"}))
+		r = actAs(t, a, r, User{Username: "root", Role: "admin"})
 		w := httptest.NewRecorder()
 		a.handlePerfJSON(w, r)
 		if w.Code == http.StatusOK {
@@ -772,7 +772,7 @@ func TestPerfJSON_GroupByClientIsAdminOnly(t *testing.T) {
 	seed(s)
 	a := &Admin{state: s, log: slog.Default()}
 	r := httptest.NewRequest(http.MethodGet, "/portal/api/perf?range=24h&group=client&metric=total", nil)
-	r = r.WithContext(context.WithValue(r.Context(), ctxUser, User{Username: "alice", Role: "member"}))
+	r = actAs(t, a, r, User{Username: "alice", Role: "member"})
 	w := httptest.NewRecorder()
 	a.handlePerfJSON(w, r)
 
@@ -782,4 +782,17 @@ func TestPerfJSON_GroupByClientIsAdminOnly(t *testing.T) {
 	if strings.Contains(w.Body.String(), "secret-gpu-rig") {
 		t.Fatalf("machine name leaked in the rejection body: %s", w.Body.String())
 	}
+}
+
+// actAs makes r come from u, as requireAuth would: the user exists in the
+// state and the request carries their user and subject.
+func actAs(t *testing.T, a *Admin, r *http.Request, u User) *http.Request {
+	t.Helper()
+	if _, ok := a.state.LookupUser(u.Username); !ok {
+		if err := a.state.AddUser(u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r = r.WithContext(context.WithValue(r.Context(), ctxUser, u))
+	return a.withSubject(r, u)
 }

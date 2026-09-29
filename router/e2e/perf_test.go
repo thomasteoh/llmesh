@@ -23,7 +23,7 @@ func perfStatsAfter(t *testing.T, s *testStack) admin.PerfStats {
 	t.Helper()
 	s.Perf.Flush()
 	now := time.Now()
-	got, err := s.State.PerfTotals(now.Add(-2*time.Hour), now.Add(2*time.Hour), "")
+	got, err := s.State.PerfTotals(now.Add(-2*time.Hour), now.Add(2*time.Hour), nil)
 	if err != nil {
 		t.Fatalf("perf totals: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestE2E_Perf_AttributesToCallerAndClient(t *testing.T) {
 
 	// The client token in the harness is testuser/test-client, which is how the
 	// Clients page looks a machine's performance up.
-	byClient, err := s.State.PerfByClient(since, until, "")
+	byClient, err := s.State.PerfByClient(since, until, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,14 +149,14 @@ func TestE2E_Perf_AttributesToCallerAndClient(t *testing.T) {
 	}
 
 	// And the caller sees it as their own, which is what scopes a member's view.
-	mine, err := s.State.PerfTotals(since, until, "testuser")
+	mine, err := s.State.PerfTotals(since, until, []string{"testuser"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if mine.Samples != 1 {
 		t.Fatalf("owner-scoped samples: got %d, want 1", mine.Samples)
 	}
-	other, err := s.State.PerfTotals(since, until, "somebody-else")
+	other, err := s.State.PerfTotals(since, until, []string{"somebody-else"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestE2E_Perf_AttributesToCallerAndClient(t *testing.T) {
 	}
 
 	// Grouping by model reaches the same request from the chart's angle.
-	rows, err := s.State.QueryPerf(since, until, "model", false, "")
+	rows, err := s.State.QueryPerf(since, until, "model", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

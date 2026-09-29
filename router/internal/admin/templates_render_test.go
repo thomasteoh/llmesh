@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"strings"
 	"testing"
 	"time"
 )
@@ -67,8 +68,9 @@ func renderStandalonePage(t *testing.T, page string, data any) {
 // base returns the layout-level fields every page needs.
 func base(page string) map[string]any {
 	return map[string]any{
-		"Page": page, "Name": "llmesh", "Username": "alice", "IsAdmin": true,
-		"CSRFToken": "csrf", "RouterVersion": "v1.2.3", "Host": "llm.example.com",
+		"Page": page, "Name": "llmesh", "Username": "alice", "Can": allCaps(true), "RoleBadge": "admin",
+		"CanManageAliases": true,
+		"CSRFToken":        "csrf", "RouterVersion": "v1.2.3", "Host": "llm.example.com",
 		"Flash": "", "Error": "",
 	}
 }
@@ -144,7 +146,7 @@ func TestTemplatesRender(t *testing.T) {
 		}}
 		// also exercise the non-admin flat view
 		dFlat := base("clients")
-		dFlat["IsAdmin"] = false
+		dFlat["Can"] = allCaps(false)
 		dFlat["Tokens"] = []any{row, singleRow, routerRow}
 		renderPage(t, "clients", d)
 		renderPage(t, "clients", dFlat)
@@ -183,14 +185,45 @@ func TestTemplatesRender(t *testing.T) {
 		renderPage(t, "dashboard", d)
 	})
 
+	t.Run("teams", func(t *testing.T) {
+		d := base("teams")
+		d["CanCreate"] = true
+		d["Users"] = []string{"alice", "bob"}
+		d["Teams"] = []any{
+			map[string]any{"ID": "research", "Name": "Research", "Description": "ML", "Disabled": false, "ManagedBy": "",
+				"CanManage": true, "IsMember": true, "Members": []any{
+					map[string]any{"Username": "alice", "Maintainer": true},
+					map[string]any{"Username": "bob", "Maintainer": false},
+				}},
+			map[string]any{"ID": "ops", "Name": "Ops", "Description": "", "Disabled": true, "ManagedBy": "oidc",
+				"CanManage": false, "IsMember": false, "Members": []any{}},
+		}
+		renderPage(t, "teams", d)
+		d["Teams"] = []any{}
+		d["CanCreate"] = false
+		renderPage(t, "teams", d)
+	})
+
 	t.Run("settings", func(t *testing.T) {
 		d := base("settings")
 		d["Users"] = []any{
-			map[string]any{"Username": "alice", "IsSelf": true, "Role": "admin", "Disabled": false, "ManagedBy": ""},
-			map[string]any{"Username": "bob", "IsSelf": false, "Role": "member", "Disabled": false, "ManagedBy": ""},
-			map[string]any{"Username": "carol", "IsSelf": false, "Role": "admin", "Disabled": true, "ManagedBy": ""},
-			map[string]any{"Username": "dave", "IsSelf": false, "Role": "member", "Disabled": false, "ManagedBy": "oidc"},
+			map[string]any{"Username": "alice", "IsSelf": true, "Role": "admin", "Disabled": false, "ManagedBy": "", "Roles": []string{"owner"}},
+			map[string]any{"Username": "bob", "IsSelf": false, "Role": "member", "Disabled": false, "ManagedBy": "", "Roles": []string{"member", "billing"}},
+			map[string]any{"Username": "carol", "IsSelf": false, "Role": "admin", "Disabled": true, "ManagedBy": "", "Roles": []string{"admin"}},
+			map[string]any{"Username": "dave", "IsSelf": false, "Role": "member", "Disabled": false, "ManagedBy": "oidc", "Roles": []string{}},
 		}
+		d["Roles"] = []any{
+			map[string]any{"ID": "owner", "Name": "Owner", "Description": "Everything", "Builtin": true, "TeamRole": false, "Permissions": []string{"audit.view"}},
+			map[string]any{"ID": "team-member", "Name": "Team member", "Description": "", "Builtin": true, "TeamRole": true, "Permissions": []string{}},
+			map[string]any{"ID": "billing", "Name": "Billing", "Description": "Pricing", "Builtin": false, "TeamRole": false, "Permissions": []string{"pricing.manage", "usage.view.any"}},
+		}
+		d["PermissionGroups"] = permissionGroups()
+		d["MySessions"] = []any{
+			map[string]any{"IDHash": "h1", "IP": "10.0.0.1", "UserAgent": "Firefox", "CreatedAt": now, "LastSeenAt": now},
+			map[string]any{"IDHash": "h2", "IP": "10.0.0.2", "UserAgent": "", "CreatedAt": now, "LastSeenAt": now},
+		}
+		d["CurrentSession"] = "h1"
+		d["MyTeams"] = []string{"research"}
 		d["Upstreams"] = []any{map[string]any{
 			"Name": "orch", "URL": "https://orch.example.com", "Priority": "high", "Connected": true,
 		}}
@@ -235,4 +268,17 @@ func TestTemplatesRender(t *testing.T) {
 	t.Run("help", func(t *testing.T) {
 		renderPage(t, "help", base("help"))
 	})
+}
+
+// allCaps returns a capability map with every flag the templates read set to
+// on, as an owner sees it, or off, as a viewer does.
+func allCaps(on bool) map[string]bool {
+	out := map[string]bool{}
+	for _, a := range capabilityActions {
+		out[strings.ReplaceAll(a, ".", "_")] = on
+	}
+	for _, k := range []string{"key_limits_any", "key_create_any", "client_create_any", "job_cancel_any"} {
+		out[k] = on
+	}
+	return out
 }

@@ -180,7 +180,7 @@ func (a *Admin) syncManagedRole(r *http.Request, u User, role string) {
 	if u.ManagedBy != providerOIDC || role == "" || role == u.Role {
 		return
 	}
-	if u.Role == "admin" && a.state.ActiveAdminCount() <= 1 {
+	if a.state.isPrivileged(u.Username) && a.state.otherActivePrivileged(u.Username) == 0 {
 		a.log.Warn("admin: kept the last admin's role despite the provider", "user", u.Username, "provider_role", role)
 		return
 	}
