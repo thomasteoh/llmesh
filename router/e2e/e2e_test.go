@@ -155,6 +155,7 @@ func setupTestStack(t *testing.T) *testStack {
 	t.Cleanup(perfRec.Close)
 
 	sched := scheduler.New(q, h, adminHandler.State(), slog.Default())
+	sched.SetPairingPolicy(admin.SchedulerPairing{State: adminHandler.State()})
 	sched.Start()
 	h.OnAvailable = func() { sched.Wake() }
 	h.OnRelease = func(req types.InferenceRequest) { q.Push(req); sched.Wake() }
@@ -188,7 +189,7 @@ func setupTestStack(t *testing.T) *testStack {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		h.ServeWS(w, r, ct.Name, ct.Owner, token, ct.OwnerSlots)
+		h.ServeWS(w, r, ct.Name, ct.Owner, ct.TokenHash, st.ReservedSlotsFor(ct.TokenHash))
 	})
 	mux.HandleFunc("/health", health.Handler("e2e", h, q.Len, reqStats, func() []health.UpstreamStatus {
 		return nil

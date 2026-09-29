@@ -349,8 +349,11 @@ type UserIsolation struct {
 // Defined here (rather than in the hub package) so the scheduler can depend
 // on it via an interface without importing hub.
 type ClientSummary struct {
-	ID                string
-	Owner             string
+	ID    string
+	Owner string
+	// Token is the hash of the client token the connection authenticated
+	// with; access management looks up the client's sharing setting by it.
+	Token             string
 	Models            map[string]bool
 	MaxConcurrent     int
 	InFlight          int            // current in-flight job count
@@ -360,6 +363,13 @@ type ClientSummary struct {
 	// with no entry (or an empty list) has unknown capabilities and is never
 	// excluded by the modality check.
 	ModelModalities map[string][]string
+}
+
+// JobRef is who a running job belongs to and which model it runs, for the
+// scheduler's sharing limits.
+type JobRef struct {
+	Owner string
+	Model string
 }
 
 // EstimateTokens returns an approximate token count for a request given an input

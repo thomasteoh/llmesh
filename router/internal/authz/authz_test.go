@@ -529,3 +529,24 @@ func FuzzCondition(f *testing.F) {
 		}
 	})
 }
+
+func TestPairClient(t *testing.T) {
+	e := mustCompile(t, allModels)
+	sh := &Sharing{Mode: ShareIdle, ReservedSlots: map[string]int{"big": 2, "*": 1}, PerRequesterMax: 3}
+	client := Resource{Type: "client", Owner: "user:alice", Sharing: sh}
+	p := e.PairClient(bob, client, Context{})
+	if !p.Allowed || p.OwnerSide || !p.IdleOnly || p.PerRequesterMax != 3 || p.ReservedFor("big") != 2 || p.ReservedFor("small") != 1 {
+		t.Errorf("bob on alice's idle client: %+v", p)
+	}
+	p = e.PairClient(alice, client, Context{})
+	if !p.Allowed || !p.OwnerSide || p.IdleOnly || p.ReservedFor("big") != 0 || p.PerRequesterMax != 0 {
+		t.Errorf("alice on her own client: %+v", p)
+	}
+	if p := e.PairClient(viewer, client, Context{}); p.Allowed {
+		t.Error("a viewer may use a client")
+	}
+	sh.Mode = SharePrivate
+	if p := e.PairClient(bob, client, Context{}); p.Allowed {
+		t.Error("bob may use a private client")
+	}
+}

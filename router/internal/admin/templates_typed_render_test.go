@@ -49,7 +49,10 @@ func TestTemplatesRenderAgainstRealStructs(t *testing.T) {
 			Perf: &ClientPerfRow{
 				Requests: 42, GenTPS: "38.4 tok/s", AvgTTFT: "412 ms", WindowDesc: "24h", Est: true,
 			},
+			SharingMode: "idle", SharingWith: "team:research, user:bob", PerRequesterMax: 2,
+			ReservedDefault: 1, CanShare: true,
 		}
+		row.Owner = "team:research"
 		// An offline token whose only model rows come from a slot limit and past
 		// traffic exercises the not-served branch and the single-connection
 		// layout, where the "Served by" column is suppressed.
@@ -60,7 +63,7 @@ func TestTemplatesRenderAgainstRealStructs(t *testing.T) {
 		}
 		router := ClientTokenRow{
 			Status: "connected", StatusClass: "connected", StatusLabel: "● connected",
-			IsRouter: true, CSRFToken: "csrf",
+			IsRouter: true, CSRFToken: "csrf", SharingMode: "private",
 		}
 		tokens := []ClientTokenRow{row, offline, router}
 

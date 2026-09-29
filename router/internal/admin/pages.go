@@ -226,6 +226,14 @@ type ClientTokenRow struct {
 	// Perf is this machine's recent inference performance, or nil when it has
 	// served no requests in the window.
 	Perf *ClientPerfRow
+
+	// Sharing: the preset in effect and the Advanced fields, and whether the
+	// viewer may change them.
+	SharingMode     string // "private", "idle", or "shared"
+	SharingWith     string // comma-separated allowlist
+	PerRequesterMax int
+	ReservedDefault int // reserved slots for models not listed ("*")
+	CanShare        bool
 }
 
 // buildConnRow assembles one live connection and the jobs it is running. Shared
@@ -997,6 +1005,14 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, r *http.Request, u Use
 			row.Status, row.StatusClass, row.StatusLabel = clientStatusBadge(0, false)
 		}
 		row.Models = buildClientModelRows(connInfos, t.OwnerSlots, row.Perf)
+		row.SharingMode = string(authz.ShareOpen)
+		if sh := a.state.ClientSharing(t.TokenHash); sh != nil {
+			row.SharingMode = string(sh.Mode)
+			row.SharingWith = strings.Join(sh.With, ", ")
+			row.PerRequesterMax = sh.PerRequesterMax
+			row.ReservedDefault = sh.ReservedSlots["*"]
+		}
+		row.CanShare = a.can(r, "client.share", ownedResource("client", t.TokenHash, t.Owner))
 		rows = append(rows, row)
 	}
 	page := ClientTokensPage{

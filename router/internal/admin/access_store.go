@@ -218,6 +218,7 @@ func (s *State) ReloadAuthz() error {
 		return fmt.Errorf("compile access policies: %w", err)
 	}
 	s.authzEngine.Store(e)
+	s.invalidateAccess()
 	return nil
 }
 

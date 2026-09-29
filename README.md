@@ -180,6 +180,16 @@ From the admin dashboard you can:
 
 Access is granted by roles, each a named set of permissions. The built-in roles are *owner* (everything), *admin* (everything except changing owners), *operator* (clients, aliases, queue, pricing, upstreams), *auditor* (read-only, including the audit log), *member* (own keys, clients, usage, and jobs), and *viewer* (own usage only). Within a team, *team maintainer* and *team member* apply to that team's keys, clients, and usage. Admins can define custom roles from the permission catalogue under **Settings → Roles**, but only with permissions they hold themselves. On upgrade every existing admin becomes an owner and every member stays a member.
 
+**Sharing capacity**
+
+Each client on the **Clients** page has a Sharing control with three settings:
+
+- **Private** — only you (or, for a team's client, the team) can use it.
+- **Share when idle** — others can use it, but only while you are not: while any of your own jobs is running on it, nobody else's starts.
+- **Shared** — others can use it any time; your own requests still go first. This is the default, and what every client did before.
+
+*Advanced* narrows who it is shared with (users, `team:<id>`, `role:<id>`), caps how many jobs any one other person can run on it, and keeps slots back for you on every model; per-model reservations are in the model rows above it. Who may use a client at all is still subject to the router's access rules, and the old per-user isolation switches on the Users tab now write such rules.
+
 **Model access**
 
 Which models a caller may use is set under **Settings → Model access** as allow and deny rules over model names (patterns like `gpt-*`), for everyone or for particular users, teams, or roles. Deny wins over allow. Every router starts with one rule allowing everyone every model. A request for a model the caller may not use gets `403` with the rule that refused it, `/v1/models` lists only what the caller may use, and an alias is usable if one of its targets is — and then only ever routes to a target the caller may use.

@@ -97,6 +97,7 @@ type Scheduler struct {
 	aliases  AliasProvider
 	opts     OptProvider
 	iso      IsolationProvider
+	pairing  PairingPolicy
 	log      *slog.Logger
 	signal   chan struct{}
 	stopCh   chan struct{}
@@ -126,6 +127,44 @@ func New(q JobQueue, h Dispatcher, aliases AliasProvider, logger *slog.Logger) *
 // SetOptProvider registers the source of request-optimization toggles.
 // Must be called before Start. Safe to leave unset (prefix affinity disabled).
 func (s *Scheduler) SetOptProvider(p OptProvider) { s.opts = p }
+
+// Pairing is whether a requester may run on a client and on what terms,
+// decided by access management (see authz.ClientPairing).
+type Pairing struct {
+	Allowed bool
+	// OwnerSide is the client's owner, or a member of the team that owns it.
+	OwnerSide bool
+	// IdleOnly serves the requester only while no owner-side work runs.
+	IdleOnly bool
+	// Reserved is slots held back from the requester per model; "*" covers
+	// models not listed.
+	Reserved map[string]int
+	// PerRequesterMax caps the requester's concurrent jobs on the client.
+	PerRequesterMax int
+}
+
+func (p Pairing) reservedFor(model string) int {
+	if n, ok := p.Reserved[model]; ok {
+		return n
+	}
+	return p.Reserved["*"]
+}
+
+// PairingPolicy decides pairings. When set it replaces the isolation flags
+// and per-token reserved slots; implementations must be cheap, since the
+// scheduler asks once per requester per client per drain.
+type PairingPolicy interface {
+	Pair(reqOwner string, client types.ClientSummary) Pairing
+}
+
+// SetPairingPolicy installs access management's pairing decisions.
+func (s *Scheduler) SetPairingPolicy(p PairingPolicy) { s.pairing = p }
+
+// jobRefLister is the optional hub method the pairing path uses to see who
+// is already running on a client.
+type jobRefLister interface {
+	JobRefsOn(clientID string) []types.JobRef
+}
 
 // SetIsolationProvider registers the source of per-user isolation flags.
 // Must be called before Start. Safe to leave unset (isolation disabled).
@@ -272,6 +311,41 @@ func (s *Scheduler) drainQueue() {
 		return v
 	}
 
+	// Access-managed pairing. pairMemo caches decisions for this drain;
+	// running[clientID] is who is on each client, seeded from the hub and
+	// extended as this drain dispatches.
+	pairMemo := map[string]Pairing{}
+	pair := func(reqOwner string, c types.ClientSummary) Pairing {
+		k := reqOwner + "\x00" + c.ID
+		p, ok := pairMemo[k]
+		if !ok {
+			p = s.pairing.Pair(reqOwner, c)
+			pairMemo[k] = p
+		}
+		return p
+	}
+	running := map[string][]types.JobRef{}
+	runningOn := func(clientID string) []types.JobRef {
+		refs, ok := running[clientID]
+		if !ok {
+			if l, can := s.hub.(jobRefLister); can {
+				refs = l.JobRefsOn(clientID)
+			}
+			running[clientID] = refs
+		}
+		return refs
+	}
+	// ownerSideBusy reports whether owner-side work is running on c, which
+	// is what an idle-only client waits for to end.
+	ownerSideBusy := func(c types.ClientSummary) bool {
+		for _, j := range runningOn(c.ID) {
+			if pair(j.Owner, c).OwnerSide {
+				return true
+			}
+		}
+		return false
+	}
+
 	// IDs selected for dispatch that the queue then refused to hand over. See
 	// the PopByID failure below for why one repeat is fatal to the drain.
 	var unpoppable map[string]bool
@@ -286,7 +360,33 @@ func (s *Scheduler) drainQueue() {
 			// under send/receive isolation. Applied during selection so a blocked
 			// request cannot shadow one the client may run.
 			var eligible func(reqOwner string) bool
-			if len(isoMap) > 0 {
+			if s.pairing != nil {
+				client := c
+				eligible = func(reqOwner string) bool {
+					p := pair(reqOwner, client)
+					if !p.Allowed {
+						return false
+					}
+					if p.OwnerSide {
+						return true
+					}
+					if p.IdleOnly && ownerSideBusy(client) {
+						return false
+					}
+					if p.PerRequesterMax > 0 {
+						n := 0
+						for _, j := range runningOn(client.ID) {
+							if j.Owner == reqOwner {
+								n++
+							}
+						}
+						if n >= p.PerRequesterMax {
+							return false
+						}
+					}
+					return true
+				}
+			} else if len(isoMap) > 0 {
 				clientOwner := c.Owner
 				eligible = func(reqOwner string) bool {
 					return isolationAllows(isoMap, reqOwner, clientOwner)
@@ -299,8 +399,28 @@ func (s *Scheduler) drainQueue() {
 			// Resolve the concrete model once and reuse it everywhere below so
 			// the owner-slot cap, context check, and dispatch cannot disagree.
 			resolved, tier := resolveModel(req, c.Models, aliasTargets)
-			// Enforce per-model owner-slot constraints for non-owner requests.
-			if req.Owner != c.Owner {
+			// Slots the client keeps back from non-owner-side requesters.
+			if s.pairing != nil {
+				if p := pair(req.Owner, c); !p.OwnerSide {
+					reserved := p.reservedFor(resolved)
+					capacity := c.MaxConcurrent - reserved
+					if capacity <= 0 {
+						continue
+					}
+					others := 0
+					for _, j := range runningOn(c.ID) {
+						if j.Model == resolved && !pair(j.Owner, c).OwnerSide {
+							others++
+						}
+					}
+					if others >= capacity {
+						s.log.Debug("scheduler: reserved slots hold this client back",
+							"client_id", c.ID, "model", resolved, "reserved", reserved)
+						continue
+					}
+				}
+			} else if req.Owner != c.Owner {
+				// Enforce per-model owner-slot constraints for non-owner requests.
 				// Resolve model names for OwnerSlots and NonOwnerInFlight separately:
 				//
 				//   ownerSlotsKey — the key into c.OwnerSlots. For a direct model name
@@ -478,6 +598,9 @@ func (s *Scheduler) drainQueue() {
 
 		// Update local accounting so subsequent iterations see this dispatch.
 		inFlight[best.client.ID]++
+		if s.pairing != nil {
+			running[best.client.ID] = append(runningOn(best.client.ID), types.JobRef{Owner: req.Owner, Model: req.Model})
+		}
 		if isNonOwner {
 			nonOwner[best.client.ID][req.Model]++
 		}

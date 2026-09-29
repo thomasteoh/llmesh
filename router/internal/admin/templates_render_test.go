@@ -20,7 +20,9 @@ func testFuncMap() template.FuncMap {
 			}
 			return s[:n]
 		},
-		"not": func(b bool) bool { return !b },
+		"not":       func(b bool) bool { return !b },
+		"list":      func(items ...string) []string { return items },
+		"hasPrefix": strings.HasPrefix,
 		"dict": func(pairs ...any) (map[string]any, error) {
 			if len(pairs)%2 != 0 {
 				return nil, fmt.Errorf("dict: odd number of arguments")

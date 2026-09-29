@@ -144,3 +144,49 @@ func (e *Engine) CanPair(subject Subject, model, client Resource, ctx Context) P
 	}
 	return p
 }
+
+// ClientPairing is the model-independent half of CanPair, for the scheduler:
+// whether a subject may use a client at all and on what terms. Model access
+// is decided at admission and carried on the request, so the scheduler only
+// needs the client side, and needs it once per requester per client rather
+// than once per model.
+type ClientPairing struct {
+	Allowed bool
+	// OwnerSide means the subject owns the client or belongs to the team
+	// that does. Owner-side work is never limited by sharing.
+	OwnerSide bool
+	// IdleOnly means the client serves this subject only while no owner-side
+	// work is running on it.
+	IdleOnly bool
+	// Reserved is slots held back from this subject, per model; "*" applies
+	// to models not listed.
+	Reserved map[string]int
+	// PerRequesterMax caps this subject's concurrent jobs on the client; 0
+	// means no cap.
+	PerRequesterMax int
+	Decision        Decision
+}
+
+// ReservedFor returns the slots held back for model.
+func (p ClientPairing) ReservedFor(model string) int {
+	if n, ok := p.Reserved[model]; ok {
+		return n
+	}
+	return p.Reserved["*"]
+}
+
+// PairClient decides whether subject may use client.
+func (e *Engine) PairClient(subject Subject, client Resource, ctx Context) ClientPairing {
+	d := e.Decide(Request{Subject: subject, Action: "client.use", Resource: client, Context: ctx})
+	if !d.Allowed {
+		return ClientPairing{Decision: d}
+	}
+	p := ClientPairing{Allowed: true, Decision: d, OwnerSide: isOwnerSide(subject, client)}
+	if p.OwnerSide || client.Sharing == nil {
+		return p
+	}
+	p.IdleOnly = client.Sharing.Mode == ShareIdle
+	p.Reserved = client.Sharing.ReservedSlots
+	p.PerRequesterMax = client.Sharing.PerRequesterMax
+	return p
+}

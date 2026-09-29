@@ -750,6 +750,7 @@ func (h *Hub) AvailableClientList() []ClientSummary {
 		out = append(out, ClientSummary{
 			ID:                c.ID,
 			Owner:             c.Owner,
+			Token:             c.Token,
 			Models:            models,
 			MaxConcurrent:     c.MaxConcurrent,
 			InFlight:          c.InFlight(),
@@ -810,7 +811,11 @@ func (h *Hub) AvailableSlotsByModel(owner string) []types.ModelSlots {
 			// Non-owner: capped by MaxConcurrent minus slots reserved for the
 			// client's owner on this model, then by how many non-owner jobs are
 			// already running, then by the overall free-slot count.
-			nonOwnerCap := c.MaxConcurrent - c.OwnerSlots[m]
+			reserved, ok := c.OwnerSlots[m]
+			if !ok {
+				reserved = c.OwnerSlots["*"] // default for models not listed
+			}
+			nonOwnerCap := c.MaxConcurrent - reserved
 			if nonOwnerCap <= 0 {
 				continue // exclusively reserved for the client owner
 			}
@@ -1456,6 +1461,19 @@ func (h *Hub) SetClientOwnerSlots(token, model string, slots int) {
 // NonOwnerInFlight returns the number of in-flight jobs on clientID for the given
 // model whose request owner differs from owner. Used by the scheduler to enforce
 // per-model OwnerSlots limits.
+// JobRefsOn returns the owner and model of every job running on a client.
+func (h *Hub) JobRefsOn(clientID string) []types.JobRef {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	out := make([]types.JobRef, 0, len(h.jobsByClient[clientID]))
+	for id := range h.jobsByClient[clientID] {
+		if rec, ok := h.jobs[id]; ok {
+			out = append(out, types.JobRef{Owner: rec.Req.Owner, Model: rec.Req.Model})
+		}
+	}
+	return out
+}
+
 func (h *Hub) NonOwnerInFlight(clientID, owner, model string) int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()

@@ -1,6 +1,6 @@
 # Access management v2
 
-> **Status: approved 2026-09-29; phases 1–4 implemented.** Replaces the ad-hoc admin/member checks,
+> **Status: approved 2026-09-29; phases 1–5 implemented.** Replaces the ad-hoc admin/member checks,
 > per-user isolation flags, and per-token `owner_slots` with one authorization
 > model covering the portal, inference admission, and dispatch.
 
@@ -413,4 +413,28 @@ Implementation notes (phase 4):
 - `context.source_ip` is the socket peer unless `trust_proxy_headers` is on,
   matching the portal; the API's older `clientIP` (used only for logging)
   still reads X-Forwarded-For.
+
+Implementation notes (phase 5):
+
+- The scheduler takes a `PairingPolicy`; when set (always, in `main.go`) it
+  replaces the isolation filter and the per-token reserved-slot check. The
+  answer is model-independent (`authz.ClientPairing`), since model access is
+  settled at admission, and is memoised per requester per client per drain.
+- "Owner side" is the client's owner or any member of the team that owns it;
+  idle-only, reserved slots, and per-requester caps apply only to others.
+- Share when idle means: serve others only while no owner-side job is
+  running on the client. Queued owner work already wins the queue through
+  owner affinity.
+- Isolation flags became deny policies on `client.use`
+  (`isolation-send-<user>`, `isolation-receive-<user>`); the portal toggles
+  now write those policies, and deleting a user removes them.
+- `owner_slots` became `sharing.reserved_slots`; the old `"any"` key became
+  `"*"` (every model's default), which can only hold back more. The existing
+  owner-slots API writes through to sharing.
+- Jobs from an upstream router run as a `router:<name>` principal holding
+  the member role, which is what they could do before.
+- Reclaim (displacing a not-yet-started non-owner job) is deferred; the
+  Advanced section does not offer it yet.
+- Pairing inputs (requester subjects, client sharing) are cached in `State`
+  and dropped wholesale on any access change.
 

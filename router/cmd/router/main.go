@@ -283,6 +283,9 @@ func main() {
 	sched := scheduler.New(q, h, adminHandler.State(), logring.NewLogger(sink, "scheduler", slog.LevelInfo))
 	sched.SetOptProvider(adminHandler.State())
 	sched.SetIsolationProvider(adminHandler.State())
+	// Access-managed pairing supersedes the isolation flags above; they
+	// remain wired only as the fallback for a scheduler built without it.
+	sched.SetPairingPolicy(admin.SchedulerPairing{State: adminHandler.State()})
 	sched.Start()
 	// Wire hub callbacks that wake the scheduler (moved here from scheduler.New since
 	// scheduler now accepts a Dispatcher interface rather than *hub.Hub directly).
@@ -376,7 +379,7 @@ func main() {
 		}
 		// The hub is keyed by the token hash so plaintext secrets never sit in
 		// the connection registry or in-flight job records.
-		h.ServeWS(w, r, ct.Name, ct.Owner, ct.TokenHash, ct.OwnerSlots)
+		h.ServeWS(w, r, ct.Name, ct.Owner, ct.TokenHash, adminHandler.State().ReservedSlotsFor(ct.TokenHash))
 	})
 	mux.HandleFunc("/health", health.Handler(version, h, q.Len, reqStats, func() []health.UpstreamStatus {
 		upstreamRouters := adminHandler.State().GetUpstreamRouters()

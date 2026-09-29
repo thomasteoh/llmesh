@@ -262,6 +262,8 @@ type State struct {
 
 	// authzEngine is the compiled access model; see access_store.go.
 	authzEngine atomic.Pointer[authz.Engine]
+	// pairingCache holds the scheduler's pairing inputs; see sharing_store.go.
+	pairingCacheHolder
 
 	// lastTouch throttles last_used_at writes for keys and tokens to one per
 	// credential per minute, so recording use does not turn every inference
@@ -325,6 +327,10 @@ func LoadState(path string) (*State, error) {
 	if err := s.ReloadAuthz(); err != nil {
 		db.Close()
 		return nil, err
+	}
+	if err := s.migrateSharing(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate capacity sharing: %w", err)
 	}
 	return s, nil
 }
@@ -965,6 +971,7 @@ func (s *State) UpdateUser(username string, fn func(*User)) error {
 		return identityConflictError(err)
 	}
 	s.isoCache.Store(nil) // isolation flags may have changed; rebuild on next read
+	s.invalidateAccess()
 	if u.Role != before.Role {
 		if err := s.syncLegacyRole(username, u.Role); err != nil {
 			return err
@@ -1017,10 +1024,13 @@ func (s *State) Users() []User {
 
 // SetUserIsolation sets a user's two request-isolation flags.
 func (s *State) SetUserIsolation(username string, send, receive bool) error {
-	return s.UpdateUser(username, func(u *User) {
+	if err := s.UpdateUser(username, func(u *User) {
 		u.SendIsolation = send
 		u.ReceiveIsolation = receive
-	})
+	}); err != nil {
+		return err
+	}
+	return s.syncIsolationPolicies(username, send, receive)
 }
 
 // IsolationMap returns the isolation flags for every user that has at least one
@@ -1119,6 +1129,10 @@ func (s *State) DeleteUser(actor, target string) error {
 		return fmt.Errorf("user not found: %s", target)
 	}
 	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// Their isolation policies would otherwise outlive them.
+	if err := s.syncIsolationPolicies(target, false, false); err != nil {
 		return err
 	}
 	return s.bumpAuthz()
@@ -1384,6 +1398,9 @@ func (s *State) AddClientToken(t ClientToken) error {
 		}
 		return err
 	}
+	if reserved := reservedFromOwnerSlots(t.OwnerSlots); reserved != nil {
+		return s.SetClientSharing(t.TokenHash, authz.Sharing{Mode: authz.ShareOpen, ReservedSlots: reserved})
+	}
 	return nil
 }
 
@@ -1422,8 +1439,37 @@ func (s *State) SetClientTokenOwnerSlots(owner, tokenHash, model string, slots i
 		}
 		t.OwnerSlots[model] = slots
 	}
-	_, err := s.db.Exec(`UPDATE client_tokens SET owner_slots = ? WHERE token_hash = ?`, marshalOwnerSlots(t.OwnerSlots), tokenHash)
-	return err
+	if _, err := s.db.Exec(`UPDATE client_tokens SET owner_slots = ? WHERE token_hash = ?`, marshalOwnerSlots(t.OwnerSlots), tokenHash); err != nil {
+		return err
+	}
+	// Reserved slots live in the sharing setting now; owner_slots is kept
+	// for display and rollback.
+	sh := authz.Sharing{Mode: authz.ShareOpen}
+	if cur := s.ClientSharing(tokenHash); cur != nil {
+		sh = *cur
+	}
+	sh.ReservedSlots = reservedFromOwnerSlots(t.OwnerSlots)
+	return s.SetClientSharing(tokenHash, sh)
+}
+
+// reservedFromOwnerSlots converts pre-v2 owner slots to reserved slots:
+// "any" (which reserved slots for "any" requests) becomes "*", every model's
+// default, which can only hold back more.
+func reservedFromOwnerSlots(slots map[string]int) map[string]int {
+	out := map[string]int{}
+	for m, n := range slots {
+		if n <= 0 {
+			continue
+		}
+		if m == "any" {
+			m = "*"
+		}
+		out[m] = n
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func (s *State) ClientTokenCount() int {

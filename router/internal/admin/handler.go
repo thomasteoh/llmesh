@@ -181,6 +181,9 @@ func (a *Admin) parseTemplates() error {
 			return s[:n]
 		},
 		"not": func(b bool) bool { return !b },
+		// list builds a slice for ranging over literals in a template.
+		"list":      func(items ...string) []string { return items },
+		"hasPrefix": strings.HasPrefix,
 		// dict builds a map from alternating key/value pairs so partials can be
 		// invoked with named arguments, e.g. {{template "action-button" dict "Action" "/x" ...}}.
 		"dict": func(pairs ...any) (map[string]any, error) {
@@ -348,6 +351,7 @@ func (a *Admin) registerRoutes() {
 	mux.HandleFunc("/portal/settings/users/roles/remove", a.requireRateLimit(a.requirePerm("user.manage", a.postWithCSRF(a.handleUserRoleRemove)), 20))
 	mux.HandleFunc("/portal/settings/users/sign-out", a.requireRateLimit(a.requirePerm("user.manage", a.postWithCSRF(a.handleUserSignOut)), 20))
 	mux.HandleFunc("/portal/settings/sessions/revoke", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleSessionRevoke)), 20))
+	mux.HandleFunc("/portal/clients/sharing", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleClientSharing)), 30))
 	mux.HandleFunc("/portal/settings/model-access", a.requireRateLimit(a.requirePerm("policy.manage", a.postWithCSRF(a.handleModelRuleSave)), 20))
 	mux.HandleFunc("/portal/settings/model-access/toggle", a.requireRateLimit(a.requirePerm("policy.manage", a.postWithCSRF(a.handleModelRuleToggle)), 20))
 	mux.HandleFunc("/portal/settings/model-access/delete", a.requireRateLimit(a.requirePerm("policy.manage", a.postWithCSRF(a.handleModelRuleDelete)), 20))
