@@ -157,7 +157,10 @@ model "*"             allow: everyone            -- the migrated default
   resolve an alias to a forbidden target, never pair with a client §7 forbids).
 - Model attributes available to rules: `name`, `modality`, `context_size`,
   `pricing_basis` (actual = a paid API behind a shim), `served_by_kind`
-  (llama.cpp client, shim, upstream router).
+  (llama.cpp client, shim, upstream router). The kind is what the worker
+  reports at registration: a rule on it keeps honest workers apart, but a
+  worker's operator, who sees every prompt it serves anyway, can claim any
+  kind.
 
 ## 5. Credentials
 
