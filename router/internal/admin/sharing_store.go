@@ -44,21 +44,13 @@ func (s *State) pairCache() *pairingCache {
 func (s *State) invalidateAccess() { s.pairingCache.Store(nil) }
 
 // requesterSubject is the subject a queued request runs as. Owner values are
-// a username, "team:<id>" for a team key, or "upstream:<name>" for a job
-// from an upstream router, which acts as a router principal with member
-// rights — what such jobs could do before access management.
+// a username or "team:<id>" for a team key.
 func (s *State) requesterSubject(owner string) authz.Subject {
 	c := s.pairCache()
 	if v, ok := c.subjects.Load(owner); ok {
 		return v.(authz.Subject)
 	}
-	var subj authz.Subject
-	if name, ok := strings.CutPrefix(owner, "upstream:"); ok {
-		subj = authz.Subject{ID: "router:" + name, Kind: authz.KindRouter,
-			Bindings: []authz.Binding{{Role: authz.RoleMember}}}
-	} else {
-		subj = s.keySubject(owner)
-	}
+	subj := s.keySubject(owner)
 	c.subjects.Store(owner, subj)
 	return subj
 }

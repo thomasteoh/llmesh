@@ -44,13 +44,6 @@ type Admin struct {
 	// direct client cannot spoof its IP to bypass rate limiting.
 	trustProxy bool
 
-	// upstreamReload is called after any upstream router add/remove.
-	// Wired by main.go to connector.Reload after the connector is created.
-	upstreamReload func()
-	// upstreamConnected reports whether the given upstream URL is currently connected.
-	// Wired by main.go to connector.Connected.
-	upstreamConnected func(url string) bool
-
 	// authTokens holds outstanding email sign-in and address-verification links.
 	authTokens *authTokenStore
 
@@ -61,12 +54,6 @@ type Admin struct {
 	oauthOverrides map[string]oauthEndpoints
 	httpClient     *http.Client
 }
-
-// SetUpstreamReloader registers the callback invoked after upstream router config changes.
-func (a *Admin) SetUpstreamReloader(fn func()) { a.upstreamReload = fn }
-
-// SetConnectorStatus registers the function used to query per-upstream connection status.
-func (a *Admin) SetConnectorStatus(fn func(url string) bool) { a.upstreamConnected = fn }
 
 // SetTrustProxy configures whether proxy headers (X-Forwarded-For/Proto) are
 // honoured. Enable only when the router is behind a trusted reverse proxy.
@@ -377,8 +364,6 @@ func (a *Admin) registerRoutes() {
 	mux.HandleFunc("/portal/teams/members/remove", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleTeamMemberRemove)), 20))
 	mux.HandleFunc("/portal/teams/state", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleTeamState)), 20))
 	mux.HandleFunc("/portal/settings/users/isolation", a.requireRateLimit(a.requirePerm("user.manage", a.postWithCSRF(a.handleUserIsolation)), 20))
-	mux.HandleFunc("/portal/settings/upstream/add", a.requireRateLimit(a.requirePerm("upstream.manage", a.postWithCSRF(a.handleUpstreamAdd)), 20))
-	mux.HandleFunc("/portal/settings/upstream/remove", a.requireRateLimit(a.requirePerm("upstream.manage", a.postWithCSRF(a.handleUpstreamRemove)), 20))
 	mux.HandleFunc("/portal/settings/optimization", a.requireRateLimit(a.requirePerm("settings.manage", a.postWithCSRF(a.handleOptimizationUpdate)), 20))
 	mux.HandleFunc("/portal/settings/host", a.requireRateLimit(a.requirePerm("settings.manage", a.postWithCSRF(a.handleHostUpdate)), 20))
 	mux.HandleFunc("/portal/settings/pricing", a.requireRateLimit(a.requirePerm("pricing.manage", a.postWithCSRF(a.handleModelPricingUpdate)), 30))

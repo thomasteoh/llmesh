@@ -88,16 +88,14 @@ func TestTeamClientSharing(t *testing.T) {
 	}
 }
 
-func TestUpstreamJobsKeepWorking(t *testing.T) {
+// Router federation is gone: an "upstream:" owner is no principal here and
+// runs nowhere, not even on a shared client.
+func TestUpstreamOwnerIsRefused(t *testing.T) {
 	s := newTestState(t)
 	s.AddUser(User{Username: "alice", Role: "member"})
 	s.AddClientToken(ClientToken{Name: "box", Owner: "alice", TokenHash: "h"})
-	if !s.PairClient("upstream:hq", "alice", "h").Allowed {
-		t.Error("a job from an upstream router can no longer run on a shared client")
-	}
-	s.SetClientSharing("h", authz.Sharing{Mode: authz.SharePrivate})
 	if s.PairClient("upstream:hq", "alice", "h").Allowed {
-		t.Error("an upstream job ran on a private client")
+		t.Error("an upstream-router owner paired with a shared client")
 	}
 }
 

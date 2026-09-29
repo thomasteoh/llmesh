@@ -610,7 +610,10 @@ func resolve(req *Request, ref string) (any, bool) {
 		case "credential_kind":
 			return c.CredentialKind, c.CredentialKind != ""
 		case "via_upstream":
-			return c.ViaUpstream, true
+			// Router federation was removed, so no request arrives through
+			// another router. Kept readable so stored rules that test it
+			// still load and read as they would for any local request.
+			return false, true
 		case "prompt_tokens":
 			return float64(c.PromptTokens), true
 		}

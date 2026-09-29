@@ -472,16 +472,10 @@ func newClientPerfRow(p PerfStats, byModel map[string]PerfStats) *ClientPerfRow 
 	return row
 }
 
-type UpstreamRouterRow struct {
-	UpstreamRouter
-	Connected bool
-}
-
 type SettingsPage struct {
 	basePage
-	Users     []UserRow
-	Upstreams []UpstreamRouterRow
-	Opt       types.RequestOptimization
+	Users []UserRow
+	Opt   types.RequestOptimization
 	// PortalHost is the admin-set host override (empty when unset). The resolved
 	// value in effect is basePage.Host; this is the raw stored override so the
 	// form shows blank when the host is auto-detected rather than pinned.
@@ -1348,12 +1342,6 @@ func (a *Admin) renderSettingsWith(w http.ResponseWriter, r *http.Request, u Use
 		rows = append(rows, UserRow{User: usr, IsSelf: usr.Username == u.Username, Roles: a.globalRoles(usr.Username),
 			Attrs: attrLines(a.state.UserAttrs(usr.Username))})
 	}
-	upstream := a.state.GetUpstreamRouters()
-	upstreamRows := make([]UpstreamRouterRow, 0, len(upstream))
-	for _, r := range upstream {
-		connected := a.upstreamConnected != nil && a.upstreamConnected(r.URL)
-		upstreamRows = append(upstreamRows, UpstreamRouterRow{UpstreamRouter: r, Connected: connected})
-	}
 	bp := a.newBasePage("settings", u, r)
 	bp.Flash = flash
 	bp.Error = errMsg
@@ -1379,7 +1367,6 @@ func (a *Admin) renderSettingsWith(w http.ResponseWriter, r *http.Request, u Use
 	page := SettingsPage{
 		basePage:   bp,
 		Users:      rows,
-		Upstreams:  upstreamRows,
 		Opt:        a.state.RequestOpts(),
 		PortalHost: a.state.PortalHost(),
 		Pricing:    modelPricingRows(pricing, activeModels, usageModels),
@@ -1541,53 +1528,6 @@ func (a *Admin) handleCostCurrencyUpdate(w http.ResponseWriter, r *http.Request)
 	}
 	a.state.RecordAudit(u.Username, "pricing.currency", code, a.clientIP(r))
 	a.renderSettings(w, r, u, "Currency updated.", "")
-}
-
-func (a *Admin) handleUpstreamAdd(w http.ResponseWriter, r *http.Request) {
-	u := ctxGetUser(r)
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	name := strings.TrimSpace(r.FormValue("name"))
-	url := strings.TrimSpace(r.FormValue("url"))
-	token := strings.TrimSpace(r.FormValue("token"))
-	priority := r.FormValue("priority")
-	if priority == "" {
-		priority = "normal"
-	}
-	if url == "" || token == "" {
-		a.renderSettings(w, r, u, "", "URL and token are required.")
-		return
-	}
-	if err := a.state.AddUpstreamRouter(UpstreamRouter{Name: name, URL: url, Token: token, Priority: priority}); err != nil {
-		a.renderSettings(w, r, u, "", err.Error())
-		return
-	}
-	a.state.RecordAudit(u.Username, "upstream.add", url, a.clientIP(r))
-	if a.upstreamReload != nil {
-		a.upstreamReload()
-	}
-	redirectOrRefresh(w, r, "/portal/settings#tab-upstreams")
-}
-
-func (a *Admin) handleUpstreamRemove(w http.ResponseWriter, r *http.Request) {
-	u := ctxGetUser(r)
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	upstreamURL := r.FormValue("url")
-	if err := a.state.RemoveUpstreamRouter(upstreamURL); err != nil {
-		a.renderSettings(w, r, u, "", err.Error())
-		return
-	}
-	a.state.RecordAudit(u.Username, "upstream.remove", upstreamURL, a.clientIP(r))
-	a.log.Info("admin: upstream router removed", "actor", u.Username, "url", upstreamURL)
-	if a.upstreamReload != nil {
-		a.upstreamReload()
-	}
-	redirectOrRefresh(w, r, "/portal/settings#tab-upstreams")
 }
 
 // optFormKeys lists the request-optimization settings keys in the order they

@@ -55,7 +55,6 @@ var catalogue = map[string]actionInfo{
 	"pricing.manage":  {},
 	"settings.view":   {},
 	"settings.manage": {},
-	"upstream.manage": {},
 	"queue.cancel":    {},
 	"policy.view":     {},
 	"policy.manage":   {},

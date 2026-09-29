@@ -85,7 +85,7 @@ func TestRedirectOrRefresh_FetchPostReturnsDestination(t *testing.T) {
 // carry a #tab the page has to re-select, so the destination travels verbatim.
 func TestRedirectOrRefresh_PreservesDestinationAndFragment(t *testing.T) {
 	for _, dest := range []string{
-		"/portal/settings#tab-upstreams",
+		"/portal/settings#tab-policies",
 		"/portal/settings#tab-users",
 		"/portal/",
 		"/portal/api-keys",

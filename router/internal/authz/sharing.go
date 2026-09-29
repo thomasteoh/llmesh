@@ -46,8 +46,8 @@ func (s Sharing) Validate() error {
 	}
 	for _, w := range s.With {
 		if !strings.HasPrefix(w, "user:") && !strings.HasPrefix(w, "team:") &&
-			!strings.HasPrefix(w, "role:") && !strings.HasPrefix(w, "router:") {
-			return fmt.Errorf("sharing entry %q must start with user:, team:, role:, or router:", w)
+			!strings.HasPrefix(w, "role:") {
+			return fmt.Errorf("sharing entry %q must start with user:, team:, or role:", w)
 		}
 	}
 	for m, n := range s.ReservedSlots {

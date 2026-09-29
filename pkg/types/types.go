@@ -116,8 +116,7 @@ type InferenceRequest struct {
 	// Empty for plain-text requests. Used to route to capable clients.
 	Modalities []string  `json:"modalities,omitempty"`
 	EnqueuedAt time.Time `json:"enqueued_at"`
-	Attempts   int       `json:"attempts,omitempty"`  // number of times this request has errored and been retried
-	OriginID   string    `json:"origin_id,omitempty"` // request ID assigned by the originating router; set by upstream connector for cross-hop tracing
+	Attempts   int       `json:"attempts,omitempty"` // number of times this request has errored and been retried
 	// RequestedModel is Model as the caller asked for it, which may be an alias
 	// or "any". Model is rewritten to a concrete name at dispatch, so without
 	// this a retry would be pinned to the very model that just failed. Set by

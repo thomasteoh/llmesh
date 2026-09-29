@@ -15,24 +15,18 @@ import (
 	"llmesh/router/internal/stats"
 )
 
-// UpstreamStatus is one configured upstream router and whether we hold a
-// connection to it.
-type UpstreamStatus struct {
-	URL       string `json:"url"`
-	Name      string `json:"name,omitempty"`
-	Connected bool   `json:"connected"`
-}
-
 // Response is the /health document. The first six fields are the original
 // shape and are unchanged; models is additive.
 type Response struct {
-	Status     string           `json:"status"`
-	Version    string           `json:"version"`
-	Clients    int              `json:"clients"`
-	QueueDepth int              `json:"queue_depth"`
-	ActiveJobs int              `json:"active_jobs"`
-	Upstreams  []UpstreamStatus `json:"upstreams"`
-	Models     []ModelHealth    `json:"models"`
+	Status     string `json:"status"`
+	Version    string `json:"version"`
+	Clients    int    `json:"clients"`
+	QueueDepth int    `json:"queue_depth"`
+	ActiveJobs int    `json:"active_jobs"`
+	// Upstreams is always empty: router federation was removed. The key
+	// stays so consumers that read it keep working.
+	Upstreams []struct{}    `json:"upstreams"`
+	Models    []ModelHealth `json:"models"`
 }
 
 // Model states, in precedence order: a model with any job generating reads as
@@ -106,7 +100,6 @@ type inputs struct {
 	clients    int
 	queueDepth int
 	activeJobs int
-	upstreams  []UpstreamStatus
 	activity   []hub.ModelActivity
 	window     time.Duration
 	recent     map[string]latency.ModelSnapshot
@@ -153,19 +146,13 @@ func build(in inputs) Response {
 		}
 		models = append(models, m)
 	}
-	// Both lists are always lists. A consumer that indexes into them should not
-	// have to special-case a null for "none configured" or "none connected".
-	upstreams := in.upstreams
-	if upstreams == nil {
-		upstreams = []UpstreamStatus{}
-	}
 	return Response{
 		Status:     "ok",
 		Version:    in.version,
 		Clients:    in.clients,
 		QueueDepth: in.queueDepth,
 		ActiveJobs: in.activeJobs,
-		Upstreams:  upstreams,
+		Upstreams:  []struct{}{},
 		Models:     models,
 	}
 }
@@ -201,15 +188,12 @@ func millis(s latency.Snapshot) *Percentiles {
 
 func round2(v float64) float64 { return math.Round(v*100) / 100 }
 
-// Handler serves the document. upstreams is a callback because upstream
-// state lives behind the admin state and the connector, neither of which this
-// file should reach into.
+// Handler serves the document.
 func Handler(
 	version string,
 	h *hub.Hub,
 	queueDepth func() int,
 	reqStats *stats.Stats,
-	upstreams func() []UpstreamStatus,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		in := inputs{
@@ -217,7 +201,6 @@ func Handler(
 			clients:    h.ActiveClientCount(),
 			queueDepth: queueDepth(),
 			activeJobs: len(h.AllInFlightJobs()),
-			upstreams:  upstreams(),
 			activity:   h.ActivityByModel(),
 			totals:     make(map[string]stats.Summary),
 		}

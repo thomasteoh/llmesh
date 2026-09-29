@@ -240,9 +240,6 @@ func TestTemplatesRender(t *testing.T) {
 			map[string]any{"ID": "models-default", "Name": "Everyone", "Effect": "allow", "Models": []string{"*"}, "Who": "everyone", "Enabled": true, "Advanced": false},
 			map[string]any{"ID": "no-gpt", "Name": "No GPT", "Effect": "deny", "Models": []string{"gpt-*"}, "Who": "teams interns", "Enabled": false, "Advanced": true},
 		}
-		d["Upstreams"] = []any{map[string]any{
-			"Name": "orch", "URL": "https://orch.example.com", "Priority": "high", "Connected": true,
-		}}
 		d["Currency"] = "AUD"
 		d["Auth"] = AuthSettings{
 			Providers: []OAuthProviderSettings{{

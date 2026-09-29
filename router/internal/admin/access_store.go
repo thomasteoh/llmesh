@@ -163,6 +163,61 @@ func (s *State) migrateAccess() error {
 	return tx.Commit()
 }
 
+// pruneRetiredActions removes permissions and policy actions that no longer
+// name anything in the catalogue, such as upstream.manage after router
+// federation was removed. Every write validates against the catalogue, so a
+// stale entry could only come from an older release — and left in place it
+// would stop the engine compiling, and the router starting. A policy left
+// with no actions is deleted: it now governs nothing.
+func (s *State) pruneRetiredActions() error {
+	roles, err := s.CustomRoles()
+	if err != nil {
+		return err
+	}
+	for _, r := range roles {
+		kept := make([]string, 0, len(r.Permissions))
+		for _, p := range r.Permissions {
+			if _, err := authz.ParsePermission(p); err == nil {
+				kept = append(kept, p)
+			}
+		}
+		if len(kept) == len(r.Permissions) {
+			continue
+		}
+		perms, _ := json.Marshal(kept)
+		if _, err := s.db.Exec(`UPDATE roles SET permissions = ? WHERE id = ?`, string(perms), r.ID); err != nil {
+			return err
+		}
+	}
+	policies, err := s.Policies()
+	if err != nil {
+		return err
+	}
+	for _, p := range policies {
+		kept := make([]string, 0, len(p.Actions))
+		for _, a := range p.Actions {
+			if len(authz.ExpandActions([]string{a})) > 0 {
+				kept = append(kept, a)
+			}
+		}
+		switch {
+		case len(kept) == len(p.Actions):
+			continue
+		case len(kept) == 0:
+			if _, err := s.db.Exec(`DELETE FROM policies WHERE id = ?`, p.ID); err != nil {
+				return err
+			}
+		default:
+			p.Actions = kept
+			body, _ := json.Marshal(p)
+			if _, err := s.db.Exec(`UPDATE policies SET body = ? WHERE id = ?`, string(body), p.ID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func nowString() string { return time.Now().UTC().Format(time.RFC3339) }
 
 func userPrincipal(username string) string { return "user:" + username }

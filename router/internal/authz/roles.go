@@ -63,13 +63,13 @@ func BuiltinRoles() []Role {
 		},
 		{
 			ID: RoleOperator, Name: "Operator", Builtin: true,
-			Description: "Runs the fleet: clients, aliases, queue, pricing, upstreams. No users, roles, or policies.",
+			Description: "Runs the fleet: clients, aliases, queue, pricing. No users, roles, or policies.",
 			Permissions: []string{
 				"model.use", "client.use",
 				"key.create.own", "key.manage.own", "key.view.own", "key.limits.any",
 				"client.create.any", "client.manage.any", "client.view.any", "client.share.any",
 				"usage.view.any", "job.view.any", "job.cancel.any", "queue.cancel",
-				"fleet.view", "alias.manage", "pricing.manage", "upstream.manage",
+				"fleet.view", "alias.manage", "pricing.manage",
 				"settings.view", "team.create", "team.view.any",
 			},
 		},

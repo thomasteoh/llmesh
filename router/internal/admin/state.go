@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -165,15 +165,6 @@ func SecretPrefix(s string) string {
 	return "****"
 }
 
-// UpstreamRouter configures an upstream (orchestrator) router that this router
-// connects to as a client.
-type UpstreamRouter struct {
-	Name     string `json:"name"`
-	URL      string `json:"url"`      // base URL, e.g. "https://orchestrator.example.com"
-	Token    string `json:"token"`    // client token issued on the upstream router
-	Priority string `json:"priority"` // "high" | "normal" | "low"; default "normal"
-}
-
 // legacyAPIKey / legacyClientToken mirror the plaintext shapes found in old
 // state.json files; used only for first-startup import.
 type legacyAPIKey struct {
@@ -195,21 +186,19 @@ type legacyClientToken struct {
 
 // stateData is kept only for migrating legacy state.json files on first startup.
 type stateData struct {
-	Users           []User              `json:"users"`
-	APIKeys         []legacyAPIKey      `json:"api_keys"`
-	ClientTokens    []legacyClientToken `json:"client_tokens"`
-	ModelAliases    map[string][]string `json:"model_aliases,omitempty"`
-	UpstreamRouters []UpstreamRouter    `json:"upstream_routers,omitempty"`
+	Users        []User              `json:"users"`
+	APIKeys      []legacyAPIKey      `json:"api_keys"`
+	ClientTokens []legacyClientToken `json:"client_tokens"`
+	ModelAliases map[string][]string `json:"model_aliases,omitempty"`
 }
 
 // UnmarshalJSON handles migration from the old map[string]string format.
 func (sd *stateData) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		Users           []User              `json:"users"`
-		APIKeys         []legacyAPIKey      `json:"api_keys"`
-		ClientTokens    []legacyClientToken `json:"client_tokens"`
-		ModelAliases    json.RawMessage     `json:"model_aliases,omitempty"`
-		UpstreamRouters []UpstreamRouter    `json:"upstream_routers,omitempty"`
+		Users        []User              `json:"users"`
+		APIKeys      []legacyAPIKey      `json:"api_keys"`
+		ClientTokens []legacyClientToken `json:"client_tokens"`
+		ModelAliases json.RawMessage     `json:"model_aliases,omitempty"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -217,7 +206,6 @@ func (sd *stateData) UnmarshalJSON(data []byte) error {
 	sd.Users = raw.Users
 	sd.APIKeys = raw.APIKeys
 	sd.ClientTokens = raw.ClientTokens
-	sd.UpstreamRouters = raw.UpstreamRouters
 	if len(raw.ModelAliases) > 0 {
 		var newFmt map[string][]string
 		if err := json.Unmarshal(raw.ModelAliases, &newFmt); err == nil {
@@ -324,6 +312,10 @@ func LoadState(path string) (*State, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate access model: %w", err)
 	}
+	if err := s.pruneRetiredActions(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("prune retired permissions: %w", err)
+	}
 	// Fail closed: a router that cannot compile its access policies must not
 	// start and serve without them.
 	if err := s.ReloadAuthz(); err != nil {
@@ -381,12 +373,6 @@ func createSchema(db *sql.DB) error {
 			model    TEXT NOT NULL,
 			priority INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY (alias, model)
-		);
-		CREATE TABLE IF NOT EXISTS upstream_routers (
-			url      TEXT PRIMARY KEY,
-			name     TEXT NOT NULL DEFAULT '',
-			token    TEXT NOT NULL DEFAULT '',
-			priority TEXT NOT NULL DEFAULT 'normal'
 		);
 		CREATE TABLE IF NOT EXISTS settings (
 			key   TEXT PRIMARY KEY,
@@ -447,9 +433,7 @@ func createSchema(db *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	// Non-destructive migration: add priority column for existing databases.
-	// SQLite returns an error if the column already exists; ignore it.
-	_, _ = db.Exec(`ALTER TABLE upstream_routers ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'`)
+	dropUpstreamRouters(db)
 	// Alias preference tiers. Defaulting to 0 puts every pre-existing target in
 	// the same tier, which is exactly the load-spreading behaviour they had
 	// before preference existed — upgrading changes no routing decision.
@@ -733,14 +717,6 @@ func (s *State) maybeMigrateJSON(jsonPath, dbfile string) error {
 			); err != nil {
 				return err
 			}
-		}
-	}
-	for _, r := range sd.UpstreamRouters {
-		if _, err := tx.Exec(
-			`INSERT OR IGNORE INTO upstream_routers (url, name, token) VALUES (?, ?, ?)`,
-			r.URL, r.Name, r.Token,
-		); err != nil {
-			return err
 		}
 	}
 	return tx.Commit()
@@ -1495,66 +1471,30 @@ func (s *State) ClientTokenCount() int {
 	return count
 }
 
-// --- Upstream Routers ---
-
-func (s *State) GetUpstreamRouters() []UpstreamRouter {
-	rows, err := s.db.Query(`SELECT url, name, token, COALESCE(priority, 'normal') FROM upstream_routers ORDER BY url`)
+// dropUpstreamRouters removes the table of upstream routers, from when a
+// router could join another as a client. Federation was removed once access
+// management could share capacity inside one router; the table held each
+// upstream's client token in plaintext, so it goes rather than lingering.
+// The URLs are logged so an admin knows which tokens to revoke upstream.
+func dropUpstreamRouters(db *sql.DB) {
+	rows, err := db.Query(`SELECT url FROM upstream_routers`)
 	if err != nil {
-		return nil
+		return // no table: a new database, or already dropped
 	}
-	defer rows.Close()
-	var out []UpstreamRouter
+	var urls []string
 	for rows.Next() {
-		var r UpstreamRouter
-		if err := rows.Scan(&r.URL, &r.Name, &r.Token, &r.Priority); err == nil {
-			out = append(out, r)
+		var u string
+		if rows.Scan(&u) == nil {
+			urls = append(urls, u)
 		}
 	}
-	return out
+	rows.Close()
+	if len(urls) > 0 {
+		slog.Warn("admin: upstream routers are no longer supported; their configuration was removed. Revoke their client tokens on the upstream routers.",
+			"urls", strings.Join(urls, ", "))
+	}
+	_, _ = db.Exec(`DROP TABLE upstream_routers`)
 }
-
-func (s *State) AddUpstreamRouter(r UpstreamRouter) error {
-	if r.URL == "" || r.Token == "" {
-		return fmt.Errorf("url and token are required")
-	}
-	parsed, err := url.ParseRequestURI(r.URL)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return fmt.Errorf("url must start with http:// or https://")
-	}
-	r.URL = strings.ToLower(strings.TrimRight(r.URL, "/"))
-	switch r.Priority {
-	case "", "normal":
-		r.Priority = "normal"
-	case "high", "low":
-		// valid
-	default:
-		return fmt.Errorf("priority must be one of: high, normal, low")
-	}
-	_, err = s.db.Exec(
-		`INSERT INTO upstream_routers (url, name, token, priority) VALUES (?, ?, ?, ?)`,
-		r.URL, r.Name, r.Token, r.Priority,
-	)
-	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE") {
-			return fmt.Errorf("upstream %q is already configured", r.URL)
-		}
-		return err
-	}
-	return nil
-}
-
-func (s *State) RemoveUpstreamRouter(rawURL string) error {
-	res, err := s.db.Exec(`DELETE FROM upstream_routers WHERE url = ?`, rawURL)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("upstream %q not found", rawURL)
-	}
-	return nil
-}
-
-// --- Token generation ---
 
 func genRandom(n int) (string, error) {
 	b := make([]byte, n)

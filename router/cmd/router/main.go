@@ -27,7 +27,6 @@ import (
 	"llmesh/router/internal/queue"
 	"llmesh/router/internal/scheduler"
 	"llmesh/router/internal/stats"
-	"llmesh/router/internal/upstream"
 )
 
 // version is set at build time via -ldflags "-X main.version=<tag>".
@@ -282,9 +281,6 @@ func main() {
 
 	sched := scheduler.New(q, h, adminHandler.State(), logring.NewLogger(sink, "scheduler", slog.LevelInfo))
 	sched.SetOptProvider(adminHandler.State())
-	sched.SetIsolationProvider(adminHandler.State())
-	// Access-managed pairing supersedes the isolation flags above; they
-	// remain wired only as the fallback for a scheduler built without it.
 	sched.SetPairingPolicy(admin.SchedulerPairing{State: adminHandler.State()})
 	sched.Start()
 	// Wire hub callbacks that wake the scheduler (moved here from scheduler.New since
@@ -293,42 +289,8 @@ func main() {
 	h.OnRelease = func(req types.InferenceRequest) { q.Push(req); sched.Wake() }
 	h.StartLeaseReaper()
 
-	// Upstream connector: connects this router to orchestrator routers as a client.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	conn := upstream.New(h, q, store, sched, version, logring.NewLogger(sink, "upstream", slog.LevelInfo))
-	if upstreams := adminHandler.State().GetUpstreamRouters(); len(upstreams) > 0 {
-		conn.Reload(ctx, upstreams)
-	}
-	adminHandler.SetUpstreamReloader(func() { conn.Reload(ctx, adminHandler.State().GetUpstreamRouters()) })
-	adminHandler.SetConnectorStatus(conn.Connected)
-	// Jobs from upstream routers pass the same model access check as API
-	// keys, as the upstream's router principal.
-	conn.SetModelGate(func(req *types.InferenceRequest) (bool, string) {
-		var candidates []string
-		switch aliases := adminHandler.State().AliasMap(); {
-		case req.Model == "any":
-			candidates = h.ActiveModels()
-		case aliases[req.Model] != nil:
-			candidates = append(candidates, aliases[req.Model]...)
-		default:
-			candidates = []string{req.Model}
-		}
-		attrs := map[string]map[string]any{}
-		for _, m := range candidates {
-			a := h.ModelAttrs(m)
-			for k, v := range adminHandler.State().ModelAttrs(m) {
-				a[k] = v
-			}
-			attrs[m] = a
-		}
-		allowed, reason := adminHandler.State().AuthorizeUpstreamJob(req.Owner, candidates, attrs)
-		if len(allowed) == 0 {
-			return false, reason
-		}
-		req.AllowedModels = allowed
-		return true, ""
-	})
 
 	// Re-check identity-provider-managed accounts on the interval set in the
 	// portal (off unless configured).
@@ -413,18 +375,7 @@ func main() {
 		// the connection registry or in-flight job records.
 		h.ServeWS(w, r, ct.Name, ct.Owner, ct.TokenHash, adminHandler.State().ReservedSlotsFor(ct.TokenHash))
 	})
-	mux.HandleFunc("/health", health.Handler(version, h, q.Len, reqStats, func() []health.UpstreamStatus {
-		upstreamRouters := adminHandler.State().GetUpstreamRouters()
-		upstreams := make([]health.UpstreamStatus, len(upstreamRouters))
-		for i, u := range upstreamRouters {
-			upstreams[i] = health.UpstreamStatus{
-				URL:       u.URL,
-				Name:      u.Name,
-				Connected: conn.Connected(u.URL),
-			}
-		}
-		return upstreams
-	}))
+	mux.HandleFunc("/health", health.Handler(version, h, q.Len, reqStats))
 	mux.HandleFunc("/metrics", metricsHandler(apiHandler, q, h, reqStats, h.Latency))
 	mux.Handle("/portal/", adminHandler)
 	mux.Handle("/portal", adminHandler)

@@ -605,7 +605,7 @@ func (s *Scheduler) drainQueue() {
 			nonOwner[best.client.ID][req.Model]++
 		}
 
-		s.log.Info("scheduler: dispatched", "request_id", req.ID, "origin_id", req.OriginID, "model", req.Model, "owner", req.Owner, "client_id", best.client.ID, "client_owner", best.client.Owner)
+		s.log.Info("scheduler: dispatched", "request_id", req.ID, "model", req.Model, "owner", req.Owner, "client_id", best.client.ID, "client_owner", best.client.Owner)
 	}
 }
 

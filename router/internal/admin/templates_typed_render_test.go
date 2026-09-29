@@ -91,11 +91,10 @@ func TestTemplatesRenderAgainstRealStructs(t *testing.T) {
 			{User: User{Username: "bob", Role: "member", Disabled: true}},
 		}
 		base := SettingsPage{
-			basePage:  sb,
-			Users:     users,
-			Upstreams: []UpstreamRouterRow{{UpstreamRouter: UpstreamRouter{Name: "orch", URL: "https://orch.example.com", Priority: "high"}, Connected: true}},
-			Currency:  "AUD",
-			Pricing:   []ModelPricingRow{{Model: "llama3", InputRate: "1", OutputRate: "2", Basis: "estimated", Live: true, Configured: true}},
+			basePage: sb,
+			Users:    users,
+			Currency: "AUD",
+			Pricing:  []ModelPricingRow{{Model: "llama3", InputRate: "1", OutputRate: "2", Basis: "estimated", Live: true, Configured: true}},
 		}
 
 		// One provider card per real provider, so adding a provider puts it

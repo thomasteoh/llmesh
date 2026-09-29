@@ -18,9 +18,8 @@ import (
 type PrincipalKind string
 
 const (
-	KindUser   PrincipalKind = "user"
-	KindTeam   PrincipalKind = "team"
-	KindRouter PrincipalKind = "router"
+	KindUser PrincipalKind = "user"
+	KindTeam PrincipalKind = "team"
 )
 
 // Binding grants a role to a subject, either everywhere or within one team.
@@ -87,7 +86,6 @@ type Context struct {
 	Endpoint       string
 	Priority       string
 	CredentialKind string // "session", "key", "token"
-	ViaUpstream    bool
 	PromptTokens   int
 	// Extra holds additional context attributes a caller wants rules to see.
 	Extra map[string]any

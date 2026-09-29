@@ -47,7 +47,6 @@ func TestRolesGateRoutes(t *testing.T) {
 	}{
 		{"root", "user.manage", 200},
 		{"op", "alias.manage", 200},
-		{"op", "upstream.manage", 200},
 		{"op", "pricing.manage", 200},
 		{"op", "user.manage", 403},
 		{"op", "settings.manage", 403},

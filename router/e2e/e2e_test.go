@@ -192,9 +192,7 @@ func setupTestStack(t *testing.T) *testStack {
 		}
 		h.ServeWS(w, r, ct.Name, ct.Owner, ct.TokenHash, st.ReservedSlotsFor(ct.TokenHash))
 	})
-	mux.HandleFunc("/health", health.Handler("e2e", h, q.Len, reqStats, func() []health.UpstreamStatus {
-		return nil
-	}))
+	mux.HandleFunc("/health", health.Handler("e2e", h, q.Len, reqStats))
 
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)

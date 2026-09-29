@@ -203,7 +203,7 @@ set); the condition is a small expression tree over attributes:
 |---|---|
 | `subject.*` | `id`, `kind`, `roles`, `teams`, `managed_by`, and free-form `attrs` (set by admins or mapped from IdP claims, e.g. `department`) |
 | `resource.*` | model attributes (§4); client `owner`, `team`, `tags`, `kind`; key `owner`, `labels` |
-| `context.*` | `time`, `source_ip`, `endpoint`, `priority`, `prompt_tokens_estimate`, `credential_kind` (session/key/token), `via_upstream` |
+| `context.*` | `time`, `source_ip`, `endpoint`, `priority`, `prompt_tokens_estimate`, `credential_kind` (session/key/token), `via_upstream` (always false since federation was removed) |
 
 Operators: `eq ne in not_in glob cidr lt le gt ge time_between all any not
 has`. No loops, no calls, no regex — evaluation is bounded and cannot fail

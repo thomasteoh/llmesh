@@ -858,7 +858,8 @@ func (h *Hub) AvailableSlotsByModel(owner string) []types.ModelSlots {
 // connected for this model or no context sizes have been reported.
 // ModelAttrs describes a concrete model for access policies: its largest
 // context window, the input modalities any live client advertises for it,
-// and what serves it — "llama.cpp", "shim", "router" (an upstream hop),
+// and what serves it — "llama.cpp", "shim", "router" (an older llmesh
+// router still connecting as a client, from before federation was removed),
 // "mixed" when clients disagree, or absent when no client said.
 func (h *Hub) ModelAttrs(model string) map[string]any {
 	h.mu.RLock()
@@ -1544,7 +1545,6 @@ func (h *Hub) NonOwnerInFlight(clientID, owner, model string) int {
 }
 
 // TotalSlots returns the sum of MaxConcurrent across all registered clients.
-// Used by the upstream connector to advertise aggregate capacity.
 func (h *Hub) TotalSlots() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
