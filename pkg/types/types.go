@@ -143,6 +143,15 @@ func (r *InferenceRequest) ModelAllowed(model string) bool {
 	return false
 }
 
+// ForWorker returns the request as a worker should receive it: without who
+// sent it. A worker needs the prompt and parameters, not the requester's
+// username or key label, and sharing puts jobs on other people's machines.
+func (r InferenceRequest) ForWorker() InferenceRequest {
+	r.Owner = ""
+	r.APIKeyLabel = ""
+	return r
+}
+
 // RequestOptimization holds the router-wide toggles that shape inbound requests
 // before dispatch. All default to false (no transformation), preserving the
 // request exactly as received. Configured via the admin portal and read on the
@@ -295,6 +304,9 @@ type ChunkMsg struct {
 	// learns what actually ran. Router-internal: never marshalled, so a client
 	// cannot set it and an older client does not need to.
 	Model string `json:"-"`
+	// Error, on a Done chunk, is why the request failed, for the handler to
+	// report to the caller. Router-internal, like Model.
+	Error string `json:"-"`
 }
 
 // ErrorMsg is sent by the client when inference fails.
@@ -302,6 +314,10 @@ type ErrorMsg struct {
 	Type      string `json:"type"` // "error"
 	RequestID string `json:"request_id"`
 	Message   string `json:"message"`
+	// Final marks an error that another attempt would repeat — the backend
+	// rejected the request itself (malformed, or too large for it) — so the
+	// router fails it at once, with Message, instead of retrying.
+	Final bool `json:"final,omitempty"`
 }
 
 // CancelMsg is sent by the router to abort an in-flight inference on the client.
@@ -315,8 +331,39 @@ type CancelMsg struct {
 type ReleaseMsg struct {
 	Type      string `json:"type"` // "release"
 	RequestID string `json:"request_id"`
-	Reason    string `json:"reason"` // "model_failed" | "timeout" | "client_shutdown"
+	Reason    string `json:"reason"` // "model_failed" | "timeout" | ReleaseShutdown | ReleaseBusy
 }
+
+// Release reasons with a meaning to the router.
+const (
+	// ReleaseShutdown: the worker is stopping. The router sends it no more
+	// jobs, so a released job is not dispatched straight back to it.
+	ReleaseShutdown = "client_shutdown"
+	// ReleaseBusy: requests made to the worker's local API hold the slot the
+	// job would need. Requeued without using up an attempt; only sent to a
+	// router that announced FeatureLocalBusy.
+	ReleaseBusy = "client_busy"
+)
+
+// LocalBusyMsg is sent by a worker to report how many of its slots requests
+// made to its local API are using or waiting for. The router counts them as
+// busy, since it cannot see that load any other way.
+type LocalBusyMsg struct {
+	Type  string `json:"type"` // "local_busy"
+	Slots int    `json:"slots"`
+}
+
+// RegisteredMsg acknowledges a worker's registration and lists the protocol
+// features this router supports. Older workers ignore it; a worker that gets
+// no acknowledgement assumes none.
+type RegisteredMsg struct {
+	Type     string   `json:"type"` // "registered"
+	Features []string `json:"features,omitempty"`
+}
+
+// FeatureLocalBusy: the router accepts LocalBusyMsg and requeues a
+// ReleaseBusy job without counting an attempt.
+const FeatureLocalBusy = "local_busy"
 
 // MaxAttempts is the total number of times a request may be dispatched before
 // being failed back to the caller (initial attempt + retries on client errors/disconnects).

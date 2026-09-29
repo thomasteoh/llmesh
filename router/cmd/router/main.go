@@ -252,13 +252,8 @@ func main() {
 		}
 	}
 	h.OnError = func(msg types.ErrorMsg) {
-		log.Error("client error for request", "request_id", msg.RequestID, "message", msg.Message)
-		if result := store.Send(types.ChunkMsg{
-			Type:         "chunk",
-			RequestID:    msg.RequestID,
-			Done:         true,
-			FinishReason: "error",
-		}); result == correlation.SendNotFound {
+		log.Error("client error for request", "request_id", msg.RequestID, "message", msg.Message, "final", msg.Final)
+		if result := store.Send(api.WorkerErrorChunk(msg)); result == correlation.SendNotFound {
 			log.Debug("error done-chunk dropped, handler already gone", "request_id", msg.RequestID)
 		}
 	}

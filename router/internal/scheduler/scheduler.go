@@ -460,7 +460,7 @@ func (s *Scheduler) drainQueue() {
 			s.log.Warn("scheduler: client disconnected during dispatch, re-queued", "client_id", best.client.ID, "request_id", req.ID)
 			return
 		}
-		job := types.JobMsg{Type: "job", Request: *req}
+		job := types.JobMsg{Type: "job", Request: req.ForWorker()}
 		if !s.hub.SendToClient(best.client.ID, job) {
 			// The job never reached the client, so undo the tracking as well —
 			// otherwise it lingers as a phantom in-flight job until its lease expires.
