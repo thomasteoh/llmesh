@@ -64,8 +64,12 @@ func (s *State) AuthorizeModels(key, endpoint, sourceIP string, candidates []str
 	}
 	if len(allowed) > 0 {
 		reason = ""
-	} else if reason == "" {
-		reason = "no model available to this API key"
+	} else {
+		if reason == "" {
+			reason = "no model available to this API key"
+		}
+		s.denials.add(Denial{At: time.Now(), Subject: subj.ID, Action: "model.use",
+			Resource: strings.Join(candidates, ", "), Reason: reason})
 	}
 	return allowed, reason
 }
@@ -232,4 +236,16 @@ func (a *Admin) handleModelRuleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	a.state.RecordAudit(u.Username, "policy.delete", id, a.clientIP(r))
 	a.renderSettings(w, r, u, "Rule deleted.", "")
+}
+
+// ModelAttrs describes a model for access policies from what the router
+// stores about it: pricing_basis is "actual" when an admin recorded that a
+// provider bills for it (a paid API) and "estimated" otherwise. A model with
+// no pricing row has no pricing_basis.
+func (s *State) ModelAttrs(model string) map[string]any {
+	var basis string
+	if err := s.db.QueryRow(`SELECT basis FROM model_pricing WHERE model = ?`, model).Scan(&basis); err != nil || basis == "" {
+		return nil
+	}
+	return map[string]any{"pricing_basis": basis}
 }

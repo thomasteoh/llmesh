@@ -117,7 +117,7 @@ func (a *Admin) ownerScope(r *http.Request, action string) []string {
 var capabilityActions = []string{
 	"alias.manage", "queue.cancel", "settings.view", "settings.manage",
 	"user.view", "user.manage", "role.manage", "owner.manage",
-	"pricing.manage", "upstream.manage", "policy.view", "policy.manage",
+	"pricing.manage", "upstream.manage", "policy.view", "policy.manage", "policy.simulate",
 	"audit.view", "fleet.view", "team.create",
 }
 

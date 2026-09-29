@@ -78,6 +78,7 @@ type JobDispatcher interface {
 // It is safe to call Run from a single goroutine.
 type Conn struct {
 	routerURL   string
+	kind        string // reported at registration; see types.RegisterMsg.Kind
 	routerToken string
 	maxConc     int
 	version     string
@@ -301,6 +302,7 @@ func (c *Conn) connect(outerCtx context.Context) (registered bool, err error) {
 		Models:        models,
 		MaxConcurrent: maxConc,
 		Version:       c.version,
+		Kind:          c.kind,
 	}); err != nil {
 		return registered, err
 	}
@@ -401,3 +403,7 @@ func (c *Conn) connect(outerCtx context.Context) (registered bool, err error) {
 		}
 	}
 }
+
+// SetKind sets the worker kind reported at registration ("llama.cpp",
+// "shim"). Call before Run.
+func (c *Conn) SetKind(kind string) { c.kind = kind }

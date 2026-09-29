@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"llmesh/router/internal/authz"
 	"strings"
 	"testing"
 	"time"
@@ -227,6 +228,14 @@ func TestTemplatesRender(t *testing.T) {
 		}
 		d["CurrentSession"] = "h1"
 		d["MyTeams"] = []string{"research"}
+		d["Policies"] = []any{map[string]any{"ID": "p1", "Name": "P1", "Effect": "deny", "Actions": "model.use",
+			"Summary": "who: everyone", "Enabled": true, "JSON": `{"id":"p1"}`}}
+		d["PolicyTemplate"] = policyTemplate
+		d["Actions"] = []string{"model.use", "client.use"}
+		d["SimForm"] = SimForm{SubjectKind: "user", Subject: "alice", Action: "model.use", ResType: "model"}
+		d["Sim"] = &SimResult{Current: authz.Decision{By: "no-gpt", Reason: "denied"},
+			WithDraft: &authz.Decision{Allowed: true, By: "draft"}}
+		d["Denials"] = []Denial{{At: now, Subject: "user:bob", Action: "model.use", Resource: "gpt-4o", Reason: "denied by policy"}}
 		d["ModelRules"] = []any{
 			map[string]any{"ID": "models-default", "Name": "Everyone", "Effect": "allow", "Models": []string{"*"}, "Who": "everyone", "Enabled": true, "Advanced": false},
 			map[string]any{"ID": "no-gpt", "Name": "No GPT", "Effect": "deny", "Models": []string{"gpt-*"}, "Who": "teams interns", "Enabled": false, "Advanced": true},
@@ -270,6 +279,11 @@ func TestTemplatesRender(t *testing.T) {
 				"Basis": "estimated", "IsActual": false, "Configured": true, "Live": false},
 		}
 		renderPage(t, "settings", d)
+		d["Sim"] = &SimResult{Replay: &ReplayResult{Window: "24h0m0s", Requests: 10, NewlyDenied: 4,
+			Changes: []ReplayChange{{Owner: "bob", Model: "gpt-4o", Requests: 4, Before: true, By: "draft"}}}}
+		renderPage(t, "settings", d)
+		d["Sim"] = &SimResult{Error: "bad draft"}
+		renderPage(t, "settings", d)
 	})
 
 	t.Run("help", func(t *testing.T) {
@@ -284,7 +298,7 @@ func allCaps(on bool) map[string]bool {
 	for _, a := range capabilityActions {
 		out[strings.ReplaceAll(a, ".", "_")] = on
 	}
-	for _, k := range []string{"key_limits_any", "key_create_any", "client_create_any", "job_cancel_any"} {
+	for _, k := range []string{"key_limits_any", "key_create_any", "client_create_any", "job_cancel_any", "policy_simulate"} {
 		out[k] = on
 	}
 	return out

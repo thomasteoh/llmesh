@@ -874,3 +874,39 @@ func (s *State) IsOwner(username string) bool {
 		userPrincipal(username), authz.RoleOwner).Scan(&n)
 	return n > 0
 }
+
+var attrKeyPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+
+// UserAttrs returns a user's free-form attributes.
+func (s *State) UserAttrs(username string) map[string]string {
+	var raw string
+	_ = s.db.QueryRow(`SELECT attrs FROM users WHERE username = ?`, username).Scan(&raw)
+	out := map[string]string{}
+	if raw != "" {
+		_ = json.Unmarshal([]byte(raw), &out)
+	}
+	return out
+}
+
+// SetUserAttrs replaces a user's attributes, which policies read as
+// subject.attrs.<key>. Keys are lowercase identifiers; values are short
+// strings.
+func (s *State) SetUserAttrs(username string, attrs map[string]string) error {
+	if _, ok := s.LookupUser(username); !ok {
+		return fmt.Errorf("user not found: %s", username)
+	}
+	for k, v := range attrs {
+		if !attrKeyPattern.MatchString(k) {
+			return fmt.Errorf("attribute name %q must be lowercase letters, digits or '_', starting with a letter", k)
+		}
+		if len(v) > 128 {
+			return fmt.Errorf("attribute %q is longer than 128 characters", k)
+		}
+	}
+	b, _ := json.Marshal(attrs)
+	if _, err := s.db.Exec(`UPDATE users SET attrs = ? WHERE username = ?`, string(b), username); err != nil {
+		return err
+	}
+	s.invalidateAccess()
+	return nil
+}

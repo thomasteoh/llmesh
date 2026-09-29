@@ -1,6 +1,6 @@
 # Access management v2
 
-> **Status: approved 2026-09-29; phases 1–5 implemented.** Replaces the ad-hoc admin/member checks,
+> **Status: approved 2026-09-29; phases 1–6 implemented.** Replaces the ad-hoc admin/member checks,
 > per-user isolation flags, and per-token `owner_slots` with one authorization
 > model covering the portal, inference admission, and dispatch.
 
@@ -437,4 +437,24 @@ Implementation notes (phase 5):
   Advanced section does not offer it yet.
 - Pairing inputs (requester subjects, client sharing) are cached in `State`
   and dropped wholesale on any access change.
+
+Implementation notes (phase 6):
+
+- Workers report a `kind` at registration (`llama.cpp` from llmesh-client,
+  `shim` from llmesh-shim); older workers report none. Model attributes now
+  include `served_by_kind` (`router` for an upstream hop, `mixed` when
+  clients disagree, absent when any serving worker did not say),
+  `modalities`, `context_size`, and `pricing_basis` from the pricing table.
+- The policy editor is JSON with strict decoding (unknown fields refused)
+  and full-set compilation before storing; the list shows every policy,
+  including model-access and isolation rules.
+- The simulator answers a single question against the live set and a draft,
+  and replays the last 24 hours of usage (owner × model, weighted by request
+  count) against a draft. Usage rows carry no context or key scope, so
+  context-dependent rules replay as for a request without context.
+- Recent denials are an in-memory ring of 200 admission refusals.
+- Admins can set user attributes (`subject.attrs.*`) on the Users tab;
+  phase 7 maps them from identity-provider claims.
+- Settings forms carry their tab in the action (`…#tab-users`) and the
+  portal script re-selects it when it swaps in the response.
 

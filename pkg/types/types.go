@@ -206,6 +206,9 @@ type RegisterMsg struct {
 	Models        []ModelInfo `json:"models"`
 	MaxConcurrent int         `json:"max_concurrent"`
 	Version       string      `json:"version,omitempty"`
+	// Kind says what serves the models: "llama.cpp" for llmesh-client, "shim"
+	// for llmesh-shim (typically a paid API). Empty from older workers.
+	Kind string `json:"kind,omitempty"`
 }
 
 // JobMsg is sent by the router to dispatch an inference request to a client.

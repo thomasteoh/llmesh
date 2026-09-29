@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -104,6 +105,7 @@ type Client struct {
 	Owner                  string
 	Token                  string         // token hash (SHA-256 hex) — the hub never holds plaintext tokens
 	Version                string         // client version from register message
+	Kind                   string         // "llama.cpp", "shim", or "" from older workers
 	OwnerSlots             map[string]int // model → slots reserved for owner; 0/unset = fully shared
 	wg                     sync.WaitGroup // tracks writeLoop + readLoop goroutines
 	closeOnce              sync.Once      // ensures conn.Close() happens exactly once
@@ -474,6 +476,7 @@ type inboundMsg struct {
 	Models        []types.ModelInfo `json:"models"`
 	MaxConcurrent int               `json:"max_concurrent"`
 	Version       string            `json:"version"`
+	Kind          string            `json:"kind"`
 	// chunk
 	RequestID      string           `json:"request_id"`
 	Delta          string           `json:"delta"`
@@ -522,6 +525,7 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 		}
 		client.MaxConcurrent = msg.MaxConcurrent
 		client.Version = msg.Version
+		client.Kind = in.Kind
 		h.mu.Unlock()
 		h.log.Info("hub: client registered", "id", client.ID, "models", msg.Models, "max_concurrent", msg.MaxConcurrent, "version", msg.Version)
 		if h.OnAvailable != nil {
@@ -852,6 +856,59 @@ func (h *Hub) AvailableSlotsByModel(owner string) []types.ModelSlots {
 // client serving model (or any of its aliases). Checks all clients, not just available
 // ones, so a busy client with large context still counts. Returns 0 if no client is
 // connected for this model or no context sizes have been reported.
+// ModelAttrs describes a concrete model for access policies: its largest
+// context window, the input modalities any live client advertises for it,
+// and what serves it — "llama.cpp", "shim", "router" (an upstream hop),
+// "mixed" when clients disagree, or absent when no client said.
+func (h *Hub) ModelAttrs(model string) map[string]any {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	ctx := 0
+	mods := map[string]bool{}
+	kinds := map[string]bool{}
+	for _, c := range h.clients {
+		if c.Models == nil || !c.Models[model] {
+			continue
+		}
+		if n := c.ModelContextSizes[model]; n > ctx {
+			ctx = n
+		}
+		for _, m := range c.ModelModalities[model] {
+			mods[m] = true
+		}
+		switch {
+		case strings.HasPrefix(c.Version, "router/"):
+			kinds["router"] = true
+		case c.Kind != "":
+			kinds[c.Kind] = true
+		default:
+			kinds[""] = true
+		}
+	}
+	out := map[string]any{}
+	if ctx > 0 {
+		out["context_size"] = float64(ctx)
+	}
+	if len(mods) > 0 {
+		list := make([]string, 0, len(mods))
+		for m := range mods {
+			list = append(list, m)
+		}
+		sort.Strings(list)
+		out["modalities"] = list
+	}
+	// One unreported worker makes the kind unknown rather than guessed, so a
+	// rule keyed on it cannot be satisfied by a worker that never said.
+	if len(kinds) == 1 && !kinds[""] {
+		for k := range kinds {
+			out["served_by_kind"] = k
+		}
+	} else if len(kinds) > 1 && !kinds[""] {
+		out["served_by_kind"] = "mixed"
+	}
+	return out
+}
+
 func (h *Hub) MaxContextForModel(model string, aliases map[string][]string) int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()

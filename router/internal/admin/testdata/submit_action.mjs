@@ -132,8 +132,9 @@ function makeContext(opts) {
 
   // Real initPage wires the whole page; the stub just records that the swap
   // finished and handed control back.
-  context.initPage = () => {
+  context.initPage = (hash) => {
     log.initPages++;
+    log.initHash = hash;
   };
 
   return { context, log, currentMain, listeners };
@@ -194,6 +195,16 @@ await check('a page answering the post is swapped in, secret and all', async () 
   assert(log.reloaded === 0, 'should not reload');
   assert(submitted.n === 0, 'should not re-post the form');
   assert(log.initPages === 1, `page setup should re-run once, ran ${log.initPages}`);
+});
+
+await check('a page answering a settings form keeps the form\'s tab', async () => {
+  const { context, log } = makeContext({
+    respond: () => response({ status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: PAGE }),
+  });
+  const tabForm = { ...form, getAttribute: (k) => (k === 'action' ? '/portal/settings/simulate#tab-policies' : form.getAttribute(k)) };
+  context.submitAction({ ...tabForm, submit: () => {} });
+  await settle();
+  assert(log.initHash === 'tab-policies', `page setup should re-select tab-policies, got ${JSON.stringify(log.initHash)}`);
 });
 
 await check('204 for the current page refetches and swaps it', async () => {

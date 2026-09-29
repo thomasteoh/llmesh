@@ -366,3 +366,32 @@ func (a *Admin) handleTeamState(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 	}
 }
+
+// handleUserAttrs sets a user's attributes from "key=value" lines.
+func (a *Admin) handleUserAttrs(w http.ResponseWriter, r *http.Request) {
+	u := ctxGetUser(r)
+	target := r.FormValue("username")
+	if msg := a.userChangeRefused(r, target); msg != "" {
+		a.renderSettings(w, r, u, "", msg)
+		return
+	}
+	attrs := map[string]string{}
+	for _, line := range strings.Split(r.FormValue("attrs"), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			a.renderSettings(w, r, u, "", fmt.Sprintf("%q is not key=value.", line))
+			return
+		}
+		attrs[strings.TrimSpace(k)] = strings.TrimSpace(v)
+	}
+	if err := a.state.SetUserAttrs(target, attrs); err != nil {
+		a.renderSettings(w, r, u, "", err.Error())
+		return
+	}
+	a.state.RecordAudit(u.Username, "user.attrs", target, a.clientIP(r))
+	a.renderSettings(w, r, u, "Attributes for "+target+" saved.", "")
+}

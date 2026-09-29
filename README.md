@@ -196,6 +196,10 @@ Which models a caller may use is set under **Settings → Model access** as allo
 
 An API key can be restricted further when it is created, to some models and some endpoints. A restriction only narrows what the key's owner can already do. Keys owned by a team act as the team.
 
+**Policies**
+
+Under **Settings → Policies** admins can write rules beyond model patterns: JSON with a subject, actions, a resource, and an optional condition over attributes — who is asking (roles, teams, attributes such as `department`), what they are using (for models: context size, modalities, whether a local client, a shim, or an upstream router serves it, and whether it is billed), and the request (time, source address, endpoint). A deny rule always wins; a condition that reads an attribute a request lacks never grants access and never lets anyone past a deny. The simulator answers "can this user do this, and which rule decides", and can replay the last day's requests against a draft to show what it would change before you save it. Recently refused requests are listed below.
+
 **Sign-in methods**
 
 Username and password always works. Four alternatives can be added under **Settings → Sign-in**, and each appears on the login page only once an admin has configured *and* enabled it — a router with none set up shows exactly the login form it always did.

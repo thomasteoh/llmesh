@@ -1191,8 +1191,14 @@ function submitAction(form) {
       // came back is the one the form was already on. A failed swap reloads,
       // which loses a one-shot secret — the only alternative is re-posting,
       // which would mint a second key.
+      // Stay on the tab the form belongs to: the one its action names
+      // ("…#tab-policies"), or failing that the one already open. Swapping in
+      // the page with no tab reset every settings form to the first tab and
+      // left its result out of sight.
+      var hashAt = url.indexOf('#');
+      var tab = hashAt !== -1 ? url.slice(hashAt + 1) : (window.location.hash || '').slice(1);
       try {
-        swapMain(res.html, '');
+        swapMain(res.html, tab);
       } catch (e) {
         window.location.reload();
       }

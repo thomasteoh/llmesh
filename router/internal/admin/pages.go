@@ -503,6 +503,15 @@ type SettingsPage struct {
 	MyTeams          []string
 	// ModelRules are the model-access policies, for the Model access tab.
 	ModelRules []ModelRuleRow
+
+	// The Policies tab: every policy, a starting template, the simulator's
+	// inputs and last result, the action catalogue, and recent denials.
+	Policies       []PolicyRow
+	PolicyTemplate string
+	SimForm        SimForm
+	Sim            *SimResult
+	Actions        []string
+	Denials        []Denial
 }
 
 // AuthSettings is the settings page's view of alternative sign-in.
@@ -639,6 +648,8 @@ type UserRow struct {
 	IsSelf bool
 	// Roles are the user's router-wide role ids.
 	Roles []string
+	// Attrs is the user's attributes as "key=value" lines, for the editor.
+	Attrs string
 }
 
 // aliasChainRows builds the preference-ordered view of every alias. liveModels is
@@ -1307,10 +1318,17 @@ func (a *Admin) handleSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Admin) renderSettings(w http.ResponseWriter, r *http.Request, u User, flash, errMsg string) {
+	a.renderSettingsWith(w, r, u, flash, errMsg, nil)
+}
+
+// renderSettingsWith renders the settings page, letting the caller adjust the
+// page data (the simulator adds its result) before it is drawn.
+func (a *Admin) renderSettingsWith(w http.ResponseWriter, r *http.Request, u User, flash, errMsg string, adjust func(*SettingsPage)) {
 	users := a.state.Users()
 	rows := make([]UserRow, 0, len(users))
 	for _, usr := range users {
-		rows = append(rows, UserRow{User: usr, IsSelf: usr.Username == u.Username, Roles: a.globalRoles(usr.Username)})
+		rows = append(rows, UserRow{User: usr, IsSelf: usr.Username == u.Username, Roles: a.globalRoles(usr.Username),
+			Attrs: attrLines(a.state.UserAttrs(usr.Username))})
 	}
 	upstream := a.state.GetUpstreamRouters()
 	upstreamRows := make([]UpstreamRouterRow, 0, len(upstream))
@@ -1338,7 +1356,9 @@ func (a *Admin) renderSettings(w http.ResponseWriter, r *http.Request, u User, f
 		current = hashToken(c.Value)
 	}
 	myTeams, _ := a.state.TeamsOf(u.Username)
-	a.render(w, "settings", SettingsPage{
+	actions := authz.Actions()
+	sort.Strings(actions)
+	page := SettingsPage{
 		basePage:   bp,
 		Users:      rows,
 		Upstreams:  upstreamRows,
@@ -1354,7 +1374,16 @@ func (a *Admin) renderSettings(w http.ResponseWriter, r *http.Request, u User, f
 		CurrentSession:   current,
 		MyTeams:          myTeams,
 		ModelRules:       a.modelRules(),
-	})
+
+		Policies:       a.policyRows(),
+		PolicyTemplate: policyTemplate,
+		Actions:        actions,
+		Denials:        a.state.RecentDenials(),
+	}
+	if adjust != nil {
+		adjust(&page)
+	}
+	a.render(w, "settings", page)
 }
 
 // oauthConsoleHints point an admin at the page where each provider's OAuth app
@@ -2056,4 +2085,17 @@ func (a *Admin) canKeyLimits(r *http.Request, keyHash string) bool {
 		return false
 	}
 	return a.can(r, "key.limits", ownedResource("key", k.KeyHash, k.Owner))
+}
+
+func attrLines(attrs map[string]string) string {
+	keys := make([]string, 0, len(attrs))
+	for k := range attrs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		b.WriteString(k + "=" + attrs[k] + "\n")
+	}
+	return b.String()
 }

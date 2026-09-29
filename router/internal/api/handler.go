@@ -104,6 +104,13 @@ type ModelAuthorizer interface {
 	AuthorizeModels(key, endpoint, sourceIP string, candidates []string, attrs map[string]map[string]any) ([]string, string)
 }
 
+// ModelAttrSource describes a model for access policies. *hub.Hub supplies
+// what the fleet reports (context size, modalities, serving kind) and
+// *admin.State what is configured (pricing basis).
+type ModelAttrSource interface {
+	ModelAttrs(model string) map[string]any
+}
+
 // KeyInFlighter is satisfied by *hub.Hub (duck typing — no import needed).
 // KeyInFlight returns the number of jobs currently in flight sent with the key
 // whose label is keyLabel.
@@ -155,6 +162,9 @@ type Handler struct {
 	// Access decides model access per key; nil admits every model (tests and
 	// callers that predate access management).
 	Access ModelAuthorizer
+	// ModelAttrs are merged, in order, into the attributes policies see for
+	// each candidate model.
+	ModelAttrs []ModelAttrSource
 	// TrustProxy honours X-Forwarded-For when deciding the caller's address
 	// for access policies. Off unless the router sits behind a proxy that
 	// sets it, since otherwise any caller could claim any address.
@@ -1308,13 +1318,19 @@ func (h *Handler) modelCandidates(model string, aliases map[string][]string) []s
 // attributes. Only what the router knows cheaply is included; an attribute a
 // policy names but the request lacks counts against the caller.
 func (h *Handler) modelAttrs(models []string) map[string]map[string]any {
-	if h.ContextSizes == nil || len(models) == 0 {
+	if len(h.ModelAttrs) == 0 || len(models) == 0 {
 		return nil
 	}
 	out := make(map[string]map[string]any, len(models))
 	for _, m := range models {
-		if n := h.ContextSizes.MaxContextForModel(m, nil); n > 0 {
-			out[m] = map[string]any{"context_size": float64(n)}
+		attrs := map[string]any{}
+		for _, src := range h.ModelAttrs {
+			for k, v := range src.ModelAttrs(m) {
+				attrs[k] = v
+			}
+		}
+		if len(attrs) > 0 {
+			out[m] = attrs
 		}
 	}
 	return out

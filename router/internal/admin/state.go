@@ -264,6 +264,8 @@ type State struct {
 	authzEngine atomic.Pointer[authz.Engine]
 	// pairingCache holds the scheduler's pairing inputs; see sharing_store.go.
 	pairingCacheHolder
+	// denials keeps recent refused accesses for the Policies tab.
+	denials denialLog
 
 	// lastTouch throttles last_used_at writes for keys and tokens to one per
 	// credential per minute, so recording use does not turn every inference

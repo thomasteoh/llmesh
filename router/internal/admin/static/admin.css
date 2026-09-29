@@ -1289,3 +1289,7 @@ label { font-size: 12.5px; font-weight: 600; color: var(--text-muted); display: 
 .sharing-block { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .sharing-block .seg form { display: inline; }
 .sharing-advanced { flex-basis: 100%; }
+
+/* Policy editor and simulator. */
+.code-input { width: 100%; font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; line-height: 1.45; }
+.sim-result { border-top: 1px solid var(--border); padding-top: 10px; }

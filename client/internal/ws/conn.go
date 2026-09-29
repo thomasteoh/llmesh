@@ -30,6 +30,7 @@ func New(cfg *clientPkg.Config, version string, st *stats.Stats) *Conn {
 	models := &clientModelProvider{cfg: cfg}
 	jobs := &clientJobDispatcher{cfg: cfg, st: st}
 	inner := wsclient.New(cfg.RouterURL, cfg.RouterToken, cfg.MaxConcurrent, version, st, models, jobs, log)
+	inner.SetKind("llama.cpp")
 	return &Conn{inner: inner}
 }
 
