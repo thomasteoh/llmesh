@@ -8,6 +8,8 @@ router_token: "ct-yourname-yourtoken"   # client token from the router admin UI 
 #                           # local_api_token is set.
 # local_api_token: ""      # optional - require "Authorization: Bearer <token>" on the local
 #                           # endpoint. Set this if local_api_addr is not loopback-only.
+# shutdown_drain: 60s      # optional - on SIGTERM, let jobs in flight finish for up to this long before
+#                           # handing the rest back to the router; 0s hands them back at once
 # metrics_addr: ":9091"    # expose expvar metrics at http://<host>:9091/debug/vars; omit to disable
 models:
   - endpoint: "http://host.docker.internal:8080"   # name auto-detected from this endpoint's /v1/models

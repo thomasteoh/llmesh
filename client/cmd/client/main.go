@@ -35,6 +35,9 @@ Config file fields (YAML):
   router_url      wss:// URL of the llmesh router  (required)
   router_token    client token from the admin UI   (required)
   max_concurrent  parallel jobs limit              (default: auto from llama.cpp total_slots, min 1)
+  shutdown_drain  on SIGTERM, how long to let jobs in flight finish before
+                  handing the rest back to the router (default: 60s; 0 = at once).
+                  A second signal stops without waiting.
   local_api_addr  bind address for local OpenAI-compatible endpoint (default: disabled)
                   e.g. ":8089" — accepts /v1/chat/completions and /v1/models directly,
                   routing to the appropriate llama.cpp backend without going through the router.
@@ -83,10 +86,22 @@ Config file fields (YAML):
 		}()
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
-	defer stop()
+	// The first signal starts a graceful shutdown, which lets jobs in flight
+	// finish for up to shutdown_drain; a second one stops without waiting.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	force := make(chan struct{})
+	sigs := make(chan os.Signal, 2)
+	signal.Notify(sigs, syscall.SIGTERM, os.Interrupt)
+	go func() {
+		<-sigs
+		cancel()
+		<-sigs
+		close(force)
+	}()
 
 	conn := ws.New(cfg, version, st)
+	conn.SetDrain(cfg.ShutdownDrainTimeout(), force)
 
 	if isTerminal(os.Stderr) {
 		// The pool's capacity, not cfg.MaxConcurrent, which is 0 when the
