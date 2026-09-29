@@ -124,6 +124,24 @@ type InferenceRequest struct {
 	// the scheduler immediately before the rewrite; restored by the hub before
 	// a request is released back to the queue so the retry re-resolves.
 	RequestedModel string `json:"requested_model,omitempty"`
+	// AllowedModels, when non-nil, lists the concrete models this request's
+	// caller may use, decided at admission. An alias or "any" only ever
+	// resolves to one of them, so a caller permitted one target of an alias
+	// cannot be dispatched to another. nil means unrestricted.
+	AllowedModels []string `json:"allowed_models,omitempty"`
+}
+
+// ModelAllowed reports whether the request may run on a concrete model.
+func (r *InferenceRequest) ModelAllowed(model string) bool {
+	if r.AllowedModels == nil {
+		return true
+	}
+	for _, m := range r.AllowedModels {
+		if m == model {
+			return true
+		}
+	}
+	return false
 }
 
 // RequestOptimization holds the router-wide toggles that shape inbound requests

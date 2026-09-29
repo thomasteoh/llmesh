@@ -10,6 +10,7 @@
     <button class="tab-btn" data-tab-target="tab-signin" data-tab-hash>Sign-in</button>{{end}}
     {{if .Can.user_view}}<button class="tab-btn" data-tab-target="tab-users" data-tab-hash>Users</button>
     <button class="tab-btn" data-tab-target="tab-roles" data-tab-hash>Roles</button>{{end}}
+    {{if .Can.policy_view}}<button class="tab-btn" data-tab-target="tab-models" data-tab-hash>Model access</button>{{end}}
     {{if .Can.upstream_manage}}<button class="tab-btn" data-tab-target="tab-upstreams" data-tab-hash>Upstreams</button>{{end}}
     {{if .Can.settings_manage}}<button class="tab-btn" data-tab-target="tab-optimization" data-tab-hash>Optimization</button>{{end}}
     {{if .Can.pricing_manage}}<button class="tab-btn" data-tab-target="tab-pricing" data-tab-hash>Pricing</button>{{end}}
@@ -406,6 +407,62 @@
           </div>
           <p class="field-desc mb-3">You can only grant permissions you hold yourself. Saving an existing custom role's ID replaces it.</p>
           <button type="submit" class="btn">Save role</button>
+        </form>
+      </div>
+      {{end}}
+    </div>
+  </div>
+
+  {{end}}
+  {{if .Can.policy_view}}
+  {{/* ── Model access tab ── */}}
+  <div id="tab-models" class="tab-panel">
+    <div class="mt-2">
+      <div class="section-header"><div class="section-title">Model access</div></div>
+      <p class="table-hint mb-3">Who may use which models. A model is usable when some <strong>allow</strong> rule covers it and no <strong>deny</strong> rule does; deny always wins. Patterns match concrete model names (<code>*</code> matches anything); an alias is usable when one of its targets is, and only ever routes to a target the caller may use. Removing every allow rule makes all models unavailable to everyone.</p>
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>Rule</th><th>Effect</th><th>Models</th><th>Who</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            {{range .ModelRules}}
+            <tr{{if not .Enabled}} class="row-dim"{{end}}>
+              <td>{{.Name}}<br><span class="muted text-mono text-xs">{{.ID}}</span>{{if .Advanced}} <span class="badge muted-badge" title="Has conditions or covers other actions">advanced</span>{{end}}</td>
+              <td>{{if eq .Effect "deny"}}<span class="badge badge-warning">deny</span>{{else}}<span class="badge active">allow</span>{{end}}</td>
+              <td class="text-mono text-xs">{{range $i, $m := .Models}}{{if $i}}, {{end}}{{$m}}{{else}}any{{end}}</td>
+              <td>{{.Who}}</td>
+              <td>{{if .Enabled}}{{template "status-badge" dict "Class" "active" "Label" "on"}}{{else}}{{template "status-badge" dict "Class" "disabled" "Label" "off"}}{{end}}</td>
+              <td class="cell-actions">
+                {{if $.Can.policy_manage}}
+                <div class="flex gap-1 justify-end">
+                  {{template "action-button" dict "Action" "/portal/settings/model-access/toggle" "CSRF" $.CSRFToken "Fields" (dict "id" .ID) "Class" "btn-secondary btn-xs" "Label" (printf "%s" (or (and .Enabled "Turn off") "Turn on"))}}
+                  {{template "action-button" dict "Action" "/portal/settings/model-access/delete" "CSRF" $.CSRFToken "Fields" (dict "id" .ID) "Confirm" "Delete this rule?" "Class" "btn-danger btn-xs icon-btn" "Label" "✕" "Title" "Delete"}}
+                </div>
+                {{end}}
+              </td>
+            </tr>
+            {{else}}
+            <tr><td colspan="6" class="muted">No rules: nobody can use any model.</td></tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+      {{if .Can.policy_manage}}
+      <div class="card mt-3">
+        <div class="card-title">Add a rule</div>
+        <form method="POST" action="/portal/settings/model-access">
+          <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+          <div class="form-row mb-3">
+            <div class="form-group"><label>Effect</label><select name="effect"><option value="allow">allow</option><option value="deny">deny</option></select></div>
+            <div class="form-group flex-2"><label>Models</label><input name="models" placeholder="gpt-4o, claude-*" autocomplete="off"></div>
+            <div class="form-group flex-2"><label>Name <span class="muted">(optional)</span></label><input name="name" autocomplete="off"></div>
+          </div>
+          <div class="form-row mb-3">
+            <div class="form-group"><label>Users</label><input name="users" placeholder="alice, bob" autocomplete="off"></div>
+            <div class="form-group"><label>Teams</label><input name="teams" placeholder="finance" autocomplete="off"></div>
+            <div class="form-group"><label>Roles</label><input name="roles" placeholder="admin" autocomplete="off"></div>
+          </div>
+          <p class="field-desc mb-3">Leave users, teams, and roles empty to cover everyone. Filling more than one narrows the rule to callers matching all of them.</p>
+          <button type="submit" class="btn">Add rule</button>
         </form>
       </div>
       {{end}}

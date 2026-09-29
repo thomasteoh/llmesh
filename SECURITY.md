@@ -51,6 +51,9 @@ llmesh is self-hosted and its security depends on how it is deployed:
   Connect access control on, removing a user's role at the provider stops
   their next sign-in, but not a portal session already open or their API
   keys. Disable the user here as well when access must end now.
+- **Access rules that match on source address trust the socket peer** unless
+  `trust_proxy_headers` is on. Turn it on only behind a proxy that sets
+  `X-Forwarded-For` itself; otherwise any caller could claim any address.
 - **Register the redirect URI exactly.** Each provider's callback URL is shown
   on the settings page. Registering a broader pattern than the one shown, where
   a provider permits it, widens where an authorization code can be delivered.

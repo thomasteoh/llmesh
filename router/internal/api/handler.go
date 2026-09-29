@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"sort"
@@ -96,6 +97,13 @@ type ModalityChecker interface {
 	ModelModalityVerdict(model string, aliases map[string][]string, required []string) (anyCompatible, anyUnknown bool)
 }
 
+// ModelAuthorizer decides which models an API key may use. Satisfied by
+// *admin.State. It returns the subset of candidates permitted at endpoint and,
+// when none are, a reason fit for the caller.
+type ModelAuthorizer interface {
+	AuthorizeModels(key, endpoint, sourceIP string, candidates []string, attrs map[string]map[string]any) ([]string, string)
+}
+
 // KeyInFlighter is satisfied by *hub.Hub (duck typing — no import needed).
 // KeyInFlight returns the number of jobs currently in flight sent with the key
 // whose label is keyLabel.
@@ -144,7 +152,14 @@ type Handler struct {
 	Modalities   ModalityChecker // optional; nil = skip modality fast-fail
 	InFlight     KeyInFlighter   // optional; nil = skip per-key concurrency check
 	Limits       LimitProvider   // optional; nil = no per-key concurrency limits
-	Dedup        *dedup.Registry // optional; nil = no coalescing
+	// Access decides model access per key; nil admits every model (tests and
+	// callers that predate access management).
+	Access ModelAuthorizer
+	// TrustProxy honours X-Forwarded-For when deciding the caller's address
+	// for access policies. Off unless the router sits behind a proxy that
+	// sets it, since otherwise any caller could claim any address.
+	TrustProxy bool
+	Dedup      *dedup.Registry // optional; nil = no coalescing
 	// MaxRequestBytes caps the inbound request body size. 0 = default (8 MiB);
 	// values above the 15 MiB ceiling are clamped so a body that clears ingress
 	// still fits the client WebSocket frame limit once wrapped in a job.
@@ -457,10 +472,33 @@ func (h *Handler) enqueue(
 		}
 	}
 
+	// Access: the models this key may reach. An alias or "any" is admitted if
+	// any candidate is permitted, and the request carries the permitted set
+	// so dispatch never resolves it to one that is not.
+	if h.Access != nil {
+		candidates := h.modelCandidates(req.Model, aliases)
+		allowed, reason := h.Access.AuthorizeModels(key, r.URL.Path, h.policyIP(r), candidates, h.modelAttrs(candidates))
+		if len(allowed) == 0 {
+			apiLogger().Warn("api: model access denied", "model", req.Model, "key", maskKey(key), "reason", reason, "ip", clientIP(r))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			b, _ := json.Marshal(map[string]any{"error": map[string]any{
+				"message": fmt.Sprintf("access to model %q denied: %s", req.Model, reason),
+				"type":    "permission_error",
+			}})
+			w.Write(b)
+			return
+		}
+		req.AllowedModels = allowed
+	}
+
 	// Coalescing: if an identical request is already in-flight, subscribe to its
-	// response instead of occupying a new worker slot.
+	// response instead of occupying a new worker slot. Only requests made with
+	// the same owner and the same permitted models join, so a follower never
+	// receives output produced under permissions it does not hold.
 	if h.Dedup != nil {
-		hash := dedup.ContentHashOpts(req, opts.CoalesceNormalize)
+		hash := dedup.ContentHashScoped(req, opts.CoalesceNormalize,
+			h.Keys.OwnerFor(key)+"|"+strings.Join(req.AllowedModels, ","))
 		role, buf, live := h.Dedup.RegisterOrSubscribe(hash)
 		switch role {
 		case dedup.RoleFollower:
@@ -1004,6 +1042,11 @@ func (h *Handler) ModelList() http.HandlerFunc {
 			return
 		}
 		infos := h.Models.ActiveModelInfos()
+		var aliasMap map[string][]string
+		if h.Aliases != nil {
+			aliasMap = h.Aliases.AliasMap()
+		}
+		permitted := h.permittedModels(key, r, modelNames(infos))
 
 		type modelEntry struct {
 			ID            string `json:"id"`
@@ -1021,6 +1064,9 @@ func (h *Handler) ModelList() http.HandlerFunc {
 
 		entries := make([]modelEntry, 0, len(infos))
 		for _, m := range infos {
+			if permitted != nil && !permitted[m.Name] {
+				continue
+			}
 			entries = append(entries, modelEntry{
 				ID:            m.Name,
 				Object:        "model",
@@ -1031,16 +1077,23 @@ func (h *Handler) ModelList() http.HandlerFunc {
 		}
 
 		// Add alias entries: context_window = minimum of all reachable targets
-		if h.Aliases != nil {
-			aliases := h.Aliases.AliasMap()
-			for alias, targets := range aliases {
+		if aliasMap != nil {
+			for alias, targets := range aliasMap {
 				minCtx := 0
+				usable := permitted == nil
 				for _, t := range targets {
+					if permitted != nil && !permitted[t] {
+						continue
+					}
+					usable = true
 					if ctx := ctxByModel[t]; ctx > 0 {
 						if minCtx == 0 || ctx < minCtx {
 							minCtx = ctx
 						}
 					}
+				}
+				if !usable {
+					continue
 				}
 				entries = append(entries, modelEntry{
 					ID:            alias,
@@ -1075,6 +1128,11 @@ func (h *Handler) ModelSlots() http.HandlerFunc {
 		}
 		owner := h.Keys.OwnerFor(key)
 		slots := h.Models.AvailableSlotsByModel(owner)
+		names := make([]string, 0, len(slots))
+		for _, s := range slots {
+			names = append(names, s.Model)
+		}
+		permitted := h.permittedModels(key, r, names)
 
 		// Invert alias→targets into model→[]aliases.
 		aliasesByModel := make(map[string][]string)
@@ -1096,7 +1154,7 @@ func (h *Handler) ModelSlots() http.HandlerFunc {
 		entries := make([]slotEntry, 0, len(slots))
 		for _, s := range slots {
 			// Only surface models the key can actually use right now.
-			if s.AvailableSlots <= 0 {
+			if s.AvailableSlots <= 0 || (permitted != nil && !permitted[s.Model]) {
 				continue
 			}
 			al := aliasesByModel[s.Model]
@@ -1229,4 +1287,72 @@ func priorityName(p int) string {
 	default:
 		return "normal"
 	}
+}
+
+// modelCandidates lists the concrete models a requested name could run on:
+// every active model for "any", an alias's targets, or the name itself.
+func (h *Handler) modelCandidates(model string, aliases map[string][]string) []string {
+	if model == "any" {
+		if h.Models == nil {
+			return nil
+		}
+		return h.Models.ActiveModels()
+	}
+	if targets, ok := aliases[model]; ok {
+		return append([]string(nil), targets...)
+	}
+	return []string{model}
+}
+
+// modelAttrs describes candidate models for policies that read model
+// attributes. Only what the router knows cheaply is included; an attribute a
+// policy names but the request lacks counts against the caller.
+func (h *Handler) modelAttrs(models []string) map[string]map[string]any {
+	if h.ContextSizes == nil || len(models) == 0 {
+		return nil
+	}
+	out := make(map[string]map[string]any, len(models))
+	for _, m := range models {
+		if n := h.ContextSizes.MaxContextForModel(m, nil); n > 0 {
+			out[m] = map[string]any{"context_size": float64(n)}
+		}
+	}
+	return out
+}
+
+// permittedModels returns the subset of models the key may use, as a set, or
+// nil when no authorizer is configured (everything is permitted).
+func (h *Handler) permittedModels(key string, r *http.Request, models []string) map[string]bool {
+	if h.Access == nil {
+		return nil
+	}
+	allowed, _ := h.Access.AuthorizeModels(key, r.URL.Path, h.policyIP(r), models, h.modelAttrs(models))
+	set := make(map[string]bool, len(allowed))
+	for _, m := range allowed {
+		set[m] = true
+	}
+	return set
+}
+
+func modelNames(infos []types.ModelInfo) []string {
+	out := make([]string, len(infos))
+	for i, m := range infos {
+		out[i] = m.Name
+	}
+	return out
+}
+
+// policyIP is the caller's address as access policies see it: the socket's
+// peer, or the first X-Forwarded-For hop only when TrustProxy is set.
+func (h *Handler) policyIP(r *http.Request) string {
+	if h.TrustProxy {
+		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+			return strings.TrimSpace(strings.Split(fwd, ",")[0])
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }

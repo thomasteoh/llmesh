@@ -323,6 +323,8 @@ func main() {
 		Modalities:        h,
 		InFlight:          h,
 		Limits:            adminHandler.State(),
+		Access:            adminHandler.State(),
+		TrustProxy:        cfg.Server.TrustProxyHeaders,
 		Dedup:             dedup.New(logring.NewLogger(sink, "dedup", slog.LevelInfo)),
 		MaxRequestBytes:   cfg.MaxRequestBytes(),
 		TTFTTimeout:       timeouts.TTFT,

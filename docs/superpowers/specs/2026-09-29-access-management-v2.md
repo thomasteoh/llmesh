@@ -1,6 +1,6 @@
 # Access management v2
 
-> **Status: approved 2026-09-29; phases 1–3 implemented.** Replaces the ad-hoc admin/member checks,
+> **Status: approved 2026-09-29; phases 1–4 implemented.** Replaces the ad-hoc admin/member checks,
 > per-user isolation flags, and per-token `owner_slots` with one authorization
 > model covering the portal, inference admission, and dispatch.
 
@@ -395,3 +395,22 @@ Implementation notes (phase 3):
 - Owners are protected: changing an owner's account or granting/removing the
   owner role takes `owner.manage`. The router always keeps at least one enabled
   owner or admin.
+
+Implementation notes (phase 4):
+
+- Admission computes the permitted concrete models for the request (the
+  model itself, an alias's targets, or every active model for `any`) and
+  stores them on the request as `AllowedModels`. The queue and the
+  scheduler's alias resolution only ever match a permitted model, so the
+  dispatch-side half of §4 is already in place for aliases and `any`.
+- Key scope is models (globs) and endpoints. A priority ceiling was dropped:
+  key priority is already an admin-set `key.limits` field.
+- New teams are bound to the member role, so a team's own keys can use
+  models; an admin can change the team's roles.
+- Model attributes available to policies today: `context_size`. Modality,
+  pricing basis, and serving kind need plumbing from the hub and arrive with
+  phase 6's policy editor.
+- `context.source_ip` is the socket peer unless `trust_proxy_headers` is on,
+  matching the portal; the API's older `clientIP` (used only for logging)
+  still reads X-Forwarded-For.
+

@@ -493,6 +493,8 @@ type SettingsPage struct {
 	MySessions       []SessionInfo
 	CurrentSession   string // id hash of the session viewing the page
 	MyTeams          []string
+	// ModelRules are the model-access policies, for the Model access tab.
+	ModelRules []ModelRuleRow
 }
 
 // AuthSettings is the settings page's view of alternative sign-in.
@@ -894,6 +896,17 @@ func (a *Admin) handleAPIKeyCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if owner != u.Username {
 		k.CreatedBy = u.Username
+	}
+	for _, m := range strings.Split(r.FormValue("scope_models"), ",") {
+		if m = strings.TrimSpace(m); m != "" {
+			k.Scope.Models = append(k.Scope.Models, m)
+		}
+	}
+	for _, e := range r.Form["scope_endpoints"] {
+		switch e {
+		case "/v1/chat/completions", "/v1/messages", "/v1/responses":
+			k.Scope.Endpoints = append(k.Scope.Endpoints, e)
+		}
 	}
 	switch days, _ := strconv.Atoi(r.FormValue("expires_days")); {
 	case days < 0 || days > 3650:
@@ -1324,6 +1337,7 @@ func (a *Admin) renderSettings(w http.ResponseWriter, r *http.Request, u User, f
 		MySessions:       mySessions,
 		CurrentSession:   current,
 		MyTeams:          myTeams,
+		ModelRules:       a.modelRules(),
 	})
 }
 

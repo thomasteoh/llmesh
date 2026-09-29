@@ -84,18 +84,36 @@ type APIKey struct {
 	ExpiresAt  time.Time
 	LastUsedAt time.Time // zero until first use; updated at most once a minute
 	CreatedBy  string    // who issued it, when not the owner
+	// Scope narrows what the key may do below its owner's permissions.
+	Scope KeyScope
 }
+
+// KeyScope restricts an API key. Empty fields restrict nothing. A scope can
+// only narrow the owner's permissions: a model the owner may not use stays
+// forbidden whatever the scope lists.
+type KeyScope struct {
+	// Models are globs over concrete model names ("qwen3-*").
+	Models []string `json:"models,omitempty"`
+	// Endpoints are request paths ("/v1/chat/completions").
+	Endpoints []string `json:"endpoints,omitempty"`
+}
+
+// Empty reports whether the scope restricts nothing.
+func (k KeyScope) Empty() bool { return len(k.Models) == 0 && len(k.Endpoints) == 0 }
 
 // apiKeyColumns and scanAPIKey read a key the same way everywhere.
 const apiKeyColumns = `key_hash, key_prefix, label, owner, priority, max_concurrent, created_at,
-	expires_at, last_used_at, created_by`
+	expires_at, last_used_at, created_by, scope`
 
 func scanAPIKey(sc rowScanner) (APIKey, error) {
 	var k APIKey
-	var created, expires, used string
+	var created, expires, used, scope string
 	if err := sc.Scan(&k.KeyHash, &k.KeyPrefix, &k.Label, &k.Owner, &k.Priority, &k.MaxConcurrent,
-		&created, &expires, &used, &k.CreatedBy); err != nil {
+		&created, &expires, &used, &k.CreatedBy, &scope); err != nil {
 		return APIKey{}, err
+	}
+	if scope != "" {
+		_ = json.Unmarshal([]byte(scope), &k.Scope)
 	}
 	k.CreatedAt, _ = time.Parse(time.RFC3339, created)
 	k.ExpiresAt, _ = time.Parse(time.RFC3339, expires)
@@ -1148,10 +1166,10 @@ func (s *State) APIKeysFor(owner string, isAdmin bool) []APIKey {
 
 func (s *State) AddAPIKey(k APIKey) error {
 	_, err := s.db.Exec(
-		`INSERT INTO api_keys (key_hash, key_prefix, label, owner, priority, max_concurrent, created_at, expires_at, created_by)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO api_keys (key_hash, key_prefix, label, owner, priority, max_concurrent, created_at, expires_at, created_by, scope)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		k.KeyHash, k.KeyPrefix, k.Label, k.Owner, k.Priority, k.MaxConcurrent, k.CreatedAt.Format(time.RFC3339),
-		timeString(k.ExpiresAt), k.CreatedBy,
+		timeString(k.ExpiresAt), k.CreatedBy, scopeString(k.Scope),
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
@@ -1794,4 +1812,12 @@ func timeString(t time.Time) string {
 		return ""
 	}
 	return t.UTC().Format(time.RFC3339)
+}
+
+func scopeString(k KeyScope) string {
+	if k.Empty() {
+		return ""
+	}
+	b, _ := json.Marshal(k)
+	return string(b)
 }

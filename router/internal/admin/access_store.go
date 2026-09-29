@@ -95,6 +95,7 @@ func createAccessSchema(db *sql.DB) error {
 		`ALTER TABLE api_keys ADD COLUMN expires_at TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE api_keys ADD COLUMN last_used_at TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE api_keys ADD COLUMN created_by TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE api_keys ADD COLUMN scope TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE client_tokens ADD COLUMN sharing TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE client_tokens ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'`,
 		`ALTER TABLE client_tokens ADD COLUMN last_used_at TEXT NOT NULL DEFAULT ''`,
@@ -505,6 +506,12 @@ func (s *State) CreateTeam(id, name, description, creator string) (Team, error) 
 		if strings.Contains(err.Error(), "UNIQUE") {
 			return Team{}, fmt.Errorf("a team with that id or name already exists")
 		}
+		return Team{}, err
+	}
+	// A team's own keys act as the team, so it needs a role to use models at
+	// all. Member is what a person gets by default, and admins can change it.
+	if _, err := tx.Exec(`INSERT INTO role_bindings (principal, role, team) VALUES (?, ?, '')`,
+		teamPrincipal(id), authz.RoleMember); err != nil {
 		return Team{}, err
 	}
 	if creator != "" {

@@ -103,13 +103,18 @@ func (q *Queue) Len() int {
 // or the reserved pseudo-model "any" which matches any client with at least one model.
 func canHandle(req types.InferenceRequest, models map[string]bool, aliases map[string][]string) bool {
 	if req.Model == "any" {
-		return len(models) > 0
+		for m := range models {
+			if req.ModelAllowed(m) {
+				return true
+			}
+		}
+		return false
 	}
-	if models[req.Model] {
+	if models[req.Model] && req.ModelAllowed(req.Model) {
 		return true
 	}
 	for _, target := range aliases[req.Model] {
-		if models[target] {
+		if models[target] && req.ModelAllowed(target) {
 			return true
 		}
 	}

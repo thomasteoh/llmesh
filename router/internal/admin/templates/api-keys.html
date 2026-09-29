@@ -50,12 +50,28 @@
       </div>
       <button type="submit" class="btn">Generate key</button>
     </div>
+    <details class="mt-2">
+      <summary class="muted">Restrict this key <span class="muted">(optional)</span></summary>
+      <div class="form-row mt-2">
+        <div class="form-group flex-2">
+          <label>Models <span class="muted">(comma-separated patterns, e.g. <code>qwen3-*</code>)</span></label>
+          <input name="scope_models" placeholder="any model you may use" autocomplete="off">
+        </div>
+        <div class="form-group flex-2">
+          <label>Endpoints</label>
+          <label class="muted"><input type="checkbox" name="scope_endpoints" value="/v1/chat/completions"> chat completions</label>
+          <label class="muted"><input type="checkbox" name="scope_endpoints" value="/v1/messages"> messages</label>
+          <label class="muted"><input type="checkbox" name="scope_endpoints" value="/v1/responses"> responses</label>
+        </div>
+      </div>
+      <p class="field-desc">A restriction only narrows what you can already do: a model you may not use stays unavailable whatever the key lists. Leave both empty for no restriction.</p>
+    </details>
     {{if .FormError}}<p class="form-error">{{.FormError}}</p>{{end}}
   </form>
 </div>
 <div class="table-scroll">
   <table class="data-table">
-    <thead><tr><th>Label</th><th>Key</th><th>Priority</th><th>Created</th><th>Expires</th><th>Last used</th><th></th></tr></thead>
+    <thead><tr><th>Label</th><th>Key</th><th>Priority</th><th>Restricted to</th><th>Created</th><th>Expires</th><th>Last used</th><th></th></tr></thead>
     <tbody>
       {{range .Keys}}
       <tr>
@@ -77,6 +93,7 @@
           <span class="badge {{.Priority}}">{{.Priority}}</span>
           {{end}}
         </td>
+        <td data-label="Restricted to" class="muted text-xs">{{if .Scope.Empty}}—{{else}}{{range $i, $m := .Scope.Models}}{{if $i}}, {{end}}<code>{{$m}}</code>{{end}}{{if and .Scope.Models .Scope.Endpoints}}; {{end}}{{range $i, $e := .Scope.Endpoints}}{{if $i}}, {{end}}{{$e}}{{end}}{{end}}</td>
         <td data-label="Created" class="muted">{{.CreatedAt.Format "2006-01-02"}}</td>
         <td data-label="Expires" class="muted">{{if .ExpiresAt.IsZero}}never{{else}}{{.ExpiresAt.Format "2006-01-02"}}{{end}}</td>
         <td data-label="Last used" class="muted">{{if .LastUsedAt.IsZero}}never{{else}}{{.LastUsedAt.Format "2006-01-02 15:04"}}{{end}}</td>

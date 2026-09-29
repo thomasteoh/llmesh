@@ -161,6 +161,7 @@ func setupTestStack(t *testing.T) *testStack {
 
 	apiHandler = &api.Handler{
 		Keys:        adminHandler.State(),
+		Access:      adminHandler.State(),
 		Models:      h,
 		Aliases:     adminHandler.State(),
 		Stats:       reqStats,

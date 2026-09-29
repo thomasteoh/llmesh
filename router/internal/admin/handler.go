@@ -348,6 +348,9 @@ func (a *Admin) registerRoutes() {
 	mux.HandleFunc("/portal/settings/users/roles/remove", a.requireRateLimit(a.requirePerm("user.manage", a.postWithCSRF(a.handleUserRoleRemove)), 20))
 	mux.HandleFunc("/portal/settings/users/sign-out", a.requireRateLimit(a.requirePerm("user.manage", a.postWithCSRF(a.handleUserSignOut)), 20))
 	mux.HandleFunc("/portal/settings/sessions/revoke", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleSessionRevoke)), 20))
+	mux.HandleFunc("/portal/settings/model-access", a.requireRateLimit(a.requirePerm("policy.manage", a.postWithCSRF(a.handleModelRuleSave)), 20))
+	mux.HandleFunc("/portal/settings/model-access/toggle", a.requireRateLimit(a.requirePerm("policy.manage", a.postWithCSRF(a.handleModelRuleToggle)), 20))
+	mux.HandleFunc("/portal/settings/model-access/delete", a.requireRateLimit(a.requirePerm("policy.manage", a.postWithCSRF(a.handleModelRuleDelete)), 20))
 	mux.HandleFunc("/portal/settings/roles", a.requireRateLimit(a.requirePerm("role.manage", a.postWithCSRF(a.handleRoleSave)), 20))
 	mux.HandleFunc("/portal/settings/roles/delete", a.requireRateLimit(a.requirePerm("role.manage", a.postWithCSRF(a.handleRoleDelete)), 20))
 	mux.HandleFunc("/portal/teams", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {

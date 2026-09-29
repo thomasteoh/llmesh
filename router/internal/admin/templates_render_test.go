@@ -88,10 +88,11 @@ func TestTemplatesRender(t *testing.T) {
 		d["Users"] = []any{"alice", "bob"}
 		d["Keys"] = []any{map[string]any{
 			"Owner": "alice", "Label": "prod", "KeyHash": "deadbeef", "KeyPrefix": "sk-alice-1a2b…",
-			"Priority": "high", "CreatedAt": now, "ExpiresAt": time.Time{}, "LastUsedAt": now,
+			"Priority": "high", "CreatedAt": now, "ExpiresAt": time.Time{}, "LastUsedAt": now, "Scope": KeyScope{},
 		}, map[string]any{
 			"Owner": "bob", "Label": "ci", "KeyHash": "cafe", "KeyPrefix": "sk-bob-9f8e…",
 			"Priority": "normal", "CreatedAt": now, "ExpiresAt": now.Add(24 * time.Hour), "LastUsedAt": time.Time{},
+			"Scope": KeyScope{Models: []string{"qwen3-*"}, Endpoints: []string{"/v1/messages"}},
 		}}
 		renderPage(t, "api-keys", d)
 	})
@@ -224,6 +225,10 @@ func TestTemplatesRender(t *testing.T) {
 		}
 		d["CurrentSession"] = "h1"
 		d["MyTeams"] = []string{"research"}
+		d["ModelRules"] = []any{
+			map[string]any{"ID": "models-default", "Name": "Everyone", "Effect": "allow", "Models": []string{"*"}, "Who": "everyone", "Enabled": true, "Advanced": false},
+			map[string]any{"ID": "no-gpt", "Name": "No GPT", "Effect": "deny", "Models": []string{"gpt-*"}, "Who": "teams interns", "Enabled": false, "Advanced": true},
+		}
 		d["Upstreams"] = []any{map[string]any{
 			"Name": "orch", "URL": "https://orch.example.com", "Priority": "high", "Connected": true,
 		}}

@@ -298,7 +298,7 @@ func (s *Scheduler) drainQueue() {
 			}
 			// Resolve the concrete model once and reuse it everywhere below so
 			// the owner-slot cap, context check, and dispatch cannot disagree.
-			resolved, tier := resolveModel(req.Model, c.Models, aliasTargets)
+			resolved, tier := resolveModel(req, c.Models, aliasTargets)
 			// Enforce per-model owner-slot constraints for non-owner requests.
 			if req.Owner != c.Owner {
 				// Resolve model names for OwnerSlots and NonOwnerInFlight separately:
@@ -558,16 +558,19 @@ func betterClient(a, b types.ClientSummary) bool {
 // "any" (pick first available) and aliases (pick the most-preferred matching
 // target, since targets are ordered preferred-first). Returns reqModel unchanged
 // at tier 0 if it is already a concrete name served by this client.
-func resolveModel(reqModel string, clientModels map[string]bool, aliases map[string][]types.AliasTarget) (string, int) {
+func resolveModel(req *types.InferenceRequest, clientModels map[string]bool, aliases map[string][]types.AliasTarget) (string, int) {
+	reqModel := req.Model
 	if reqModel == "any" {
 		for m := range clientModels {
-			return m, 0
+			if req.ModelAllowed(m) {
+				return m, 0
+			}
 		}
 		return reqModel, 0
 	}
 	if targets, ok := aliases[reqModel]; ok {
 		for _, t := range targets {
-			if clientModels[t.Model] {
+			if clientModels[t.Model] && req.ModelAllowed(t.Model) {
 				return t.Model, t.Priority
 			}
 		}

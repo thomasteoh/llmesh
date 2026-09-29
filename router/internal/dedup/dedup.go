@@ -314,6 +314,17 @@ func ContentHash(req *types.InferenceRequest) string {
 // hashing, so two requests that are semantically identical but differ only in
 // JSON byte layout produce the same hash and therefore coalesce. Normalisation
 // affects the hash only — the request dispatched to the model is unchanged.
+// ContentHashScoped is ContentHashOpts with an extra scope folded in, so that
+// requests identical in content but made under different permissions — a
+// different owner, or a different set of permitted models — never coalesce.
+func ContentHashScoped(req *types.InferenceRequest, normalize bool, scope string) string {
+	if scope == "" {
+		return ContentHashOpts(req, normalize)
+	}
+	sum := sha256.Sum256([]byte(ContentHashOpts(req, normalize) + "\x00" + scope))
+	return hex.EncodeToString(sum[:])
+}
+
 func ContentHashOpts(req *types.InferenceRequest, normalize bool) string {
 	type hashInput struct {
 		Model       string          `json:"model"`

@@ -180,6 +180,12 @@ From the admin dashboard you can:
 
 Access is granted by roles, each a named set of permissions. The built-in roles are *owner* (everything), *admin* (everything except changing owners), *operator* (clients, aliases, queue, pricing, upstreams), *auditor* (read-only, including the audit log), *member* (own keys, clients, usage, and jobs), and *viewer* (own usage only). Within a team, *team maintainer* and *team member* apply to that team's keys, clients, and usage. Admins can define custom roles from the permission catalogue under **Settings → Roles**, but only with permissions they hold themselves. On upgrade every existing admin becomes an owner and every member stays a member.
 
+**Model access**
+
+Which models a caller may use is set under **Settings → Model access** as allow and deny rules over model names (patterns like `gpt-*`), for everyone or for particular users, teams, or roles. Deny wins over allow. Every router starts with one rule allowing everyone every model. A request for a model the caller may not use gets `403` with the rule that refused it, `/v1/models` lists only what the caller may use, and an alias is usable if one of its targets is — and then only ever routes to a target the caller may use.
+
+An API key can be restricted further when it is created, to some models and some endpoints. A restriction only narrows what the key's owner can already do. Keys owned by a team act as the team.
+
 **Sign-in methods**
 
 Username and password always works. Four alternatives can be added under **Settings → Sign-in**, and each appears on the login page only once an admin has configured *and* enabled it — a router with none set up shows exactly the login form it always did.
