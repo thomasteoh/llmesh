@@ -81,6 +81,17 @@ reported by the llama.cpp server, falling back to
 if the server does not advertise one.
 Set an explicit positive integer to override.
 .TP
+.B shutdown_drain
+On SIGTERM or SIGINT, how long to let jobs in flight finish before handing the
+rest back to the router.
+Optional; default
+.IR 60s .
+The router sends no new jobs meanwhile.
+A second signal stops at once;
+.I 0s
+hands jobs back immediately.
+Needs a router that supports draining.
+.TP
 .B local_api_addr
 Bind address for a local OpenAI-compatible HTTP endpoint.
 Optional; disabled when omitted.

@@ -90,6 +90,10 @@ type Config struct {
 	// unauthenticated — only safe on a loopback bind.
 	LocalAPIToken         string        `yaml:"local_api_token"`
 	RouterActivityTimeout time.Duration `yaml:"router_activity_timeout"` // derive keep-alive interval; 0 = use 60s default
+	// ShutdownDrain is how long a shutdown waits for jobs in flight to finish
+	// before handing the rest back to the router. Unset means 60s; 0 hands
+	// them back at once.
+	ShutdownDrain *time.Duration `yaml:"shutdown_drain"`
 
 	detectedTemplates sync.Map // model name → chat_template detected from /props; not from config file
 	resolvedNames     sync.Map // endpoint → model name auto-detected from /v1/models when config name is omitted
@@ -203,6 +207,17 @@ func (c *Config) AvailableModels() []string {
 		}
 	}
 	return names
+}
+
+// ShutdownDrainTimeout returns how long shutdown waits for jobs in flight.
+func (c *Config) ShutdownDrainTimeout() time.Duration {
+	if c.ShutdownDrain == nil {
+		return 60 * time.Second
+	}
+	if *c.ShutdownDrain < 0 {
+		return 0
+	}
+	return *c.ShutdownDrain
 }
 
 // KeepAliveInterval returns the worker keep-alive interval derived from

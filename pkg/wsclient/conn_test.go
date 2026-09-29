@@ -148,7 +148,7 @@ func (nopStats) DecrActive()       {}
 func (nopStats) IncrDone()         {}
 func (nopStats) IncrError()        {}
 
-// lateModels reports no models, pending, until ready is set.
+// lateModels reports no models until ready is set.
 type lateModels struct{ ready atomic.Bool }
 
 func (m *lateModels) Models(context.Context) ([]types.ModelInfo, int) {
@@ -157,7 +157,7 @@ func (m *lateModels) Models(context.Context) ([]types.ModelInfo, int) {
 	}
 	return []types.ModelInfo{{Name: "llama3", ContextSize: 8192}}, 2
 }
-func (m *lateModels) Pending() bool { return !m.ready.Load() }
+func (m *lateModels) WatchModels() bool { return true }
 
 type countingJobs struct{ dispatched atomic.Int32 }
 
@@ -262,5 +262,131 @@ func TestOlderRouterGetsNoLocalReports(t *testing.T) {
 	f.waitFor(t, "chunk", 1)
 	if jobs.dispatched.Load() != 1 {
 		t.Error("the waiting job did not run once a slot was free")
+	}
+}
+
+// switchModels serves whichever model list is current.
+type switchModels struct {
+	mu     sync.Mutex
+	models []types.ModelInfo
+}
+
+func (m *switchModels) set(ms ...types.ModelInfo) {
+	m.mu.Lock()
+	m.models = ms
+	m.mu.Unlock()
+}
+func (m *switchModels) Models(context.Context) ([]types.ModelInfo, int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]types.ModelInfo(nil), m.models...), 1
+}
+func (m *switchModels) WatchModels() bool { return true }
+
+func TestRecheckRegistersAtOnce(t *testing.T) {
+	old := reprobeInterval
+	reprobeInterval = time.Hour
+	t.Cleanup(func() { reprobeInterval = old })
+
+	f := newFakeRouter(t, nil)
+	models := &switchModels{}
+	models.set(types.ModelInfo{Name: "a"}, types.ModelInfo{Name: "b"})
+	c := runConn(t, f, models, &countingJobs{})
+	f.waitFor(t, "register", 1)
+	time.Sleep(50 * time.Millisecond) // let the watcher start
+	models.set(types.ModelInfo{Name: "a"})
+	c.Recheck()
+	again := f.waitFor(t, "register", 2)[1]
+	if ms, _ := again["models"].([]any); len(ms) != 1 {
+		t.Fatalf("after Recheck: %v", again)
+	}
+}
+
+// blockingJobs runs each job until release is closed.
+type blockingJobs struct {
+	started chan string
+	release chan struct{}
+}
+
+func (*blockingJobs) Try(types.JobMsg, func(any) error) bool { return true }
+func (j *blockingJobs) Dispatch(ctx context.Context, job types.JobMsg, send func(any) error) error {
+	j.started <- job.Request.ID
+	select {
+	case <-j.release:
+		return send(types.ChunkMsg{Type: "chunk", RequestID: job.Request.ID, Delta: "done", Done: true})
+	case <-ctx.Done():
+		return nil
+	}
+}
+
+func drainSetup(t *testing.T, features []string, timeout time.Duration) (*fakeRouter, *Conn, *blockingJobs, context.CancelFunc, chan struct{}, chan struct{}) {
+	t.Helper()
+	f := newFakeRouter(t, features)
+	jobs := &blockingJobs{started: make(chan string, 4), release: make(chan struct{})}
+	models := &switchModels{}
+	models.set(types.ModelInfo{Name: "llama3"})
+	c := New(f.srv.URL, "ct-test", 2, "test", nopStats{}, models, jobs, slog.Default())
+	force := make(chan struct{})
+	c.SetDrain(timeout, force)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { c.Run(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+	f.waitFor(t, "register", 1)
+	time.Sleep(50 * time.Millisecond) // the acknowledgement
+	job, _ := json.Marshal(types.JobMsg{Type: "job", Request: types.InferenceRequest{ID: "j1", Model: "llama3"}})
+	f.write(job)
+	<-jobs.started
+	return f, c, jobs, cancel, force, done
+}
+
+func TestShutdownLetsJobsFinish(t *testing.T) {
+	f, _, jobs, cancel, _, done := drainSetup(t, []string{types.FeatureDrain}, 5*time.Second)
+	cancel()
+	f.waitFor(t, "draining", 1)
+	// A job the router sent before it saw the drain goes straight back.
+	late, _ := json.Marshal(types.JobMsg{Type: "job", Request: types.InferenceRequest{ID: "j2", Model: "llama3"}})
+	f.write(late)
+	rel := f.waitFor(t, "release", 1)[0]
+	if rel["request_id"] != "j2" || rel["reason"] != types.ReleaseShutdown {
+		t.Fatalf("late job: %v", rel)
+	}
+	select {
+	case <-done:
+		t.Fatal("shut down without waiting for the running job")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(jobs.release)
+	f.waitFor(t, "chunk", 1)
+	<-done
+	for _, r := range f.ofType("release") {
+		if r["request_id"] == "j1" {
+			t.Error("the finished job was handed back too")
+		}
+	}
+}
+
+func TestShutdownHandsBackWhatDoesNotFinish(t *testing.T) {
+	f, _, _, cancel, force, done := drainSetup(t, []string{types.FeatureDrain}, 5*time.Second)
+	cancel()
+	f.waitFor(t, "draining", 1)
+	close(force) // a second signal
+	rel := f.waitFor(t, "release", 1)[0]
+	if rel["request_id"] != "j1" {
+		t.Fatalf("release: %v", rel)
+	}
+	<-done
+}
+
+func TestShutdownWithoutDrainSupportIsImmediate(t *testing.T) {
+	f, _, _, cancel, _, done := drainSetup(t, nil, 5*time.Second)
+	cancel()
+	rel := f.waitFor(t, "release", 1)[0]
+	if rel["request_id"] != "j1" {
+		t.Fatalf("release: %v", rel)
+	}
+	<-done
+	if len(f.ofType("draining")) != 0 {
+		t.Error("an older router was sent a draining message")
 	}
 }

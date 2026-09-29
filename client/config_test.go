@@ -4,6 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestConfigValidate(t *testing.T) {
@@ -179,5 +182,17 @@ func TestEffectiveModalities(t *testing.T) {
 	got = (ModelConfig{Modalities: []string{"text", "audio"}}).EffectiveModalities(detected)
 	if len(got) != 2 || got[0] != "text" || got[1] != "audio" {
 		t.Errorf("explicit with text = %v, want [text audio]", got)
+	}
+}
+
+func TestShutdownDrainTimeout(t *testing.T) {
+	for yamlVal, want := range map[string]time.Duration{"": 60 * time.Second, "shutdown_drain: 0s": 0, "shutdown_drain: 2m": 2 * time.Minute} {
+		var c Config
+		if err := yaml.Unmarshal([]byte(yamlVal), &c); err != nil {
+			t.Fatal(err)
+		}
+		if got := c.ShutdownDrainTimeout(); got != want {
+			t.Errorf("%q: %v, want %v", yamlVal, got, want)
+		}
 	}
 }
