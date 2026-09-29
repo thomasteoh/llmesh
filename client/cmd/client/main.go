@@ -74,7 +74,7 @@ Config file fields (YAML):
 	if cfg.MetricsAddr != "" {
 		mux := http.NewServeMux()
 		mux.Handle("/debug/vars", expvar.Handler())
-		srv := &http.Server{Addr: cfg.MetricsAddr, Handler: mux}
+		srv := &http.Server{Addr: cfg.MetricsAddr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 		go func() {
 			log.Info("metrics listening", "addr", cfg.MetricsAddr)
 			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -86,11 +86,13 @@ Config file fields (YAML):
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
 
-	if isTerminal(os.Stderr) {
-		go runStatusLine(ctx, st, cfg.MaxConcurrent)
-	}
-
 	conn := ws.New(cfg, version, st)
+
+	if isTerminal(os.Stderr) {
+		// The pool's capacity, not cfg.MaxConcurrent, which is 0 when the
+		// slot count is detected from llama.cpp.
+		go runStatusLine(ctx, st, conn.SlotPool().Capacity)
+	}
 
 	if cfg.LocalAPIAddr != "" {
 		if !addrIsLoopback(cfg.LocalAPIAddr) && cfg.LocalAPIToken == "" {
@@ -147,13 +149,13 @@ func isTerminal(f *os.File) bool {
 }
 
 // runStatusLine writes a live one-line status to stderr every second until ctx is done.
-func runStatusLine(ctx context.Context, st *stats.Stats, maxConcurrent int) {
+func runStatusLine(ctx context.Context, st *stats.Stats, capacity func() int) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			fmt.Fprint(os.Stderr, statusLine(st, maxConcurrent))
+			fmt.Fprint(os.Stderr, statusLine(st, capacity()))
 		case <-ctx.Done():
 			fmt.Fprintln(os.Stderr) // leave terminal on a clean line
 			return

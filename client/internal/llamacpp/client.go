@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -206,6 +207,86 @@ type Props struct {
 	Modalities []string
 }
 
+// BackendError is a non-200 answer from the backend, with the reason it gave.
+type BackendError struct {
+	Status  int
+	Message string
+}
+
+func (e *BackendError) Error() string {
+	if e.Message == "" {
+		return fmt.Sprintf("llama.cpp returned %d", e.Status)
+	}
+	return fmt.Sprintf("llama.cpp returned %d: %s", e.Status, e.Message)
+}
+
+// Final reports whether the backend rejected the request itself — malformed,
+// or more than it can take — so that another attempt, here or on another
+// worker running the same backend, would be refused the same way. An auth or
+// availability failure is this worker's own and is worth retrying elsewhere.
+func (e *BackendError) Final() bool {
+	switch e.Status {
+	case http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
+		return true
+	}
+	return false
+}
+
+// maxErrorBody bounds how much of an error response is read for its reason.
+const maxErrorBody = 4 << 10
+
+// backendError reads the reason from an error response: llama.cpp's
+// {"error":{"message":…}}, the {"error":"…"} or {"message":"…"} other servers
+// use, or failing those the start of the body as text.
+func backendError(resp *http.Response) error {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+	e := &BackendError{Status: resp.StatusCode}
+	var shaped struct {
+		Error   json.RawMessage `json:"error"`
+		Message string          `json:"message"`
+	}
+	if json.Unmarshal(body, &shaped) == nil {
+		var nested struct {
+			Message string `json:"message"`
+		}
+		var flat string
+		switch {
+		case json.Unmarshal(shaped.Error, &nested) == nil && nested.Message != "":
+			e.Message = nested.Message
+		case json.Unmarshal(shaped.Error, &flat) == nil && flat != "":
+			e.Message = flat
+		case shaped.Message != "":
+			e.Message = shaped.Message
+		}
+	}
+	if e.Message == "" {
+		e.Message = strings.TrimSpace(string(body))
+	}
+	if len(e.Message) > 500 {
+		e.Message = e.Message[:500] + "…"
+	}
+	return e
+}
+
+// Ready reports whether the backend is up and has its model loaded. llama.cpp
+// answers /health with 503 while loading; a server without /health (404) is
+// taken as ready, since it answered at all.
+func (c *Client) Ready(ctx context.Context) bool {
+	hctx, cancel := context.WithTimeout(ctx, healthCheckTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(hctx, http.MethodGet, c.endpoint+"/health", nil)
+	if err != nil {
+		return false
+	}
+	c.applyHeaders(req)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode != http.StatusServiceUnavailable
+}
+
 // ProbeModelID fetches /v1/models and returns the id of the first model the
 // endpoint advertises (llama.cpp serves one model per process). Returns "" on
 // any error or if no model is advertised.
@@ -334,7 +415,7 @@ func (c *Client) Infer(ctx context.Context, req types.InferenceRequest, chatTemp
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("llama.cpp returned %d", resp.StatusCode)
+		return backendError(resp)
 	}
 
 	if req.Stream {
