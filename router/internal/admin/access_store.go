@@ -408,7 +408,6 @@ func (s *State) Bind(b RoleBinding) error {
 		b.Principal, b.Role, b.Team); err != nil {
 		return err
 	}
-	s.refreshLegacyRole(b.Principal)
 	return s.bumpAuthz()
 }
 
@@ -433,23 +432,7 @@ func (s *State) Unbind(b RoleBinding) error {
 		b.Principal, b.Role, b.Team); err != nil {
 		return err
 	}
-	s.refreshLegacyRole(b.Principal)
 	return s.bumpAuthz()
-}
-
-// refreshLegacyRole rewrites users.role from a user's bindings, for the code
-// that still reads it (OIDC role sync, the promote/demote endpoints): "admin"
-// when they hold owner or admin router-wide, "member" otherwise.
-func (s *State) refreshLegacyRole(principal string) {
-	username, ok := strings.CutPrefix(principal, "user:")
-	if !ok {
-		return
-	}
-	role := "member"
-	if s.isPrivileged(username) {
-		role = "admin"
-	}
-	_, _ = s.db.Exec(`UPDATE users SET role = ? WHERE username = ?`, role, username)
 }
 
 // activeOwnerCount counts enabled users holding the owner role, excluding one
@@ -500,31 +483,16 @@ func (s *State) roleExists(id string) bool {
 	return n > 0
 }
 
-// syncLegacyRole keeps a user's router-wide admin/member binding in step with
-// users.role while the portal still reads the latter (until phase 3). A
-// promotion grants admin, not owner; a demotion removes both.
-func (s *State) syncLegacyRole(username, role string) error {
-	p := userPrincipal(username)
+// bindInitialRole gives a new account its router-wide role: admin for
+// "admin", member for anything else.
+func (s *State) bindInitialRole(username, role string) error {
+	r := authz.RoleMember
 	if role == "admin" {
-		if _, err := s.db.Exec(`DELETE FROM role_bindings WHERE principal = ? AND team = '' AND role = ?`, p, authz.RoleMember); err != nil {
-			return err
-		}
-		var n int
-		_ = s.db.QueryRow(`SELECT COUNT(*) FROM role_bindings WHERE principal = ? AND team = '' AND role IN (?, ?)`,
-			p, authz.RoleOwner, authz.RoleAdmin).Scan(&n)
-		if n == 0 {
-			if _, err := s.db.Exec(`INSERT OR IGNORE INTO role_bindings (principal, role, team) VALUES (?, ?, '')`, p, authz.RoleAdmin); err != nil {
-				return err
-			}
-		}
-	} else {
-		if _, err := s.db.Exec(`DELETE FROM role_bindings WHERE principal = ? AND team = '' AND role IN (?, ?)`,
-			p, authz.RoleOwner, authz.RoleAdmin); err != nil {
-			return err
-		}
-		if _, err := s.db.Exec(`INSERT OR IGNORE INTO role_bindings (principal, role, team) VALUES (?, ?, '')`, p, authz.RoleMember); err != nil {
-			return err
-		}
+		r = authz.RoleAdmin
+	}
+	if _, err := s.db.Exec(`INSERT OR IGNORE INTO role_bindings (principal, role, team) VALUES (?, ?, '')`,
+		userPrincipal(username), r); err != nil {
+		return err
 	}
 	return s.bumpAuthz()
 }

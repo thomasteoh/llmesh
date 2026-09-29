@@ -24,9 +24,13 @@ import (
 type User struct {
 	Username     string `json:"username"`
 	PasswordHash string `json:"password_hash"`
-	Role         string `json:"role"` // "admin" | "member"
-	Disabled     bool   `json:"disabled"`
-	CSRFToken    string `json:"csrf_token,omitempty"` // SHA-256 hash of current valid CSRF token
+	// Role is the router-wide role a new account starts with ("admin" or
+	// "member"), read by AddUser and the state.json import only. Roles live
+	// in role bindings; this field is not loaded back and changing it does
+	// nothing.
+	Role      string `json:"role"`
+	Disabled  bool   `json:"disabled"`
+	CSRFToken string `json:"csrf_token,omitempty"` // SHA-256 hash of current valid CSRF token
 
 	// Email is the address this user signs in with when email sign-in is
 	// configured. It is only accepted as an identity once EmailVerified is set,
@@ -741,7 +745,7 @@ func (s *State) NeedsSetup() bool {
 // userColumns is the column list every user read selects, in the order
 // scanUser expects. Keeping the two together means adding a column touches one
 // pair of definitions rather than each of the three queries that read a user.
-const userColumns = `username, password_hash, role, disabled, csrf_token,
+const userColumns = `username, password_hash, disabled, csrf_token,
 	email, email_verified,
 	github_user_id, github_login, google_user_id, google_email,
 	oidc_subject, oidc_label, managed_by`
@@ -752,7 +756,7 @@ type rowScanner interface{ Scan(dest ...any) error }
 func scanUser(sc rowScanner) (User, error) {
 	var u User
 	var disabled, emailVerified int
-	err := sc.Scan(&u.Username, &u.PasswordHash, &u.Role, &disabled, &u.CSRFToken,
+	err := sc.Scan(&u.Username, &u.PasswordHash, &disabled, &u.CSRFToken,
 		&u.Email, &emailVerified,
 		&u.GitHubUserID, &u.GitHubLogin, &u.GoogleUserID, &u.GoogleEmail,
 		&u.OIDCSubject, &u.OIDCLabel, &u.ManagedBy)
@@ -828,7 +832,7 @@ func (s *State) AddUser(u User) error {
 		}
 		return err
 	}
-	return s.syncLegacyRole(u.Username, u.Role)
+	return s.bindInitialRole(u.Username, u.Role)
 }
 
 // ProvisionOIDCUser creates an account for an OIDC identity seen for the first
@@ -855,7 +859,7 @@ func (s *State) ProvisionOIDCUser(base, role string, ident oauthIdentity) (User,
 			username, role, token, ident.ID, ident.Label, providerOIDC,
 		)
 		if err == nil {
-			if err := s.syncLegacyRole(username, role); err != nil {
+			if err := s.bindInitialRole(username, role); err != nil {
 				return User{}, err
 			}
 			u, _ := s.LookupUser(username)
@@ -924,12 +928,12 @@ func (s *State) UpdateUser(username string, fn func(*User)) error {
 		u.EmailVerified = false
 	}
 	_, err := s.db.Exec(
-		`UPDATE users SET password_hash = ?, role = ?, disabled = ?, csrf_token = ?,
+		`UPDATE users SET password_hash = ?, disabled = ?, csrf_token = ?,
 		 email = ?, email_verified = ?,
 		 github_user_id = ?, github_login = ?, google_user_id = ?, google_email = ?,
 		 oidc_subject = ?, oidc_label = ?, managed_by = ?
 		 WHERE username = ?`,
-		u.PasswordHash, u.Role, boolInt(u.Disabled), u.CSRFToken,
+		u.PasswordHash, boolInt(u.Disabled), u.CSRFToken,
 		u.Email, boolInt(u.EmailVerified),
 		u.GitHubUserID, u.GitHubLogin, u.GoogleUserID, u.GoogleEmail,
 		u.OIDCSubject, u.OIDCLabel, u.ManagedBy, username,
@@ -938,11 +942,6 @@ func (s *State) UpdateUser(username string, fn func(*User)) error {
 		return identityConflictError(err)
 	}
 	s.invalidateAccess()
-	if u.Role != before.Role {
-		if err := s.syncLegacyRole(username, u.Role); err != nil {
-			return err
-		}
-	}
 	// Re-enabling clears whatever disabled the account.
 	if !u.Disabled && before.Disabled {
 		_, _ = s.db.Exec(`UPDATE users SET disabled_by = '' WHERE username = ?`, username)
@@ -990,29 +989,6 @@ func (s *State) Users() []User {
 		}
 	}
 	return out
-}
-
-func (s *State) ActiveAdminCount() int {
-	var count int
-	s.db.QueryRow(`SELECT COUNT(*) FROM users WHERE role = 'admin' AND disabled = 0`).Scan(&count)
-	return count
-}
-
-func (s *State) DemoteUser(actor, target string) error {
-	if actor == target {
-		return fmt.Errorf("cannot demote yourself")
-	}
-	if s.otherActivePrivileged(target) == 0 {
-		return fmt.Errorf("cannot demote: at least one active admin must remain")
-	}
-	res, err := s.db.Exec(`UPDATE users SET role = 'member' WHERE username = ?`, target)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("user not found: %s", target)
-	}
-	return s.syncLegacyRole(target, "member")
 }
 
 // DeleteUser permanently removes a disabled user and the credentials they own.

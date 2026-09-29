@@ -110,15 +110,14 @@ func TestLegacyRoleStaysInStep(t *testing.T) {
 	if got := bindingRoles(t, s, "user:bob"); !sameRoles(got, authz.RoleMember) {
 		t.Errorf("new member: %v", got)
 	}
+	s.AddUser(User{Username: "carol", Role: "admin"})
+	if got := bindingRoles(t, s, "user:carol"); !sameRoles(got, authz.RoleAdmin) {
+		t.Errorf("a new admin should be admin, not owner: %v", got)
+	}
+	// Roles live in bindings only: the struct field changes nothing.
 	s.UpdateUser("bob", func(u *User) { u.Role = "admin" })
-	if got := bindingRoles(t, s, "user:bob"); !sameRoles(got, authz.RoleAdmin) {
-		t.Errorf("promotion should grant admin, not owner: %v", got)
-	}
-	if err := s.DemoteUser("root", "bob"); err != nil {
-		t.Fatal(err)
-	}
 	if got := bindingRoles(t, s, "user:bob"); !sameRoles(got, authz.RoleMember) {
-		t.Errorf("demotion: %v", got)
+		t.Errorf("UpdateUser changed a role: %v", got)
 	}
 }
 

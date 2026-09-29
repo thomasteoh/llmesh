@@ -1748,48 +1748,6 @@ func (a *Admin) handleUserEnable(w http.ResponseWriter, r *http.Request) {
 	redirectOrRefresh(w, r, "/portal/settings")
 }
 
-func (a *Admin) handleUserPromote(w http.ResponseWriter, r *http.Request) {
-	u := ctxGetUser(r)
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	target := r.FormValue("username")
-	if msg := a.roleChangeRefused(r, target, authz.RoleAdmin); msg != "" {
-		a.renderSettings(w, r, u, "", msg)
-		return
-	}
-	if err := a.state.UpdateUser(target, func(user *User) { user.Role = "admin" }); err != nil {
-		a.renderSettings(w, r, u, "", err.Error())
-		return
-	}
-	a.state.RecordAudit(u.Username, "user.promote", target, a.clientIP(r))
-	redirectOrRefresh(w, r, "/portal/settings")
-}
-
-func (a *Admin) handleUserDemote(w http.ResponseWriter, r *http.Request) {
-	u := ctxGetUser(r)
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	target := r.FormValue("username")
-	if msg := a.userChangeRefused(r, target); msg != "" {
-		a.renderSettings(w, r, u, "", msg)
-		return
-	}
-	if msg := a.roleChangeRefused(r, target, authz.RoleAdmin); msg != "" {
-		a.renderSettings(w, r, u, "", msg)
-		return
-	}
-	if err := a.state.DemoteUser(u.Username, target); err != nil {
-		a.renderSettings(w, r, u, "", err.Error())
-		return
-	}
-	a.state.RecordAudit(u.Username, "user.demote", target, a.clientIP(r))
-	redirectOrRefresh(w, r, "/portal/settings")
-}
-
 func (a *Admin) handleUserResetPassword(w http.ResponseWriter, r *http.Request) {
 	u := ctxGetUser(r)
 	if err := r.ParseForm(); err != nil {

@@ -32,14 +32,14 @@ func TestUserRoleAssignment(t *testing.T) {
 	if !strings.Contains(rr.Body.String(), "Team roles are granted on the Teams page") {
 		t.Error("a team role was bound router-wide")
 	}
-	// Owners can, and the legacy column follows.
+	// Owners can.
 	postAs(t, a, "root", "/portal/settings/users/roles/add", url.Values{"username": {"bob"}, "role": {authz.RoleOwner}}, a.handleUserRoleAdd)
-	if u, _ := a.state.LookupUser("bob"); !a.state.IsOwner("bob") || u.Role != "admin" {
-		t.Errorf("owner grant: owner=%v role=%q", a.state.IsOwner("bob"), u.Role)
+	if !a.state.IsOwner("bob") {
+		t.Error("owner grant did not apply")
 	}
 	postAs(t, a, "root", "/portal/settings/users/roles/remove", url.Values{"username": {"bob"}, "role": {authz.RoleOwner}}, a.handleUserRoleRemove)
-	if u, _ := a.state.LookupUser("bob"); a.state.IsOwner("bob") || u.Role != "member" {
-		t.Errorf("owner removal: owner=%v role=%q", a.state.IsOwner("bob"), u.Role)
+	if a.state.IsOwner("bob") {
+		t.Error("owner removal did not apply")
 	}
 }
 

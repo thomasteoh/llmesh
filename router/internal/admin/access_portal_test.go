@@ -72,7 +72,6 @@ func TestAdminCannotChangeOwner(t *testing.T) {
 	for path, h := range map[string]http.HandlerFunc{
 		"/portal/settings/users/disable":        a.handleUserDisable,
 		"/portal/settings/users/reset-password": a.handleUserResetPassword,
-		"/portal/settings/users/demote":         a.handleUserDemote,
 	} {
 		rr := postAs(t, a, "adm", path, url.Values{"username": {"boss"}}, h)
 		if !strings.Contains(rr.Body.String(), "Only an owner can change another owner") {
@@ -230,7 +229,6 @@ func TestUserManageCannotEscalate(t *testing.T) {
 	withRole(t, a, "bob", authz.RoleMember)
 
 	postAs(t, a, "hd", "/portal/settings/users/roles/add", url.Values{"username": {"hd"}, "role": {authz.RoleAdmin}}, a.handleUserRoleAdd)
-	postAs(t, a, "hd", "/portal/settings/users/promote", url.Values{"username": {"hd"}}, a.handleUserPromote)
 	if a.state.isPrivileged("hd") {
 		t.Fatal("user.manage granted itself admin")
 	}

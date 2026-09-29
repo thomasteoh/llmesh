@@ -56,8 +56,8 @@ func TestHandleSetup_POST(t *testing.T) {
 	if !ok {
 		t.Fatal("user not created")
 	}
-	if u.Role != "admin" {
-		t.Fatalf("want admin role, got %s", u.Role)
+	if !a.state.IsOwner("admin") {
+		t.Fatalf("the first account is not an owner: %v", a.globalRoles("admin"))
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte("secret123")); err != nil {
 		t.Fatalf("password not hashed correctly: %v", err)

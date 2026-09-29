@@ -31,8 +31,8 @@ func TestAddUser_LookupUser(t *testing.T) {
 		t.Fatal("expected NeedsSetup=false after AddUser")
 	}
 	u, ok := s.LookupUser("alice")
-	if !ok || u.Role != "admin" {
-		t.Fatalf("got %+v ok=%v", u, ok)
+	if !ok || !s.isPrivileged("alice") {
+		t.Fatalf("got %+v ok=%v privileged=%v", u, ok, s.isPrivileged("alice"))
 	}
 	// persists across reload
 	s2, _ := LoadState(f)
@@ -49,12 +49,12 @@ func TestLookupUser_NotFound(t *testing.T) {
 	}
 }
 
-func TestActiveAdminCount(t *testing.T) {
+func TestOtherActivePrivileged(t *testing.T) {
 	s, _ := LoadState(filepath.Join(t.TempDir(), "state.json"))
 	s.AddUser(User{Username: "a", Role: "admin", Disabled: false})
 	s.AddUser(User{Username: "b", Role: "admin", Disabled: true})
 	s.AddUser(User{Username: "c", Role: "member", Disabled: false})
-	if n := s.ActiveAdminCount(); n != 1 {
+	if n := s.otherActivePrivileged("c"); n != 1 {
 		t.Fatalf("want 1, got %d", n)
 	}
 }

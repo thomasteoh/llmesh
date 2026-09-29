@@ -154,7 +154,7 @@ func TestOIDCProvisionsManagedAccount(t *testing.T) {
 	if !ok {
 		t.Fatal("no account was created")
 	}
-	if u.Role != "admin" || u.ManagedBy != providerOIDC || u.OIDCSubject != oidcSubjectID(testOIDCIssuer, "s1") {
+	if !a.state.isPrivileged("alice") || u.ManagedBy != providerOIDC || u.OIDCSubject != oidcSubjectID(testOIDCIssuer, "s1") {
 		t.Fatalf("created account is %+v", u)
 	}
 	if u.PasswordHash != "" {
@@ -207,20 +207,20 @@ func TestOIDCManagedRoleFollowsProvider(t *testing.T) {
 	a, f := oidcPolicyAdmin(t, zitadelDoc("s1", "alice", "llmesh-user"), zitadelPolicy)
 	addTestUser(t, a, "root", "admin")
 	oidcSignIn(t, a)
-	if u, _ := a.state.LookupUser("alice"); u.Role != "member" {
-		t.Fatalf("expected member, got %s", u.Role)
+	if a.state.isPrivileged("alice") {
+		t.Fatalf("expected member, got %v", a.globalRoles("alice"))
 	}
 
 	f.account.doc = zitadelDoc("s1", "alice", "llmesh-user", "llmesh-admin")
 	oidcSignIn(t, a)
-	if u, _ := a.state.LookupUser("alice"); u.Role != "admin" {
-		t.Fatalf("promotion at the provider did not apply: %s", u.Role)
+	if !a.state.isPrivileged("alice") {
+		t.Fatalf("promotion at the provider did not apply: %v", a.globalRoles("alice"))
 	}
 
 	f.account.doc = zitadelDoc("s1", "alice", "llmesh-user")
 	oidcSignIn(t, a)
-	if u, _ := a.state.LookupUser("alice"); u.Role != "member" {
-		t.Fatalf("demotion at the provider did not apply: %s", u.Role)
+	if a.state.isPrivileged("alice") {
+		t.Fatalf("demotion at the provider did not apply: %v", a.globalRoles("alice"))
 	}
 }
 
@@ -231,7 +231,7 @@ func TestOIDCNeverDemotesLastAdmin(t *testing.T) {
 	if rr := oidcSignIn(t, a); rr.Code != http.StatusFound {
 		t.Fatalf("sign-in failed: %d", rr.Code)
 	}
-	if u, _ := a.state.LookupUser("alice"); u.Role != "admin" {
+	if !a.state.isPrivileged("alice") {
 		t.Fatal("the last active admin was demoted by the provider")
 	}
 }
@@ -244,7 +244,7 @@ func TestOIDCLeavesLocalAccountRoleAlone(t *testing.T) {
 	if rr := oidcSignIn(t, a); rr.Code != http.StatusFound {
 		t.Fatalf("sign-in failed: %d", rr.Code)
 	}
-	if u, _ := a.state.LookupUser("root"); u.Role != "admin" || u.ManagedBy != "" {
+	if u, _ := a.state.LookupUser("root"); !a.state.isPrivileged("root") || u.ManagedBy != "" {
 		t.Fatalf("a local account's role was changed by the provider: %+v", u)
 	}
 }
@@ -273,11 +273,11 @@ func TestManagedAccountPortalRules(t *testing.T) {
 	addTestUser(t, a, "root", "admin")
 	oidcSignIn(t, a)
 
-	rr := postAs(t, a, "root", "/portal/settings/users/promote", url.Values{"username": {"alice"}}, a.handleUserPromote)
+	rr := postAs(t, a, "root", "/portal/settings/users/roles/add", url.Values{"username": {"alice"}, "role": {"admin"}}, a.handleUserRoleAdd)
 	if !strings.Contains(rr.Body.String(), "managed by single sign-on") {
 		t.Fatalf("promoting a managed account was not refused:\n%s", rr.Body.String())
 	}
-	if u, _ := a.state.LookupUser("alice"); u.Role != "member" {
+	if a.state.isPrivileged("alice") {
 		t.Fatal("a managed account's role was changed in the portal")
 	}
 
@@ -293,8 +293,8 @@ func TestManagedAccountPortalRules(t *testing.T) {
 	if u.ManagedBy != "" || u.PasswordHash == "" {
 		t.Fatalf("take-over did not release the account: %+v", u)
 	}
-	rr = postAs(t, a, "root", "/portal/settings/users/promote", url.Values{"username": {"alice"}}, a.handleUserPromote)
-	if u, _ := a.state.LookupUser("alice"); u.Role != "admin" {
+	rr = postAs(t, a, "root", "/portal/settings/users/roles/add", url.Values{"username": {"alice"}, "role": {"admin"}}, a.handleUserRoleAdd)
+	if !a.state.isPrivileged("alice") {
 		t.Fatalf("a released account's role could not be changed: %s", rr.Body.String())
 	}
 }
