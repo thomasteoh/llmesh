@@ -1516,9 +1516,6 @@ func (h *Hub) SetClientOwnerSlots(token, model string, slots int) {
 	}
 }
 
-// NonOwnerInFlight returns the number of in-flight jobs on clientID for the given
-// model whose request owner differs from owner. Used by the scheduler to enforce
-// per-model OwnerSlots limits.
 // JobRefsOn returns the owner and model of every job running on a client.
 func (h *Hub) JobRefsOn(clientID string) []types.JobRef {
 	h.mu.RLock()
@@ -1530,18 +1527,6 @@ func (h *Hub) JobRefsOn(clientID string) []types.JobRef {
 		}
 	}
 	return out
-}
-
-func (h *Hub) NonOwnerInFlight(clientID, owner, model string) int {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	n := 0
-	for id := range h.jobsByClient[clientID] {
-		if rec, ok := h.jobs[id]; ok && rec.Req.Owner != owner && rec.Req.Model == model {
-			n++
-		}
-	}
-	return n
 }
 
 // TotalSlots returns the sum of MaxConcurrent across all registered clients.

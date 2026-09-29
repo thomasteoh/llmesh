@@ -27,11 +27,6 @@ type User struct {
 	Role         string `json:"role"` // "admin" | "member"
 	Disabled     bool   `json:"disabled"`
 	CSRFToken    string `json:"csrf_token,omitempty"` // SHA-256 hash of current valid CSRF token
-	// SendIsolation restricts this user's requests to clients they own.
-	// ReceiveIsolation restricts this user's clients to serving only the user's
-	// own requests. Both default off; see types.UserIsolation.
-	SendIsolation    bool `json:"send_isolation,omitempty"`
-	ReceiveIsolation bool `json:"receive_isolation,omitempty"`
 
 	// Email is the address this user signs in with when email sign-in is
 	// configured. It is only accepted as an identity once EmailVerified is set,
@@ -243,11 +238,6 @@ type State struct {
 	// nil) on any settings mutation rather than queried each call.
 	optCache atomic.Pointer[types.RequestOptimization]
 
-	// isoCache holds the per-user isolation flags (only users with a flag set).
-	// Read by the scheduler each drain and invalidated (store nil) on any user
-	// mutation, mirroring optCache.
-	isoCache atomic.Pointer[map[string]types.UserIsolation]
-
 	// authzEngine is the compiled access model; see access_store.go.
 	authzEngine atomic.Pointer[authz.Engine]
 	// pairingCache holds the scheduler's pairing inputs; see sharing_store.go.
@@ -438,7 +428,8 @@ func createSchema(db *sql.DB) error {
 	// the same tier, which is exactly the load-spreading behaviour they had
 	// before preference existed — upgrading changes no routing decision.
 	_, _ = db.Exec(`ALTER TABLE model_aliases ADD COLUMN priority INTEGER NOT NULL DEFAULT 0`)
-	// Non-destructive migration: per-user request-isolation flags.
+	// Per-user request-isolation flags, read once by migrateSharing, which
+	// turns them into policies; nothing reads them after that.
 	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN send_isolation INTEGER NOT NULL DEFAULT 0`)
 	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN receive_isolation INTEGER NOT NULL DEFAULT 0`)
 	// Non-destructive migration: federated sign-in identities. Both default
@@ -751,7 +742,7 @@ func (s *State) NeedsSetup() bool {
 // scanUser expects. Keeping the two together means adding a column touches one
 // pair of definitions rather than each of the three queries that read a user.
 const userColumns = `username, password_hash, role, disabled, csrf_token,
-	send_isolation, receive_isolation, email, email_verified,
+	email, email_verified,
 	github_user_id, github_login, google_user_id, google_email,
 	oidc_subject, oidc_label, managed_by`
 
@@ -760,17 +751,15 @@ type rowScanner interface{ Scan(dest ...any) error }
 
 func scanUser(sc rowScanner) (User, error) {
 	var u User
-	var disabled, sendIso, recvIso, emailVerified int
+	var disabled, emailVerified int
 	err := sc.Scan(&u.Username, &u.PasswordHash, &u.Role, &disabled, &u.CSRFToken,
-		&sendIso, &recvIso, &u.Email, &emailVerified,
+		&u.Email, &emailVerified,
 		&u.GitHubUserID, &u.GitHubLogin, &u.GoogleUserID, &u.GoogleEmail,
 		&u.OIDCSubject, &u.OIDCLabel, &u.ManagedBy)
 	if err != nil {
 		return User{}, err
 	}
 	u.Disabled = disabled != 0
-	u.SendIsolation = sendIso != 0
-	u.ReceiveIsolation = recvIso != 0
 	u.EmailVerified = emailVerified != 0
 	return u, nil
 }
@@ -936,19 +925,18 @@ func (s *State) UpdateUser(username string, fn func(*User)) error {
 	}
 	_, err := s.db.Exec(
 		`UPDATE users SET password_hash = ?, role = ?, disabled = ?, csrf_token = ?,
-		 send_isolation = ?, receive_isolation = ?, email = ?, email_verified = ?,
+		 email = ?, email_verified = ?,
 		 github_user_id = ?, github_login = ?, google_user_id = ?, google_email = ?,
 		 oidc_subject = ?, oidc_label = ?, managed_by = ?
 		 WHERE username = ?`,
 		u.PasswordHash, u.Role, boolInt(u.Disabled), u.CSRFToken,
-		boolInt(u.SendIsolation), boolInt(u.ReceiveIsolation), u.Email, boolInt(u.EmailVerified),
+		u.Email, boolInt(u.EmailVerified),
 		u.GitHubUserID, u.GitHubLogin, u.GoogleUserID, u.GoogleEmail,
 		u.OIDCSubject, u.OIDCLabel, u.ManagedBy, username,
 	)
 	if err != nil {
 		return identityConflictError(err)
 	}
-	s.isoCache.Store(nil) // isolation flags may have changed; rebuild on next read
 	s.invalidateAccess()
 	if u.Role != before.Role {
 		if err := s.syncLegacyRole(username, u.Role); err != nil {
@@ -1002,42 +990,6 @@ func (s *State) Users() []User {
 		}
 	}
 	return out
-}
-
-// SetUserIsolation sets a user's two request-isolation flags.
-func (s *State) SetUserIsolation(username string, send, receive bool) error {
-	if err := s.UpdateUser(username, func(u *User) {
-		u.SendIsolation = send
-		u.ReceiveIsolation = receive
-	}); err != nil {
-		return err
-	}
-	return s.syncIsolationPolicies(username, send, receive)
-}
-
-// IsolationMap returns the isolation flags for every user that has at least one
-// flag set, keyed by username. Users with no isolation appear absent (the zero
-// UserIsolation is the correct default for them). The result is cached and
-// rebuilt only after a user mutation, since the scheduler reads it every drain.
-func (s *State) IsolationMap() map[string]types.UserIsolation {
-	if cached := s.isoCache.Load(); cached != nil {
-		return *cached
-	}
-	m := make(map[string]types.UserIsolation)
-	rows, err := s.db.Query(`SELECT username, send_isolation, receive_isolation FROM users WHERE send_isolation = 1 OR receive_isolation = 1`)
-	if err != nil {
-		return m
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var name string
-		var send, recv int
-		if err := rows.Scan(&name, &send, &recv); err == nil {
-			m[name] = types.UserIsolation{SendIsolated: send != 0, ReceiveIsolated: recv != 0}
-		}
-	}
-	s.isoCache.Store(&m)
-	return m
 }
 
 func (s *State) ActiveAdminCount() int {

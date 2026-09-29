@@ -55,12 +55,13 @@ func TestMigrateSharing(t *testing.T) {
 			t.Errorf("%s on %s's client: %v, want %v", tc.req, tc.owner, got, tc.want)
 		}
 	}
-	// Turning a flag off removes its policy.
-	if err := s.SetUserIsolation("bob", false, false); err != nil {
+	// They are ordinary policies now: deleting one lifts it.
+	send, _ := isolationPolicyIDs("bob")
+	if err := s.DeletePolicy(send); err != nil {
 		t.Fatal(err)
 	}
 	if !s.PairClient("bob", "alice", "h1").Allowed {
-		t.Error("clearing send isolation did not take effect")
+		t.Error("deleting the send-isolation policy did not take effect")
 	}
 }
 

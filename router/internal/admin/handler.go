@@ -363,7 +363,6 @@ func (a *Admin) registerRoutes() {
 	mux.HandleFunc("/portal/teams/members/add", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleTeamMemberAdd)), 20))
 	mux.HandleFunc("/portal/teams/members/remove", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleTeamMemberRemove)), 20))
 	mux.HandleFunc("/portal/teams/state", a.requireRateLimit(a.requireAuth(a.postWithCSRF(a.handleTeamState)), 20))
-	mux.HandleFunc("/portal/settings/users/isolation", a.requireRateLimit(a.requirePerm("user.manage", a.postWithCSRF(a.handleUserIsolation)), 20))
 	mux.HandleFunc("/portal/settings/optimization", a.requireRateLimit(a.requirePerm("settings.manage", a.postWithCSRF(a.handleOptimizationUpdate)), 20))
 	mux.HandleFunc("/portal/settings/host", a.requireRateLimit(a.requirePerm("settings.manage", a.postWithCSRF(a.handleHostUpdate)), 20))
 	mux.HandleFunc("/portal/settings/pricing", a.requireRateLimit(a.requirePerm("pricing.manage", a.postWithCSRF(a.handleModelPricingUpdate)), 30))

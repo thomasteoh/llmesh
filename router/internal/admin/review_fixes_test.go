@@ -97,8 +97,7 @@ func TestConditionalDenyCannotLockOutOwners(t *testing.T) {
 	}
 }
 
-// Found in the re-review: re-enabling and isolation skipped the account
-// change rule.
+// Found in the re-review: re-enabling skipped the account change rule.
 func TestHelpdeskCannotReenableAdmin(t *testing.T) {
 	a := newTestAdmin(t)
 	withRole(t, a, "root", authz.RoleOwner)
@@ -109,9 +108,5 @@ func TestHelpdeskCannotReenableAdmin(t *testing.T) {
 	postAs(t, a, "hd", "/portal/settings/users/enable", url.Values{"username": {"adm"}}, a.handleUserEnable)
 	if u, _ := a.state.LookupUser("adm"); !u.Disabled {
 		t.Error("helpdesk re-enabled an admin an owner disabled")
-	}
-	postAs(t, a, "hd", "/portal/settings/users/isolation", url.Values{"username": {"root"}, "field": {"receive"}, "value": {"1"}}, a.handleUserIsolation)
-	if u, _ := a.state.LookupUser("root"); u.ReceiveIsolation {
-		t.Error("helpdesk changed an owner's isolation")
 	}
 }

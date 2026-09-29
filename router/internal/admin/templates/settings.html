@@ -314,7 +314,7 @@
       </div>
       <div class="table-scroll">
         <table class="data-table">
-          <thead><tr><th>Username</th><th>Roles</th><th>Status</th><th>Isolation</th><th></th></tr></thead>
+          <thead><tr><th>Username</th><th>Roles</th><th>Status</th><th></th></tr></thead>
           <tbody>
             {{range $u := .Users}}
             <tr{{if $u.Disabled}} class="row-dim"{{end}}>
@@ -349,24 +349,6 @@
                 </div>
               </td>
               <td>{{if $u.Disabled}}{{template "status-badge" dict "Class" "disabled" "Label" "disabled"}}{{else}}{{template "status-badge" dict "Class" "active" "Label" "active"}}{{end}}</td>
-              <td>
-                {{if $.Can.user_manage}}
-                <div class="flex gap-1">
-                  {{if $u.SendIsolation}}
-                    {{template "action-button" dict "Action" "/portal/settings/users/isolation#tab-users" "CSRF" $.CSRFToken "Fields" (dict "username" $u.Username "field" "send" "value" "0") "Class" "btn-danger btn-xs" "Label" "Send: isolated" "Title" "Requests run only on this user's own clients — click to share"}}
-                  {{else}}
-                    {{template "action-button" dict "Action" "/portal/settings/users/isolation#tab-users" "CSRF" $.CSRFToken "Fields" (dict "username" $u.Username "field" "send" "value" "1") "Class" "btn-secondary btn-xs" "Label" "Send: shared" "Title" "Requests may use any client — click to isolate to own clients"}}
-                  {{end}}
-                  {{if $u.ReceiveIsolation}}
-                    {{template "action-button" dict "Action" "/portal/settings/users/isolation#tab-users" "CSRF" $.CSRFToken "Fields" (dict "username" $u.Username "field" "receive" "value" "0") "Class" "btn-danger btn-xs" "Label" "Recv: isolated" "Title" "This user's clients serve only their own requests — click to share"}}
-                  {{else}}
-                    {{template "action-button" dict "Action" "/portal/settings/users/isolation#tab-users" "CSRF" $.CSRFToken "Fields" (dict "username" $u.Username "field" "receive" "value" "1") "Class" "btn-secondary btn-xs" "Label" "Recv: shared" "Title" "This user's clients may serve anyone — click to isolate to own requests"}}
-                  {{end}}
-                </div>
-                {{else}}
-                <span class="muted">{{if $u.SendIsolation}}send isolated{{end}}{{if and $u.SendIsolation $u.ReceiveIsolation}}, {{end}}{{if $u.ReceiveIsolation}}receive isolated{{end}}{{if not (or $u.SendIsolation $u.ReceiveIsolation)}}shared{{end}}</span>
-                {{end}}
-              </td>
               <td class="cell-actions">
                 {{if and $.Can.user_manage (not $u.IsSelf)}}
                 <div class="flex gap-1 justify-end">
@@ -390,7 +372,7 @@
           </tbody>
         </table>
       </div>
-      <p class="table-hint">Roles are named sets of permissions; see the Roles tab. Only an owner can grant the owner role or change an owner's account. At least one active admin or owner must remain. Isolation limits a user's routing: <em>Send</em> keeps their requests on their own clients; <em>Recv</em> keeps their clients serving only their own requests.</p>
+      <p class="table-hint">Roles are named sets of permissions; see the Roles tab. Only an owner can grant the owner role or change an owner's account. At least one active admin or owner must remain. To keep someone&rsquo;s clients to themselves, set those clients to <em>Private</em> on the Clients page; to keep their requests off other people&rsquo;s hardware, add a deny rule on <code>client.use</code> under Policies.</p>
     </div>
   </div>
 
@@ -504,7 +486,7 @@
   <div id="tab-policies" class="tab-panel">
     <div class="mt-2">
       <div class="section-header"><div class="section-title">Policies</div></div>
-      <p class="table-hint mb-3">Every access rule, including model access rules and the isolation rules the Users tab writes. A rule applies to a subject, actions, and a resource, optionally with a condition over attributes. <strong>Deny</strong> always wins over allow; with no applicable allow the answer is no. A condition that reads an attribute the request lacks never grants access and never lets anyone past a deny. Attributes: <code>subject.id</code>, <code>subject.roles</code>, <code>subject.teams</code>, <code>subject.attrs.&lt;name&gt;</code>; <code>resource.id</code>, <code>resource.owner</code>, <code>resource.team</code>, and for models <code>resource.context_size</code>, <code>resource.modalities</code>, <code>resource.served_by_kind</code> (<code>llama.cpp</code>, <code>shim</code>, <code>router</code>, <code>mixed</code>), <code>resource.pricing_basis</code>; <code>context.time</code>, <code>context.source_ip</code>, <code>context.endpoint</code>, <code>context.priority</code>, <code>context.credential_kind</code>. Operators: <code>eq ne in not_in has glob cidr lt le gt ge exists time_between</code>, combined with <code>all</code>, <code>any</code>, <code>not</code>.</p>
+      <p class="table-hint mb-3">Every access rule, including model access rules and the isolation rules converted from the old per-user switches. A rule applies to a subject, actions, and a resource, optionally with a condition over attributes. <strong>Deny</strong> always wins over allow; with no applicable allow the answer is no. A condition that reads an attribute the request lacks never grants access and never lets anyone past a deny. Attributes: <code>subject.id</code>, <code>subject.roles</code>, <code>subject.teams</code>, <code>subject.attrs.&lt;name&gt;</code>; <code>resource.id</code>, <code>resource.owner</code>, <code>resource.team</code>, and for models <code>resource.context_size</code>, <code>resource.modalities</code>, <code>resource.served_by_kind</code> (<code>llama.cpp</code>, <code>shim</code>, <code>router</code>, <code>mixed</code>), <code>resource.pricing_basis</code>; <code>context.time</code>, <code>context.source_ip</code>, <code>context.endpoint</code>, <code>context.priority</code>, <code>context.credential_kind</code>. Operators: <code>eq ne in not_in has glob cidr lt le gt ge exists time_between</code>, combined with <code>all</code>, <code>any</code>, <code>not</code>.</p>
       <div class="table-scroll">
         <table class="data-table">
           <thead><tr><th>Policy</th><th>Effect</th><th>Actions</th><th>Applies to</th><th>Status</th><th></th></tr></thead>

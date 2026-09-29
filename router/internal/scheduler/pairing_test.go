@@ -42,8 +42,6 @@ func pairingSetup(t *testing.T, p tablePairing) (*hub.Hub, *queue.Queue, *Schedu
 	q := queue.New()
 	s := New(q, h, noAlias{}, slog.Default())
 	s.SetPairingPolicy(p)
-	// A pairing policy supersedes isolation: this map must be ignored.
-	s.SetIsolationProvider(mapIso{"bob": {SendIsolated: true}})
 	conn := dialClient(t, h, "alice", "ct-alice", nil)
 	registerModels(t, conn, "llama3") // max_concurrent 2
 	return h, q, s, conn
@@ -119,16 +117,5 @@ func TestPairing_ReservedSlots(t *testing.T) {
 	s.drainQueue()
 	if job := readJob(t, conn, 300*time.Millisecond); job == nil || job.Request.ID != "alice-1" {
 		t.Fatal("the owner could not use her reserved slot")
-	}
-}
-
-// With a pairing policy, the legacy isolation map is not consulted: bob is
-// send-isolated in it, but the policy allows him.
-func TestPairing_SupersedesIsolation(t *testing.T) {
-	_, q, s, conn := pairingSetup(t, tablePairing{})
-	q.Push(types.InferenceRequest{ID: "bob-1", Model: "llama3", Owner: "bob", EnqueuedAt: time.Now()})
-	s.drainQueue()
-	if job := readJob(t, conn, 300*time.Millisecond); job == nil {
-		t.Fatal("the legacy isolation flag still applied under a pairing policy")
 	}
 }

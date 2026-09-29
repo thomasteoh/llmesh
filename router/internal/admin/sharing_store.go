@@ -106,8 +106,9 @@ type pairingCacheHolder struct {
 	pairingCache atomic.Pointer[pairingCache]
 }
 
-// Isolation flags are policies now (design §10). The flags stay on the user
-// row for display; these policies are what the scheduler enforces.
+// The pre-v2 per-user isolation flags became these deny policies on upgrade
+// (design §10). The switches that set the flags are gone; the policies are
+// ordinary rules, edited or deleted under Policies like any other.
 
 func isolationPolicyIDs(username string) (send, receive string) {
 	return "isolation-send-" + username, "isolation-receive-" + username
@@ -144,8 +145,8 @@ func isolationPolicies(username string) (send, receive authz.Policy) {
 	return send, receive
 }
 
-// syncIsolationPolicies writes or removes a user's isolation policies to
-// match their flags.
+// syncIsolationPolicies writes or removes a user's isolation policies: at
+// upgrade from their flags, and all off when the user is deleted.
 func (s *State) syncIsolationPolicies(username string, send, receive bool) error {
 	sendP, recvP := isolationPolicies(username)
 	for _, x := range []struct {
