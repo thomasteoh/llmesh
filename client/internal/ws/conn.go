@@ -9,6 +9,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"sync/atomic"
 
 	clientPkg "llmesh/client"
 	"llmesh/client/internal/llamacpp"
@@ -45,13 +46,27 @@ func (c *Conn) SlotPool() *wsclient.SlotPool { return c.inner.Pool() }
 // clientModelProvider probes llama.cpp for model capabilities on each (re)connection.
 type clientModelProvider struct {
 	cfg *clientPkg.Config
+	// pending records that the last probe found a backend not ready, so
+	// wsclient keeps probing until it is (wsclient.PendingReporter).
+	pending atomic.Bool
 }
+
+// Pending reports whether the last Models call found a backend that was not
+// ready: unreachable, still loading, or unable to name its model.
+func (p *clientModelProvider) Pending() bool { return p.pending.Load() }
 
 func (p *clientModelProvider) Models(ctx context.Context) ([]types.ModelInfo, int) {
 	models := make([]types.ModelInfo, 0, len(p.cfg.Models))
 	totalSlots := 0
+	pending := false
+	defer func() { p.pending.Store(pending) }()
 	for _, m := range p.cfg.Models {
 		lc := llamacpp.New(m.Endpoint, m.RequestHeaders())
+		// A backend still starting would register with no context size or
+		// slots, or not at all; note it so it is probed again once up.
+		if !lc.Ready(ctx) {
+			pending = true
+		}
 
 		// Resolve the model name: explicit config name wins; otherwise ask the
 		// endpoint what model it serves via /v1/models.
@@ -59,7 +74,8 @@ func (p *clientModelProvider) Models(ctx context.Context) ([]types.ModelInfo, in
 		if name == "" {
 			name = lc.ProbeModelID(ctx)
 			if name == "" {
-				log.Warn("ws: could not auto-detect model name from endpoint, skipping", "endpoint", m.Endpoint)
+				log.Warn("ws: could not auto-detect model name from endpoint, skipping for now", "endpoint", m.Endpoint)
+				pending = true
 				continue
 			}
 			p.cfg.SetResolvedName(m.Endpoint, name)

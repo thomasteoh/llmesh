@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"time"
@@ -78,10 +79,12 @@ func Handle(ctx context.Context, job types.JobMsg, cfg *clientPkg.Config, send S
 	})
 	if err != nil && ctx.Err() == nil {
 		log.Error("worker: infer error", "request_id", req.ID, "error", err)
+		var be *llamacpp.BackendError
 		_ = send(types.ErrorMsg{
 			Type:      "error",
 			RequestID: req.ID,
 			Message:   err.Error(),
+			Final:     errors.As(err, &be) && be.Final(),
 		})
 		return err
 	}
