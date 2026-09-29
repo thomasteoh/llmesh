@@ -33,3 +33,23 @@ func TestFilterQueueForUser(t *testing.T) {
 		t.Errorf("carol: expected 0, got %d", len(got))
 	}
 }
+
+// A client that has never connected is not live: "never_connected" contains
+// "connected", which once marked its owner live and sorted them first.
+func TestClientGroupsLiveOnlyWhenConnected(t *testing.T) {
+	groups := buildClientGroups([]ClientTokenRow{
+		{ClientToken: ClientToken{Owner: "alice"}, Status: "never_connected"},
+		{ClientToken: ClientToken{Owner: "bob"}, Status: "offline"},
+		{ClientToken: ClientToken{Owner: "carol"}, Status: "connected"},
+	})
+	live := map[string]bool{}
+	for _, g := range groups {
+		live[g.Username] = g.HasLive
+	}
+	if live["alice"] || live["bob"] || !live["carol"] {
+		t.Errorf("live owners: %v, want only carol", live)
+	}
+	if groups[0].Username != "carol" {
+		t.Errorf("live owner not sorted first: %s", groups[0].Username)
+	}
+}
