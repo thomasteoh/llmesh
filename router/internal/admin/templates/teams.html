@@ -47,10 +47,12 @@
           <td class="cell-actions">
             {{if $t.CanManage}}
             <div class="flex gap-1 justify-end">
+              {{if $t.CanControl}}
               {{if .Maintainer}}
               {{template "action-button" dict "Action" "/portal/teams/members/add" "CSRF" $.CSRFToken "Fields" (dict "team" $t.ID "username" .Username) "Class" "btn-secondary btn-xs" "Label" "Make member"}}
               {{else}}
               {{template "action-button" dict "Action" "/portal/teams/members/add" "CSRF" $.CSRFToken "Fields" (dict "team" $t.ID "username" .Username "maintainer" "1") "Class" "btn-secondary btn-xs" "Label" "Make maintainer"}}
+              {{end}}
               {{end}}
               {{template "action-button" dict "Action" "/portal/teams/members/remove" "CSRF" $.CSRFToken "Fields" (dict "team" $t.ID "username" .Username) "Confirm" (printf "Remove %s from %s?" .Username $t.Name) "Class" "btn-danger btn-xs icon-btn" "Label" "✕" "Title" "Remove"}}
             </div>
@@ -68,7 +70,7 @@
     <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
     <input type="hidden" name="team" value="{{$t.ID}}">
     <input name="username" list="team-user-list" placeholder="username" class="inline-input" aria-label="Add a member to {{$t.Name}}">
-    <label class="muted"><input type="checkbox" name="maintainer" value="1"> maintainer</label>
+    {{if $t.CanControl}}<label class="muted"><input type="checkbox" name="maintainer" value="1"> maintainer</label>{{end}}
     <button type="submit" class="btn-secondary">Add member</button>
   </form>
   {{end}}

@@ -949,7 +949,10 @@ func (s *State) checkNoLockout(e *authz.Engine) error {
 		ok := true
 		for _, action := range lockoutActions {
 			typ, _, _ := strings.Cut(action, ".")
-			if !e.Can(authz.Request{Subject: subj, Action: action, Resource: authz.Resource{Type: typ}}) {
+			// The context the portal decides with, so a condition keyed on
+			// it is evaluated as it will be in use.
+			ctx := authz.Context{Time: time.Now(), CredentialKind: "session"}
+			if !e.Can(authz.Request{Subject: subj, Action: action, Resource: authz.Resource{Type: typ}, Context: ctx}) {
 				ok = false
 				break
 			}

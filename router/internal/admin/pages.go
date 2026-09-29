@@ -1777,6 +1777,10 @@ func (a *Admin) handleUserEnable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	target := r.FormValue("username")
+	if msg := a.userChangeRefused(r, target); msg != "" {
+		a.renderSettings(w, r, u, "", msg)
+		return
+	}
 	if err := a.state.UpdateUser(target, func(user *User) { user.Disabled = false }); err != nil {
 		a.renderSettings(w, r, u, "", err.Error())
 		return
@@ -1919,6 +1923,10 @@ func (a *Admin) handleUserIsolation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	target := r.FormValue("username")
+	if msg := a.userChangeRefused(r, target); msg != "" {
+		a.renderSettings(w, r, u, "", msg)
+		return
+	}
 	field := r.FormValue("field")
 	enabled := r.FormValue("value") == "1"
 	cur, ok := a.state.LookupUser(target)

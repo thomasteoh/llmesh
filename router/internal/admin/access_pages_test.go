@@ -154,8 +154,12 @@ func TestTeamsPage(t *testing.T) {
 	if !strings.Contains(rr.Body.String(), "team:research") || strings.Contains(rr.Body.String(), "Add member") {
 		t.Error("a member should see the team without management controls")
 	}
-	// Promote bob, then he can manage.
-	postAs(t, a, "mia", "/portal/teams/members/add", url.Values{"team": {"research"}, "username": {"bob"}, "maintainer": {"1"}}, a.handleTeamMemberAdd)
+	// A maintainer cannot appoint maintainers; an owner can.
+	rr = postAs(t, a, "mia", "/portal/teams/members/add", url.Values{"team": {"research"}, "username": {"bob"}, "maintainer": {"1"}}, a.handleTeamMemberAdd)
+	if !strings.Contains(rr.Body.String(), "Only an admin can appoint") {
+		t.Error("a maintainer appointed another maintainer")
+	}
+	postAs(t, a, "root", "/portal/teams/members/add", url.Values{"team": {"research"}, "username": {"bob"}, "maintainer": {"1"}}, a.handleTeamMemberAdd)
 	rr = postAs(t, a, "bob", "/portal/teams/members/add", url.Values{"team": {"research"}, "username": {"eve"}}, a.handleTeamMemberAdd)
 	if rr.Code == http.StatusForbidden {
 		t.Error("a promoted maintainer still cannot manage the team")

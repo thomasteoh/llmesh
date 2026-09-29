@@ -508,4 +508,9 @@ and covered by tests.
 - Choosing a non-normal priority when creating a key takes `key.limits`;
   per-model reservations keep the every-model one; an admin's disable always
   overrides a provider's.
+- Re-review follow-ups: deny policies covering the repair actions
+  (`policy.manage`, `user.manage`, `role.manage`, `owner.manage`) need
+  `owner.manage`, and the lockout check evaluates with the portal's session
+  context; re-enabling a user and changing isolation apply the account-change
+  rule; appointing a team maintainer takes router-wide `team.manage`.
 

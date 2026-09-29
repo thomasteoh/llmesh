@@ -355,7 +355,20 @@ func (a *Admin) replay(live, draft *authz.Engine, window time.Duration) *ReplayR
 // for an action you do not hold would hand yourself (or anyone) that action:
 // policy.manage would otherwise be every permission there is.
 func (a *Admin) policyRefused(r *http.Request, p authz.Policy) string {
-	if p.Effect != authz.Allow || !p.Enabled {
+	if !p.Enabled {
+		return ""
+	}
+	if p.Effect == authz.Deny {
+		// A deny on the actions that repair access can take them from the
+		// owners, and a condition can hide that from any check run in
+		// advance. Only owners may write one.
+		for _, action := range authz.ExpandActions(p.Actions) {
+			for _, repair := range lockoutActions {
+				if action == repair && !a.canDo(r, "owner.manage") {
+					return "Only an owner can write a deny policy covering " + action + "."
+				}
+			}
+		}
 		return ""
 	}
 	for _, action := range authz.ExpandActions(p.Actions) {

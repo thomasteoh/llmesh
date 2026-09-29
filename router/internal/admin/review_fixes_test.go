@@ -76,3 +76,42 @@ func TestAdminDisableOverridesProviderDisable(t *testing.T) {
 		t.Errorf("an admin's disable left disabled_by=%q, so the next sign-in would undo it", by)
 	}
 }
+
+// Found in the re-review: a conditional deny on the repair actions could
+// slip past the lockout check.
+func TestConditionalDenyCannotLockOutOwners(t *testing.T) {
+	a := newTestAdmin(t)
+	withRole(t, a, "root", authz.RoleOwner)
+	withRole(t, a, "adm", authz.RoleAdmin)
+	sneaky := `{"id":"sneaky","effect":"deny","enabled":true,"actions":["policy.manage","user.manage","role.manage","owner.manage"],
+		"subject":{"roles":["owner"]},"condition":{"exists":["context.credential_kind"]}}`
+	rr := postAs(t, a, "adm", "/portal/settings/policies", url.Values{"policy": {sneaky}}, a.handlePolicySave)
+	if !strings.Contains(rr.Body.String(), "Only an owner can write a deny policy") {
+		t.Fatalf("an admin saved a deny on the repair actions: %.300s", rr.Body.String())
+	}
+	// The owner is stopped by the lockout check, now run with the portal's
+	// own context.
+	rr = postAs(t, a, "root", "/portal/settings/policies", url.Values{"policy": {sneaky}}, a.handlePolicySave)
+	if !strings.Contains(rr.Body.String(), "no owner able to manage") {
+		t.Fatalf("a conditional lockout passed the check: %.300s", rr.Body.String())
+	}
+}
+
+// Found in the re-review: re-enabling and isolation skipped the account
+// change rule.
+func TestHelpdeskCannotReenableAdmin(t *testing.T) {
+	a := newTestAdmin(t)
+	withRole(t, a, "root", authz.RoleOwner)
+	withRole(t, a, "adm", authz.RoleAdmin)
+	a.state.SaveRole(authz.Role{ID: "helpdesk", Permissions: []string{"user.manage", "user.view"}})
+	withRole(t, a, "hd", "helpdesk")
+	postAs(t, a, "root", "/portal/settings/users/disable", url.Values{"username": {"adm"}}, a.handleUserDisable)
+	postAs(t, a, "hd", "/portal/settings/users/enable", url.Values{"username": {"adm"}}, a.handleUserEnable)
+	if u, _ := a.state.LookupUser("adm"); !u.Disabled {
+		t.Error("helpdesk re-enabled an admin an owner disabled")
+	}
+	postAs(t, a, "hd", "/portal/settings/users/isolation", url.Values{"username": {"root"}, "field": {"receive"}, "value": {"1"}}, a.handleUserIsolation)
+	if u, _ := a.state.LookupUser("root"); u.ReceiveIsolation {
+		t.Error("helpdesk changed an owner's isolation")
+	}
+}

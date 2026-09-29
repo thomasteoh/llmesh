@@ -318,7 +318,16 @@ func (a *Admin) handleTeamMemberAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	username := strings.TrimSpace(r.FormValue("username"))
-	if err := a.state.AddTeamMember(t.ID, username, r.FormValue("maintainer") != ""); err != nil {
+	maintainer := r.FormValue("maintainer") != ""
+	// A maintainer can create team keys, which act as the team rather than
+	// as the person, so appointing one is an admin's decision: otherwise a
+	// maintainer could hand a restricted user a way around their
+	// restrictions. Maintainers may add plain members.
+	if maintainer && !a.canAny(r, "team.manage") {
+		a.renderTeams(w, r, u, "", "Only an admin can appoint team maintainers.")
+		return
+	}
+	if err := a.state.AddTeamMember(t.ID, username, maintainer); err != nil {
 		a.renderTeams(w, r, u, "", err.Error())
 		return
 	}
