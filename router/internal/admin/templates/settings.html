@@ -211,11 +211,19 @@
           </div>
           <div class="flex gap-2">
             <button type="submit" class="btn">Save {{$p.Name}} settings</button>
-            {{if $p.HasSecret}}
-            {{template "action-button" dict "Action" (printf "/portal/settings/auth/%s" $p.Key) "CSRF" $.CSRFToken "Fields" (dict "clear_secret" "1") "Confirm" (printf "Clear the stored client secret? %s sign-in will be switched off." $p.Name) "Class" "btn-secondary" "Label" "Clear secret"}}
-            {{end}}
+            {{if $p.HasSecret}}<button type="submit" form="clear-secret-{{$p.Key}}" class="btn-secondary">Clear secret</button>{{end}}
           </div>
         </form>
+        {{/* Outside the settings form: a form nested in another is dropped by
+             the HTML parser and its fields join the outer one, so every save
+             posted clear_secret and wiped the secret. */}}
+        {{if $p.HasSecret}}
+        <form id="clear-secret-{{$p.Key}}" method="POST" action="/portal/settings/auth/{{$p.Key}}" class="form-inline"
+              onsubmit="return confirm('Clear the stored client secret? {{$p.Name}} sign-in will be switched off.')">
+          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+          <input type="hidden" name="clear_secret" value="1">
+        </form>
+        {{end}}
       </div>
       {{end}}
 
@@ -261,11 +269,17 @@
           </div>
           <div class="flex gap-2">
             <button type="submit" class="btn">Save SMTP settings</button>
-            {{if .Auth.SMTPHasPassword}}
-            {{template "action-button" dict "Action" "/portal/settings/auth/smtp#tab-signin" "CSRF" $.CSRFToken "Fields" (dict "clear_password" "1") "Confirm" "Clear the stored SMTP password?" "Class" "btn-secondary" "Label" "Clear password"}}
-            {{end}}
+            {{if .Auth.SMTPHasPassword}}<button type="submit" form="clear-smtp-password" class="btn-secondary">Clear password</button>{{end}}
           </div>
         </form>
+        {{/* Outside the settings form, for the reason given at Clear secret. */}}
+        {{if .Auth.SMTPHasPassword}}
+        <form id="clear-smtp-password" method="POST" action="/portal/settings/auth/smtp#tab-signin" class="form-inline"
+              onsubmit="return confirm('Clear the stored SMTP password?')">
+          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+          <input type="hidden" name="clear_password" value="1">
+        </form>
+        {{end}}
 
         {{if .Auth.SMTPHost}}
         <div class="mt-4">
