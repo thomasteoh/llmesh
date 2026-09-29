@@ -469,8 +469,12 @@ func TestMigrateSecretColumns(t *testing.T) {
 	if !ok {
 		t.Fatal("migrated token not found by plaintext lookup")
 	}
-	if tok.Name != "mac" || tok.Owner != "bob" || tok.OwnerSlots["m1"] != 2 {
+	if tok.Name != "mac" || tok.Owner != "bob" {
 		t.Fatalf("migrated token fields wrong: %+v", tok)
+	}
+	// Its owner slots became reserved slots in the sharing setting.
+	if sh := s.ClientSharing(tok.TokenHash); sh == nil || sh.ReservedSlots["m1"] != 2 {
+		t.Fatalf("migrated owner slots not in sharing: %+v", sh)
 	}
 
 	// The plaintext columns must be gone.

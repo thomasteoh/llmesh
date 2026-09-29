@@ -123,22 +123,22 @@ type ClientToken struct {
 	TokenHash   string // SHA-256 hex of the token
 	TokenPrefix string // display prefix, e.g. "ct-alice-1a2b…"
 	CreatedAt   time.Time
-	OwnerSlots  map[string]int // model → slots reserved for owner; 0/unset = fully shared
-	LastUsedAt  time.Time      // last connection; updated at most once a minute
-	CreatedBy   string         // who issued it, when not the owner
+	LastUsedAt  time.Time // last connection; updated at most once a minute
+	CreatedBy   string    // who issued it, when not the owner
 }
 
-const clientTokenColumns = `token_hash, token_prefix, name, owner, created_at, owner_slots, last_used_at, created_by`
+// owner_slots is not read: reserved slots live in the sharing setting, and
+// the column is kept only as migrateSharing's input from older databases.
+const clientTokenColumns = `token_hash, token_prefix, name, owner, created_at, last_used_at, created_by`
 
 func scanClientToken(sc rowScanner) (ClientToken, error) {
 	var t ClientToken
-	var created, slots, used string
-	if err := sc.Scan(&t.TokenHash, &t.TokenPrefix, &t.Name, &t.Owner, &created, &slots, &used, &t.CreatedBy); err != nil {
+	var created, used string
+	if err := sc.Scan(&t.TokenHash, &t.TokenPrefix, &t.Name, &t.Owner, &created, &used, &t.CreatedBy); err != nil {
 		return ClientToken{}, err
 	}
 	t.CreatedAt, _ = time.Parse(time.RFC3339, created)
 	t.LastUsedAt, _ = time.Parse(time.RFC3339, used)
-	json.Unmarshal([]byte(slots), &t.OwnerSlots)
 	return t, nil
 }
 
@@ -1323,17 +1323,14 @@ func (s *State) ClientTokensFor(owner string, isAdmin bool) []ClientToken {
 
 func (s *State) AddClientToken(t ClientToken) error {
 	_, err := s.db.Exec(
-		`INSERT INTO client_tokens (token_hash, token_prefix, name, owner, created_at, owner_slots, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		t.TokenHash, t.TokenPrefix, t.Name, t.Owner, t.CreatedAt.Format(time.RFC3339), marshalOwnerSlots(t.OwnerSlots), t.CreatedBy,
+		`INSERT INTO client_tokens (token_hash, token_prefix, name, owner, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?)`,
+		t.TokenHash, t.TokenPrefix, t.Name, t.Owner, t.CreatedAt.Format(time.RFC3339), t.CreatedBy,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			return fmt.Errorf("name %q already exists for this user", t.Name)
 		}
 		return err
-	}
-	if reserved := reservedFromOwnerSlots(t.OwnerSlots); reserved != nil {
-		return s.SetClientSharing(t.TokenHash, authz.Sharing{Mode: authz.ShareOpen, ReservedSlots: reserved})
 	}
 	return nil
 }
@@ -1358,42 +1355,30 @@ func (s *State) RevokeClientToken(owner, tokenHash string, isAdmin bool) error {
 	return nil
 }
 
-// SetClientTokenOwnerSlots updates the per-model owner-slot reservation for a
-// token identified by its hash.
-func (s *State) SetClientTokenOwnerSlots(owner, tokenHash, model string, slots int, isAdmin bool) error {
-	t, ok := s.LookupClientTokenByHash(tokenHash)
-	if !ok || (!isAdmin && t.Owner != owner) {
-		return fmt.Errorf("token not found")
+// SetClientReservedSlots sets how many of a client's slots are held back
+// for its owner side on one model ("*" for every model not listed); 0 removes
+// the reservation. The rest of the sharing setting is kept.
+func (s *State) SetClientReservedSlots(tokenHash, model string, slots int) error {
+	if model == "any" {
+		model = "*"
 	}
-	if slots <= 0 {
-		delete(t.OwnerSlots, model)
-	} else {
-		if t.OwnerSlots == nil {
-			t.OwnerSlots = make(map[string]int)
-		}
-		t.OwnerSlots[model] = slots
-	}
-	if _, err := s.db.Exec(`UPDATE client_tokens SET owner_slots = ? WHERE token_hash = ?`, marshalOwnerSlots(t.OwnerSlots), tokenHash); err != nil {
-		return err
-	}
-	// Reserved slots live in the sharing setting now; owner_slots is kept
-	// for display and rollback.
 	sh := authz.Sharing{Mode: authz.ShareOpen}
 	if cur := s.ClientSharing(tokenHash); cur != nil {
 		sh = *cur
 	}
-	reserved := reservedFromOwnerSlots(t.OwnerSlots)
-	// owner_slots holds only per-model reservations; the every-model one is
-	// set on the sharing form and must survive a per-model change.
-	if n, ok := sh.ReservedSlots["*"]; ok && model != "*" && model != "any" {
-		if reserved == nil {
-			reserved = map[string]int{}
-		}
-		if _, set := reserved["*"]; !set {
-			reserved["*"] = n
-		}
+	reserved := make(map[string]int, len(sh.ReservedSlots)+1)
+	for m, n := range sh.ReservedSlots {
+		reserved[m] = n
 	}
-	sh.ReservedSlots = reserved
+	if slots > 0 {
+		reserved[model] = slots
+	} else {
+		delete(reserved, model)
+	}
+	sh.ReservedSlots = nil
+	if len(reserved) > 0 {
+		sh.ReservedSlots = reserved
+	}
 	return s.SetClientSharing(tokenHash, sh)
 }
 

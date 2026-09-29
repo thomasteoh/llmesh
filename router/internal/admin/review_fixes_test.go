@@ -57,12 +57,19 @@ func TestPerModelReservationKeepsDefault(t *testing.T) {
 	s.AddUser(User{Username: "alice", Role: "member"})
 	s.AddClientToken(ClientToken{Name: "box", Owner: "alice", TokenHash: "h"})
 	s.SetClientSharing("h", authz.Sharing{Mode: authz.ShareIdle, ReservedSlots: map[string]int{"*": 2}})
-	if err := s.SetClientTokenOwnerSlots("alice", "h", "llama3", 1, true); err != nil {
+	if err := s.SetClientReservedSlots("h", "llama3", 1); err != nil {
 		t.Fatal(err)
 	}
 	sh := s.ClientSharing("h")
 	if sh.ReservedSlots["*"] != 2 || sh.ReservedSlots["llama3"] != 1 || sh.Mode != authz.ShareIdle {
 		t.Errorf("sharing after a per-model change: %+v", sh)
+	}
+	// Clearing it removes only that model's reservation.
+	if err := s.SetClientReservedSlots("h", "llama3", 0); err != nil {
+		t.Fatal(err)
+	}
+	if sh := s.ClientSharing("h"); sh.ReservedSlots["*"] != 2 || len(sh.ReservedSlots) != 1 {
+		t.Errorf("sharing after clearing a per-model reservation: %+v", sh)
 	}
 }
 

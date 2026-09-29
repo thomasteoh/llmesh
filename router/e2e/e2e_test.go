@@ -1245,8 +1245,8 @@ func TestE2E_ModelSlotsOwnerReservation(t *testing.T) {
 	st.AddClientToken(admin.ClientToken{
 		Name: "reserving", Owner: "testuser",
 		TokenHash: admin.HashSecret(ownerToken), TokenPrefix: admin.SecretPrefix(ownerToken),
-		OwnerSlots: map[string]int{"reserved-model": 4},
 	})
+	st.SetClientReservedSlots(admin.HashSecret(ownerToken), "reserved-model", 4)
 
 	models := []types.ModelInfo{
 		{Name: "reserved-model", ContextSize: 4096},

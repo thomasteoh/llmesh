@@ -257,6 +257,21 @@ func (a *Admin) buildConnRow(r *http.Request, ci hub.ConnectedClientInfo, t Clie
 	}
 }
 
+// perModelReserved is a sharing setting's per-model reservations, for the
+// model rows; the every-model one ("*") has its own field on the sharing form.
+func perModelReserved(sh *authz.Sharing) map[string]int {
+	if sh == nil {
+		return nil
+	}
+	out := make(map[string]int, len(sh.ReservedSlots))
+	for m, n := range sh.ReservedSlots {
+		if m != "*" {
+			out[m] = n
+		}
+	}
+	return out
+}
+
 // buildClientModelRows merges what a token serves now, what slot policy applies
 // to it, and how it has recently performed into one row per model.
 //
@@ -1027,9 +1042,10 @@ func (a *Admin) renderClientTokens(w http.ResponseWriter, r *http.Request, u Use
 		} else {
 			row.Status, row.StatusClass, row.StatusLabel = clientStatusBadge(0, false)
 		}
-		row.Models = buildClientModelRows(connInfos, t.OwnerSlots, row.Perf)
+		sh := a.state.ClientSharing(t.TokenHash)
+		row.Models = buildClientModelRows(connInfos, perModelReserved(sh), row.Perf)
 		row.SharingMode = string(authz.ShareOpen)
-		if sh := a.state.ClientSharing(t.TokenHash); sh != nil {
+		if sh != nil {
 			row.SharingMode = string(sh.Mode)
 			row.SharingWith = strings.Join(sh.With, ", ")
 			row.PerRequesterMax = sh.PerRequesterMax
@@ -1122,6 +1138,9 @@ func (a *Admin) handleClientTokenOwnerSlots(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "model is required", http.StatusBadRequest)
 		return
 	}
+	if model == "any" {
+		model = "*" // reserved slots name every model "*"
+	}
 	slotsStr := strings.TrimSpace(r.FormValue("slots"))
 	slots := 0 // default: fully shared (remove reservation)
 	if slotsStr != "" {
@@ -1137,7 +1156,7 @@ func (a *Admin) handleClientTokenOwnerSlots(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	if err := a.state.SetClientTokenOwnerSlots(u.Username, tokenHash, model, slots, true); err != nil {
+	if err := a.state.SetClientReservedSlots(tokenHash, model, slots); err != nil {
 		a.log.Warn("admin: owner slots update rejected", "actor", u.Username, "error", err)
 		redirectOrRefresh(w, r, "/portal/clients")
 		return
