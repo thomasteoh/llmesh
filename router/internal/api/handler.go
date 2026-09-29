@@ -711,6 +711,12 @@ func (h *Handler) streamResponse(w http.ResponseWriter, r *http.Request, req *ty
 			if dedupHash != "" && h.Dedup != nil {
 				h.Dedup.Forward(dedupHash, chunk)
 			}
+			if chunk.Done && chunk.Error != "" {
+				logRequestDone(req, nil, firstTokenAt, true, "error", servedModel)
+				h.recordStats(req, nil, servedModel)
+				h.writeStreamError(w, flusher, req, chunk.Error)
+				return
+			}
 			switch req.SourceFmt {
 			case "anthropic":
 				if events := anthropicStreamer.Delta(chunk); len(events) > 0 {
@@ -833,6 +839,12 @@ func (h *Handler) batchResponse(w http.ResponseWriter, r *http.Request, req *typ
 			sb.WriteString(chunk.Delta)
 			if len(chunk.ToolCallsDelta) > 0 {
 				toolCalls = chunk.ToolCallsDelta
+			}
+			if chunk.Done && chunk.Error != "" {
+				logRequestDone(req, nil, time.Time{}, false, "error", servedModel)
+				h.recordStats(req, nil, servedModel)
+				workerError(w, chunk.Error)
+				return
 			}
 			if chunk.Done {
 				if chunk.FinishReason != "" {

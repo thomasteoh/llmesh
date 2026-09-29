@@ -91,12 +91,7 @@ func setupTestStack(t *testing.T) *testStack {
 		}
 	}
 	h.OnError = func(msg types.ErrorMsg) {
-		store.Send(types.ChunkMsg{
-			Type:         "chunk",
-			RequestID:    msg.RequestID,
-			Done:         true,
-			FinishReason: "error",
-		})
+		store.Send(api.WorkerErrorChunk(msg))
 	}
 
 	var apiHandler *api.Handler
@@ -1743,13 +1738,20 @@ func TestE2E_SchedulerDispatch(t *testing.T) {
 		t.Fatalf("expected queue len 0 after dispatch, got %d", q.Len())
 	}
 
-	// Client should have received the job
-	_, data, err := conn.ReadMessage()
-	if err != nil {
-		t.Fatalf("read job: %v", err)
-	}
+	// Client should have received the job, after the registration ack.
+	var data []byte
 	var env struct{ Type string }
-	json.Unmarshal(data, &env)
+	for {
+		var err error
+		_, data, err = conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("read job: %v", err)
+		}
+		json.Unmarshal(data, &env)
+		if env.Type != "registered" {
+			break
+		}
+	}
 	if env.Type != "job" {
 		t.Fatalf("expected job message, got %s", env.Type)
 	}
@@ -2005,5 +2007,67 @@ func TestE2E_StreamSingleChunkEmitsContentOnce(t *testing.T) {
 	}
 	if finishReasons != 1 {
 		t.Errorf("finish_reason appeared %d times, want 1\nbody: %s", finishReasons, raw)
+	}
+}
+
+// A worker's final error reaches the caller with its reason, once; the job the
+// worker received does not say who sent it.
+func TestE2E_FinalWorkerErrorReachesCaller(t *testing.T) {
+	routerURL, apiKey, clientToken, cleanup := setupTestRouter(t)
+	defer cleanup()
+	conn := connectMockClient(t, routerURL, clientToken, []types.ModelInfo{{Name: "test-llama"}})
+	waitForModel(t, routerURL, apiKey, "test-llama")
+
+	var mu sync.Mutex
+	jobs := 0
+	var owners []string
+	go func() {
+		for {
+			_, data, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var job types.JobMsg
+			if json.Unmarshal(data, &job) != nil || job.Type != "job" {
+				continue
+			}
+			mu.Lock()
+			jobs++
+			owners = append(owners, job.Request.Owner+job.Request.APIKeyLabel)
+			mu.Unlock()
+			msg, _ := json.Marshal(types.ErrorMsg{Type: "error", RequestID: job.Request.ID,
+				Message: "llama.cpp returned 400: the request exceeds the available context size", Final: true})
+			conn.WriteMessage(websocket.TextMessage, msg)
+		}
+	}()
+
+	for _, stream := range []bool{false, true} {
+		body, _ := json.Marshal(map[string]any{"model": "test-llama", "stream": stream,
+			"messages": []map[string]string{{"role": "user", "content": fmt.Sprintf("too long %v", stream)}}})
+		req, _ := http.NewRequest("POST", routerURL+"/v1/chat/completions", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if !strings.Contains(string(out), "exceeds the available context size") {
+			t.Errorf("stream=%v: the reason did not reach the caller: %d %s", stream, resp.StatusCode, out)
+		}
+		if !stream && resp.StatusCode != http.StatusBadGateway {
+			t.Errorf("batch: status %d, want 502", resp.StatusCode)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if jobs != 2 {
+		t.Errorf("a final error was retried: %d dispatches for 2 requests", jobs)
+	}
+	for _, o := range owners {
+		if o != "" {
+			t.Errorf("the worker was told who sent the job: %q", o)
+		}
 	}
 }
