@@ -1113,6 +1113,20 @@ function swapMain(html, hash) {
   if (!next || !current) throw new Error('no main');
   stopPollers();
   current.innerHTML = next.innerHTML;
+  // The success and error banners sit beside <main>, not in it. Carry them
+  // over too, or every message a form answers with — "Rule saved.", or the
+  // validation error saying why nothing was — is dropped, and a stale one
+  // from an earlier action lingers.
+  var col = current.parentNode;
+  var nextCol = next.parentNode;
+  if (col) {
+    Array.prototype.forEach.call(col.querySelectorAll(':scope > .flash'), function(f) { f.remove(); });
+  }
+  if (col && nextCol) {
+    Array.prototype.forEach.call(nextCol.querySelectorAll(':scope > .flash'), function(f) {
+      col.insertBefore(document.importNode(f, true), current);
+    });
+  }
   initPage(hash || '');
 }
 
@@ -1230,10 +1244,13 @@ function stripHash(u) {
   return i === -1 ? u : u.slice(0, i);
 }
 
-/* Delegated so it covers rows added after load. A form with an inline
-   onsubmit confirm that returns false never fires a submit event, so the
-   confirmation still gates the action exactly as before. */
+/* Delegated so it covers rows added after load. An inline onsubmit confirm
+   that returns false cancels the submit event but does not stop it reaching
+   this listener, so a cancelled confirmation shows up only as
+   defaultPrevented. Ignoring that posted every action the user had just
+   declined — revoking, deleting, and disabling on Cancel. */
 document.addEventListener('submit', function(e) {
+  if (e.defaultPrevented) return;
   var form = e.target;
   if (!(form instanceof HTMLFormElement)) return;
   if ((form.getAttribute('method') || '').toUpperCase() !== 'POST') return;
