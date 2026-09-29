@@ -3,6 +3,7 @@ package hub
 import (
 	"encoding/json"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,7 +53,7 @@ func TestRegisterIsAcknowledgedWithFeatures(t *testing.T) {
 	}
 	var ack types.RegisteredMsg
 	json.Unmarshal(data, &ack)
-	if ack.Type != "registered" || len(ack.Features) != 1 || ack.Features[0] != types.FeatureLocalBusy {
+	if ack.Type != "registered" || strings.Join(ack.Features, ",") != types.FeatureLocalBusy+","+types.FeatureDrain {
 		t.Errorf("acknowledgement: %s", data)
 	}
 }
@@ -180,5 +181,24 @@ func TestErrorAfterReasoningIsNotRetried(t *testing.T) {
 	case <-retried:
 	default:
 		t.Fatal("an error after keep-alives alone was not retried")
+	}
+}
+
+func TestDrainingWorkerGetsNoNewJobs(t *testing.T) {
+	h := New(slog.Default())
+	conn, id := loadTestClient(t, h, "ct-draining", 2)
+	h.IncrInFlight(id)
+	h.TrackJob(id, types.InferenceRequest{ID: "j1", Model: "llama3"})
+	send(t, conn, types.DrainingMsg{Type: "draining"})
+	if n := len(h.AvailableClientList()); n != 0 {
+		t.Error("a draining worker was still offered jobs")
+	}
+	// Its running job still completes normally.
+	send(t, conn, types.ChunkMsg{Type: "chunk", RequestID: "j1", Delta: "ok", Done: true})
+	h.mu.RLock()
+	_, tracked := h.jobs["j1"]
+	h.mu.RUnlock()
+	if tracked {
+		t.Error("a draining worker's job did not complete")
 	}
 }

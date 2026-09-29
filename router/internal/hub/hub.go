@@ -555,10 +555,14 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 		client.Kind = in.Kind
 		h.mu.Unlock()
 		h.log.Info("hub: client registered", "id", client.ID, "models", msg.Models, "max_concurrent", msg.MaxConcurrent, "version", msg.Version)
-		h.SendToClient(client.ID, types.RegisteredMsg{Type: "registered", Features: []string{types.FeatureLocalBusy}})
+		h.SendToClient(client.ID, types.RegisteredMsg{Type: "registered", Features: []string{types.FeatureLocalBusy, types.FeatureDrain}})
 		if h.OnAvailable != nil {
 			h.OnAvailable()
 		}
+
+	case "draining":
+		client.draining.Store(true)
+		h.log.Info("hub: client draining, no new jobs", "id", client.ID, "in_flight", client.InFlight())
 
 	case "local_busy":
 		n := in.Slots
