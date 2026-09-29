@@ -124,11 +124,19 @@ func TestTeamsPage(t *testing.T) {
 	withRole(t, a, "bob", authz.RoleMember)
 	withRole(t, a, "eve", authz.RoleMember)
 	withRole(t, a, "vic", authz.RoleViewer)
+	withRole(t, a, "root", authz.RoleOwner)
 
-	rr := postAs(t, a, "mia", "/portal/teams", url.Values{"id": {"research"}, "name": {"Research"}}, a.handleTeamCreate)
+	// Members cannot create teams; an owner creates one and makes mia its
+	// maintainer.
+	if routeStatus(t, a, "mia", "team.create") != http.StatusForbidden {
+		t.Error("a member may create teams")
+	}
+	rr := postAs(t, a, "root", "/portal/teams", url.Values{"id": {"research"}, "name": {"Research"}}, a.handleTeamCreate)
 	if !strings.Contains(rr.Body.String(), "Team Research created") {
 		t.Fatalf("create: %.300s", rr.Body.String())
 	}
+	a.state.RemoveTeamMember("research", "root")
+	a.state.AddTeamMember("research", "mia", true)
 	postAs(t, a, "mia", "/portal/teams/members/add", url.Values{"team": {"research"}, "username": {"bob"}}, a.handleTeamMemberAdd)
 	if m, _ := a.state.TeamMembers("research"); len(m) != 2 {
 		t.Fatalf("members: %+v", m)
@@ -152,17 +160,71 @@ func TestTeamsPage(t *testing.T) {
 	if rr.Code == http.StatusForbidden {
 		t.Error("a promoted maintainer still cannot manage the team")
 	}
-	// Disable and delete.
-	postAs(t, a, "mia", "/portal/teams/state", url.Values{"team": {"research"}, "action": {"disable"}}, a.handleTeamState)
+	// Only a router-wide team manager may disable, enable, or delete: a
+	// maintainer must not be able to undo an admin's disable.
+	rr = postAs(t, a, "mia", "/portal/teams/state", url.Values{"team": {"research"}, "action": {"disable"}}, a.handleTeamState)
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("a maintainer disabled the team: %d", rr.Code)
+	}
+	postAs(t, a, "root", "/portal/teams/state", url.Values{"team": {"research"}, "action": {"disable"}}, a.handleTeamState)
 	if tm, _ := a.state.LookupTeam("research"); !tm.Disabled {
 		t.Error("team was not disabled")
 	}
-	postAs(t, a, "mia", "/portal/teams/state", url.Values{"team": {"research"}, "action": {"delete"}}, a.handleTeamState)
+	if rr := postAs(t, a, "mia", "/portal/teams/state", url.Values{"team": {"research"}, "action": {"enable"}}, a.handleTeamState); rr.Code != http.StatusForbidden {
+		t.Errorf("a maintainer re-enabled a team an owner disabled: %d", rr.Code)
+	}
+	postAs(t, a, "root", "/portal/teams/state", url.Values{"team": {"research"}, "action": {"delete"}}, a.handleTeamState)
 	if _, ok := a.state.LookupTeam("research"); ok {
 		t.Error("team was not deleted")
 	}
 	// Viewers cannot create teams (the route checks team.create).
 	if routeStatus(t, a, "vic", "team.create") != http.StatusForbidden {
 		t.Error("a viewer may create teams")
+	}
+}
+
+func TestPolicyManageCannotEscalate(t *testing.T) {
+	a := newTestAdmin(t)
+	withRole(t, a, "root", authz.RoleOwner)
+	if err := a.state.SaveRole(authz.Role{ID: "policies", Permissions: []string{"policy.manage", "policy.view"}}); err != nil {
+		t.Fatal(err)
+	}
+	withRole(t, a, "pm", "policies")
+
+	grabAll := `{"id":"grab","effect":"allow","enabled":true,"actions":["*"],"subject":{"ids":["user:pm"]}}`
+	rr := postAs(t, a, "pm", "/portal/settings/policies", url.Values{"policy": {grabAll}}, a.handlePolicySave)
+	if !strings.Contains(rr.Body.String(), "which you do not hold yourself") {
+		t.Fatalf("a policy manager granted themselves everything: %.300s", rr.Body.String())
+	}
+	// Model grants are what policy managers are for.
+	grant := `{"id":"finance-gpt","effect":"allow","enabled":true,"actions":["model.use"],"resource":{"type":"model","ids":["gpt-*"]}}`
+	if rr := postAs(t, a, "pm", "/portal/settings/policies", url.Values{"policy": {grant}}, a.handlePolicySave); !strings.Contains(rr.Body.String(), "saved") {
+		t.Errorf("a model grant was refused: %.300s", rr.Body.String())
+	}
+	// A disabled allow policy saved by an owner cannot be switched on by
+	// someone who lacks its actions.
+	off := authz.Policy{ID: "dormant", Effect: authz.Allow, Enabled: false, Actions: []string{"user.manage"},
+		Subject: authz.SubjectMatcher{IDs: []string{"user:pm"}}}
+	a.state.SavePolicy(off, "root")
+	postAs(t, a, "pm", "/portal/settings/policies/toggle", url.Values{"id": {"dormant"}}, a.handleModelRuleToggle)
+	for _, p := range a.policyRows() {
+		if p.ID == "dormant" && p.Enabled {
+			t.Error("a policy manager switched on a grant they do not hold")
+		}
+	}
+}
+
+func TestPoliciesCannotLockOutOwners(t *testing.T) {
+	a := newTestAdmin(t)
+	withRole(t, a, "root", authz.RoleOwner)
+	lockout := `{"id":"lock","effect":"deny","enabled":true,"actions":["policy.manage"]}`
+	rr := postAs(t, a, "root", "/portal/settings/policies", url.Values{"policy": {lockout}}, a.handlePolicySave)
+	if !strings.Contains(rr.Body.String(), "no owner able to manage") {
+		t.Fatalf("a policy locking out every owner was saved: %.300s", rr.Body.String())
+	}
+	// Denying it to everyone but one owner is fine.
+	scoped := `{"id":"lock","effect":"deny","enabled":true,"actions":["policy.manage"],"subject":{"ids":["user:someone"]}}`
+	if rr := postAs(t, a, "root", "/portal/settings/policies", url.Values{"policy": {scoped}}, a.handlePolicySave); !strings.Contains(rr.Body.String(), "saved") {
+		t.Errorf("a targeted deny was refused: %.300s", rr.Body.String())
 	}
 }

@@ -122,11 +122,17 @@ func (a *Admin) refreshOIDC(ctx context.Context, refresh string) (oauthIdentity,
 	}
 	_ = json.Unmarshal(body, &tok)
 	switch {
-	case status == http.StatusBadRequest || status == http.StatusUnauthorized || tok.Error == "invalid_grant":
-		// RFC 6749 §5.2: a revoked, expired, or deactivated grant is 400
-		// invalid_grant. That is the provider saying no.
-		return oauthIdentity{}, errProviderRefused{reason: "refresh token rejected (" + tok.Error + ")"}
+	case tok.Error == "invalid_grant":
+		// RFC 6749 §5.2: a revoked, expired, or deactivated grant is
+		// invalid_grant. That, and only that, is the provider saying no about
+		// this user. invalid_client (an expired client secret),
+		// invalid_request, and the rest describe this router's configuration,
+		// and disabling everyone over them would lock the router out.
+		return oauthIdentity{}, errProviderRefused{reason: "refresh token rejected (invalid_grant)"}
 	case status != http.StatusOK || tok.AccessToken == "":
+		if tok.Error != "" {
+			return oauthIdentity{}, fmt.Errorf("token endpoint returned %d %s", status, tok.Error)
+		}
 		return oauthIdentity{}, fmt.Errorf("token endpoint returned %d", status)
 	}
 	ident, err := a.fetchOAuthIdentity(ctx, p, tok.AccessToken)
@@ -138,48 +144,91 @@ func (a *Admin) refreshOIDC(ctx context.Context, refresh string) (oauthIdentity,
 }
 
 // revalidateOIDC re-checks every managed account with a refresh token once.
+//
+// Decisions are gathered before any is applied. If the provider appears to
+// refuse most accounts at once, that is far likelier to be a misconfiguration
+// (the wrong issuer, a changed role name) than a mass deactivation, so the run
+// disables no one and says so; an admin can act on the log.
 func (a *Admin) revalidateOIDC(ctx context.Context) {
 	cfg := a.state.OIDC()
+	type outcome struct {
+		u       User
+		ident   oauthIdentity
+		refused string
+	}
+	var outcomes []outcome
 	for _, u := range a.state.managedWithRefresh() {
 		if ctx.Err() != nil {
 			return
 		}
-		a.revalidateOne(ctx, cfg, u)
+		ident, refused, ok := a.revalidateOne(ctx, cfg, u)
+		if ok {
+			outcomes = append(outcomes, outcome{u, ident, refused})
+		}
+	}
+	refusedCount := 0
+	for _, o := range outcomes {
+		if o.refused != "" {
+			refusedCount++
+		}
+	}
+	if refusedCount >= 3 && refusedCount*2 > len(outcomes) {
+		a.log.Error("admin: oidc revalidation would disable most accounts at once; disabling none — check the provider configuration",
+			"refused", refusedCount, "checked", len(outcomes))
+		return
+	}
+	for _, o := range outcomes {
+		if o.refused != "" {
+			a.disableByProvider(o.u, o.refused)
+			continue
+		}
+		roles, _ := cfg.rolesFor(o.ident.Claims)
+		a.syncManagedAccess(o.u, cfg, roles, o.ident, "")
+		if o.ident.RefreshToken != "" {
+			_ = a.state.SetOIDCRefreshToken(o.u.Username, o.ident.RefreshToken)
+		}
 	}
 }
 
-func (a *Admin) revalidateOne(ctx context.Context, cfg OIDCConfig, u User) {
+// revalidateOne asks the provider about one account. ok is false when no
+// answer was obtained; refused is non-empty when the provider said no.
+func (a *Admin) revalidateOne(ctx context.Context, cfg OIDCConfig, u User) (ident oauthIdentity, refused string, ok bool) {
 	ident, err := a.refreshOIDC(ctx, a.state.oidcRefreshToken(u.Username))
-	var refused errProviderRefused
+	var r errProviderRefused
 	switch {
 	case err == nil && ident.ID != u.OIDCSubject:
-		refused = errProviderRefused{reason: "the refreshed identity is a different account"}
+		return ident, "the refreshed identity is a different account", true
 	case err == nil:
 		if _, allowed := cfg.rolesFor(ident.Claims); !allowed {
-			refused = errProviderRefused{reason: "no longer holds a role granting access"}
+			return ident, "no longer holds a role granting access", true
 		}
-	case isRefused(err, &refused):
+		return ident, "", true
+	case isRefused(err, &r):
+		return ident, r.reason, true
 	default:
 		a.log.Warn("admin: oidc revalidation skipped", "user", u.Username, "error", err)
+		return ident, "", false
+	}
+}
+
+// disableByProvider disables an account the provider no longer vouches for,
+// unless it is the last active owner or admin, which it never disables: a
+// router with no one able to administer it is worse than one admin too many.
+func (a *Admin) disableByProvider(u User, reason string) {
+	if a.state.isPrivileged(u.Username) && a.state.otherActivePrivileged(u.Username) == 0 {
+		a.log.Error("admin: identity provider refused the last admin; leaving the account enabled",
+			"user", u.Username, "reason", reason)
 		return
 	}
-	if refused.reason != "" {
-		if err := a.state.SetDisabledBy(u.Username, true, providerOIDC); err != nil {
-			a.log.Error("admin: disabling after revalidation", "user", u.Username, "error", err)
-			return
-		}
-		for _, t := range a.state.ClientTokensFor(u.Username, false) {
-			a.hub.CloseByToken(t.TokenHash)
-		}
-		a.log.Info("admin: account disabled by identity provider", "user", u.Username, "reason", refused.reason)
-		a.state.RecordAudit(u.Username, "user.disable.oidc", refused.reason, "")
+	if err := a.state.SetDisabledBy(u.Username, true, providerOIDC); err != nil {
+		a.log.Error("admin: disabling after revalidation", "user", u.Username, "error", err)
 		return
 	}
-	roles, _ := cfg.rolesFor(ident.Claims)
-	a.syncManagedAccess(u, cfg, roles, ident, "")
-	if ident.RefreshToken != "" {
-		_ = a.state.SetOIDCRefreshToken(u.Username, ident.RefreshToken)
+	for _, t := range a.state.ClientTokensFor(u.Username, false) {
+		a.hub.CloseByToken(t.TokenHash)
 	}
+	a.log.Info("admin: account disabled by identity provider", "user", u.Username, "reason", reason)
+	a.state.RecordAudit(u.Username, "user.disable.oidc", reason, "")
 }
 
 func isRefused(err error, out *errProviderRefused) bool {

@@ -905,6 +905,19 @@ func (a *Admin) handleAPIKeyCreate(w http.ResponseWriter, r *http.Request) {
 		a.renderAPIKeys(w, r, u, "", msg)
 		return
 	}
+	switch priority {
+	case "normal":
+	case "high", "low":
+		// Priority is a key limit; choosing it at creation takes the same
+		// permission as changing it afterwards.
+		if !a.can(r, "key.limits", ownedResource("key", "", owner)) {
+			a.renderAPIKeys(w, r, u, "", "You do not have permission to set a key's priority.")
+			return
+		}
+	default:
+		a.renderAPIKeys(w, r, u, "", "Priority must be high, normal, or low.")
+		return
+	}
 	keyVal, err := GenAPIKeyValue(secretOwnerPart(owner))
 	if err != nil {
 		a.renderAPIKeys(w, r, u, "", "Failed to generate key.")
@@ -1742,7 +1755,9 @@ func (a *Admin) handleUserDisable(w http.ResponseWriter, r *http.Request) {
 		a.renderSettings(w, r, u, "", "Cannot disable the last admin account.")
 		return
 	}
-	if err := a.state.UpdateUser(target, func(user *User) { user.Disabled = true }); err != nil {
+	// Recorded as an admin's disable even if the provider had already
+	// disabled the account, so its next sign-in does not undo this.
+	if err := a.state.SetDisabledBy(target, true, ""); err != nil {
 		a.renderSettings(w, r, u, "", err.Error())
 		return
 	}
@@ -1777,7 +1792,7 @@ func (a *Admin) handleUserPromote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	target := r.FormValue("username")
-	if msg := a.roleManagedElsewhere(target); msg != "" {
+	if msg := a.roleChangeRefused(r, target, authz.RoleAdmin); msg != "" {
 		a.renderSettings(w, r, u, "", msg)
 		return
 	}
@@ -1800,7 +1815,7 @@ func (a *Admin) handleUserDemote(w http.ResponseWriter, r *http.Request) {
 		a.renderSettings(w, r, u, "", msg)
 		return
 	}
-	if msg := a.roleManagedElsewhere(target); msg != "" {
+	if msg := a.roleChangeRefused(r, target, authz.RoleAdmin); msg != "" {
 		a.renderSettings(w, r, u, "", msg)
 		return
 	}

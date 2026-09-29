@@ -95,6 +95,12 @@ func (a *Admin) roleChangeRefused(r *http.Request, target, role string) string {
 	if role == authz.RoleOwner && !a.canDo(r, "owner.manage") {
 		return "Only an owner can grant or remove the owner role."
 	}
+	if !a.canGrantRole(r, role) {
+		return "You cannot grant or remove the " + role + " role: it carries permissions you do not hold."
+	}
+	if msg := a.roleManagedElsewhere(target); msg != "" {
+		return msg
+	}
 	return ""
 }
 
@@ -243,6 +249,9 @@ type TeamRow struct {
 	Members   []TeamMember
 	CanManage bool
 	IsMember  bool
+	// CanControl covers disabling, enabling, and deleting, which only
+	// router-wide team managers may do.
+	CanControl bool
 }
 
 // TeamsPage is the Teams page's data.
@@ -271,7 +280,8 @@ func (a *Admin) renderTeams(w http.ResponseWriter, r *http.Request, u User, flas
 		}
 		members, _ := a.state.TeamMembers(t.ID)
 		page.Teams = append(page.Teams, TeamRow{Team: t, Members: members,
-			CanManage: a.can(r, "team.manage", res), IsMember: subj.HasTeam(t.ID)})
+			CanManage: a.can(r, "team.manage", res), IsMember: subj.HasTeam(t.ID),
+			CanControl: a.canAny(r, "team.manage")})
 	}
 	for _, us := range a.state.Users() {
 		page.Users = append(page.Users, us.Username)
@@ -335,6 +345,12 @@ func (a *Admin) handleTeamState(w http.ResponseWriter, r *http.Request) {
 	u := ctxGetUser(r)
 	t, ok := a.teamFromForm(w, r)
 	if !ok {
+		return
+	}
+	// Disabling is how an admin stops a team, so maintainers — who manage
+	// members — must not be able to undo it, nor delete and escape it.
+	if !a.canAny(r, "team.manage") {
+		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 	switch r.FormValue("action") {

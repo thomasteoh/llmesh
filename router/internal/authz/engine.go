@@ -212,8 +212,15 @@ func (e *Engine) decide(req *Request, info actionInfo) Decision {
 		if !roleOK {
 			return Decision{By: "default", Reason: "no role permits " + req.Action}
 		}
-		if grantBy == "" && req.Action == "client.use" && sharingAdmits(req.Subject, req.Resource) {
-			grantBy = "sharing"
+		// A client's own sharing setting is the only grant for client.use:
+		// both sides must agree (design §7), so an allow policy cannot open a
+		// Private client or widen its allowlist. Policies on client.use can
+		// only restrict.
+		if req.Action == "client.use" {
+			grantBy = ""
+			if sharingAdmits(req.Subject, req.Resource) {
+				grantBy = "sharing"
+			}
 		}
 		if grantBy == "" {
 			return Decision{By: "default", Reason: "no grant for " + req.Action + " on " + req.Resource.Type + " " + req.Resource.ID}
@@ -240,10 +247,11 @@ func policyLabel(p *compiledPolicy) string {
 // on the resource.
 //
 // A binding confined to a team applies its scoped permissions only to that
-// team's resources, whatever scope the permission names. Of its unscoped
-// permissions, it honours only those that still need a resource grant
-// (model.use, client.use); anything else — fleet.view, audit.view — would
-// otherwise leak router-wide from a team-level role.
+// team's resources, whatever scope the permission names, and none of its
+// unscoped ones: fleet.view or audit.view would leak router-wide, and
+// model.use would let a team maintainer hand model access to anyone they add
+// to the team, including a viewer. Using models with a team's credentials is
+// the team principal's own role, not its members'.
 func (e *Engine) roleAllows(req *Request) (bool, string) {
 	info := catalogue[req.Action]
 	for _, b := range req.Subject.Bindings {
@@ -254,9 +262,6 @@ func (e *Engine) roleAllows(req *Request) (bool, string) {
 		for _, scope := range r.grants[req.Action] {
 			if b.Team != "" {
 				if !info.scoped {
-					if info.needsGrant {
-						return true, "role:" + r.ID
-					}
 					continue
 				}
 				if req.Resource.Team == b.Team {

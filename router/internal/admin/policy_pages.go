@@ -128,6 +128,10 @@ func (a *Admin) handlePolicySave(w http.ResponseWriter, r *http.Request) {
 		a.renderSettings(w, r, u, "", "Policy is not valid JSON: "+err.Error())
 		return
 	}
+	if msg := a.policyRefused(r, p); msg != "" {
+		a.renderSettings(w, r, u, "", msg)
+		return
+	}
 	if err := a.state.SavePolicy(p, u.Username); err != nil {
 		a.renderSettings(w, r, u, "", "Policy not saved: "+err.Error())
 		return
@@ -344,4 +348,24 @@ func (a *Admin) replay(live, draft *authz.Engine, window time.Duration) *ReplayR
 		out.Changes = out.Changes[:50]
 	}
 	return out
+}
+
+// policyRefused returns why the signed-in user may not save or enable p, or
+// "" if they may. An allow policy grants its actions directly, so writing one
+// for an action you do not hold would hand yourself (or anyone) that action:
+// policy.manage would otherwise be every permission there is.
+func (a *Admin) policyRefused(r *http.Request, p authz.Policy) string {
+	if p.Effect != authz.Allow || !p.Enabled {
+		return ""
+	}
+	for _, action := range authz.ExpandActions(p.Actions) {
+		if authz.NeedsGrant(action) {
+			continue // resource grants: what policy managers are for
+		}
+		perm := authz.Permission{Action: action, Scope: authz.ScopeAny}
+		if !a.holdsPermission(r, perm) {
+			return "You cannot write an allow policy for " + action + ", which you do not hold yourself."
+		}
+	}
+	return ""
 }

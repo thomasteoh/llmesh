@@ -56,7 +56,16 @@ type Connector struct {
 	mu        sync.Mutex
 	cancels   map[string]context.CancelFunc
 	connected map[string]bool
+
+	// gate decides which models an inbound job may run on, as the upstream's
+	// router principal, and rewrites the job's permitted set. nil admits
+	// everything (tests; routers built without access management).
+	gate func(req *types.InferenceRequest) (ok bool, reason string)
 }
+
+// SetModelGate installs model access control for inbound jobs. Call before
+// Reload.
+func (c *Connector) SetModelGate(g func(req *types.InferenceRequest) (bool, string)) { c.gate = g }
 
 // New creates a Connector. version is the build-time router version string.
 // Call Reload to start connections.
@@ -334,6 +343,16 @@ func (c *Connector) connect(ctx context.Context, u admin.UpstreamRouter) error {
 				req.Owner = "upstream:" + u.Name
 				req.Priority = types.PriorityFromString(u.Priority)
 				req.APIKeyLabel = ""
+				// The upstream's own permitted set is its business; this
+				// router decides what the job may run on here.
+				req.AllowedModels = nil
+				if c.gate != nil {
+					if ok, reason := c.gate(&req); !ok {
+						c.log.Warn("upstream: job refused by model access", "request_id", req.ID, "model", req.Model, "reason", reason)
+						send(jobCtx, types.ErrorMsg{Type: "error", RequestID: req.ID, Message: "model access denied: " + reason})
+						return
+					}
+				}
 				c.handleJob(jobCtx, send, req)
 			}(msg.Request)
 

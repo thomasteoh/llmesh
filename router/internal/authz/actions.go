@@ -121,3 +121,15 @@ func (p Permission) String() string {
 	}
 	return p.Action
 }
+
+// NeedsGrant reports whether an action is allowed only with a resource grant
+// on top of a role (model.use, client.use).
+func NeedsGrant(action string) bool { return catalogue[action].needsGrant }
+
+// Scoped reports whether an action's role permissions take an own/team/any
+// scope.
+func Scoped(action string) bool { return catalogue[action].scoped }
+
+// ExpandActions returns the catalogued actions a set of names or globs
+// covers.
+func ExpandActions(patterns []string) []string { return expandActions(patterns) }

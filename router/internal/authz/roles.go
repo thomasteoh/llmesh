@@ -84,13 +84,16 @@ func BuiltinRoles() []Role {
 		},
 		{
 			ID: RoleMember, Name: "Member", Builtin: true,
-			Description: "Uses models it is granted, and manages its own keys, clients, usage, and jobs.",
+			Description: "Uses models it is granted, and manages its own keys, clients, usage, and jobs. Admins create teams.",
+			// No team.create: a new team is a new principal with its own role,
+			// and a member who could mint one could mint keys that escape
+			// every restriction placed on them personally.
 			Permissions: []string{
 				"model.use", "client.use",
 				"key.create.own", "key.manage.own", "key.view.own",
 				"client.create.own", "client.manage.own", "client.view.own", "client.share.own",
 				"usage.view.own", "job.view.own", "job.cancel.own",
-				"team.create", "team.view.own",
+				"team.view.own",
 			},
 		},
 		{
@@ -102,7 +105,6 @@ func BuiltinRoles() []Role {
 			ID: RoleTeamMaintainer, Name: "Team maintainer", Builtin: true,
 			Description: "Within a team: manages its keys, clients, sharing, and members, and sees its usage.",
 			Permissions: []string{
-				"model.use", "client.use",
 				"key.create.team", "key.manage.team", "key.view.team",
 				"client.create.team", "client.manage.team", "client.view.team", "client.share.team",
 				"usage.view.team", "job.view.team", "job.cancel.team",
@@ -113,7 +115,6 @@ func BuiltinRoles() []Role {
 			ID: RoleTeamMember, Name: "Team member", Builtin: true,
 			Description: "Within a team: uses its keys and clients and sees its usage.",
 			Permissions: []string{
-				"model.use", "client.use",
 				"key.view.team", "client.view.team",
 				"usage.view.team", "job.view.team", "job.cancel.own",
 				"team.view.team",

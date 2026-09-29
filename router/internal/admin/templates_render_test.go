@@ -195,7 +195,7 @@ func TestTemplatesRender(t *testing.T) {
 		d["Users"] = []string{"alice", "bob"}
 		d["Teams"] = []any{
 			map[string]any{"ID": "research", "Name": "Research", "Description": "ML", "Disabled": false, "ManagedBy": "",
-				"CanManage": true, "IsMember": true, "Members": []any{
+				"CanManage": true, "IsMember": true, "CanControl": true, "Members": []any{
 					map[string]any{"Username": "alice", "Maintainer": true},
 					map[string]any{"Username": "bob", "Maintainer": false},
 				}},

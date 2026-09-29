@@ -216,6 +216,10 @@ func (a *Admin) handleModelRuleToggle(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		p.Enabled = !p.Enabled
+		if msg := a.policyRefused(r, p); msg != "" {
+			a.renderSettings(w, r, u, "", msg)
+			return
+		}
 		if err := a.state.SavePolicy(p, u.Username); err != nil {
 			a.renderSettings(w, r, u, "", err.Error())
 			return
@@ -248,4 +252,35 @@ func (s *State) ModelAttrs(model string) map[string]any {
 		return nil
 	}
 	return map[string]any{"pricing_basis": basis}
+}
+
+// AuthorizeUpstreamJob decides which of candidates a job arriving from an
+// upstream router may run on here, as that router's principal. It is the
+// inbound counterpart of AuthorizeModels, which checks API keys.
+func (s *State) AuthorizeUpstreamJob(owner string, candidates []string, attrs map[string]map[string]any) ([]string, string) {
+	e := s.Authz()
+	if e == nil {
+		return nil, "access policies are not loaded"
+	}
+	subj := s.requesterSubject(owner)
+	var allowed []string
+	reason := ""
+	for _, m := range candidates {
+		d := e.Decide(authz.Request{Subject: subj, Action: "model.use",
+			Resource: authz.Resource{Type: "model", ID: m, Attrs: attrs[m]},
+			Context:  authz.Context{Time: time.Now(), CredentialKind: "token", ViaUpstream: true}})
+		if d.Allowed {
+			allowed = append(allowed, m)
+		} else if reason == "" {
+			reason = d.Reason
+		}
+	}
+	if len(allowed) == 0 {
+		if reason == "" {
+			reason = "no model available"
+		}
+		s.denials.add(Denial{At: time.Now(), Subject: subj.ID, Action: "model.use",
+			Resource: strings.Join(candidates, ", "), Reason: reason})
+	}
+	return allowed, reason
 }

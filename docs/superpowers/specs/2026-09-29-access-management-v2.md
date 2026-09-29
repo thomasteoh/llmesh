@@ -481,3 +481,31 @@ Implementation notes (phase 7):
   synced or revalidated; locally created accounts that link an identity keep
   their llmesh roles.
 
+Security review fixes (after phase 7):
+
+An independent review of the branch found escalation paths; all are fixed
+and covered by tests.
+
+- Members no longer hold `team.create`: a new team is a new principal with
+  its own role, and a member who could mint one could mint keys escaping every
+  restriction placed on them. Admins create teams; a maintainer an admin
+  appoints can still create team keys, which is a deliberate trust boundary.
+  Team enable/disable/delete takes router-wide `team.manage`.
+- Team-scoped bindings grant no unscoped permissions at all, including
+  `model.use`; the built-in team roles no longer list it.
+- `client.use` is granted only by the client's sharing setting; allow
+  policies can restrict it but not widen it.
+- Granting or removing a role, changing an account (reset, disable, delete,
+  sign-out, attributes), mapping a provider role, and writing or enabling an
+  allow policy all require holding every permission involved beyond the
+  member baseline. Saving a policy that would leave no enabled owner able to
+  manage policies, users, roles, and owners is refused.
+- Revalidation disables only on `invalid_grant`, never the last active
+  owner/admin, and disables no one in a run that would refuse most accounts.
+  Provider sync never removes the owner role.
+- Jobs from upstream routers pass model access as their router principal;
+  the upstream's own permitted set is discarded.
+- Choosing a non-normal priority when creating a key takes `key.limits`;
+  per-model reservations keep the every-model one; an admin's disable always
+  overrides a provider's.
+

@@ -337,3 +337,58 @@ func TestConnector_TokenPassedInHeader(t *testing.T) {
 		t.Errorf("token = %q, want secret-token", gotToken)
 	}
 }
+
+// An inbound job passes this router's model access check: a refused one is
+// answered with an error and never queued; an admitted one carries this
+// router's permitted set, not whatever the upstream sent.
+func TestConnector_ModelGate(t *testing.T) {
+	gotError := make(chan string, 1)
+	srv := newTestUpstream(t, func(ws *websocket.Conn) {
+		// One job at a time: the test router has a single slot.
+		sendJob(ws, "req-denied", "gpt-4o", "normal")
+		ws.SetReadDeadline(time.Now().Add(2 * time.Second))
+		for {
+			_, data, err := ws.ReadMessage()
+			if err != nil {
+				return
+			}
+			var msg types.ErrorMsg
+			if json.Unmarshal(data, &msg) == nil && msg.Type == "error" {
+				gotError <- msg.RequestID + ": " + msg.Message
+				time.Sleep(50 * time.Millisecond) // let the refused job's slot free
+				sendJob(ws, "req-ok", "llama3", "normal")
+			}
+		}
+	})
+	conn, _, q := newConnector(t)
+	conn.SetModelGate(func(req *types.InferenceRequest) (bool, string) {
+		if req.Model == "gpt-4o" {
+			return false, "denied by policy \"no-gpt\""
+		}
+		req.AllowedModels = []string{"llama3"}
+		return true, ""
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	conn.Reload(ctx, []admin.UpstreamRouter{{URL: srv.URL, Token: "tok", Name: "up", Priority: "normal"}})
+
+	select {
+	case e := <-gotError:
+		if !strings.HasPrefix(e, "req-denied: model access denied") {
+			t.Errorf("error sent upstream: %q", e)
+		}
+	case <-ctx.Done():
+		t.Fatal("no error reached the upstream for the refused job")
+	}
+	var snap []types.InferenceRequest
+	for i := 0; i < 20 && len(snap) == 0; i++ {
+		time.Sleep(50 * time.Millisecond)
+		snap = q.Snapshot()
+	}
+	if len(snap) != 1 || snap[0].OriginID != "req-ok" {
+		t.Fatalf("queue: %+v", snap)
+	}
+	if strings.Join(snap[0].AllowedModels, ",") != "llama3" {
+		t.Errorf("AllowedModels = %v", snap[0].AllowedModels)
+	}
+}

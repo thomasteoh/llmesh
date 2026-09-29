@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -252,9 +253,62 @@ func secretOwnerPart(owner string) string { return strings.ReplaceAll(owner, ":"
 // account, or "" if they may. Changing an owner's account — disabling,
 // deleting, resetting, demoting — takes owner.manage, which admins do not
 // have; otherwise an admin could remove the owners above them.
+//
+// More generally, you may only change the account of someone whose roles you
+// could grant yourself. Otherwise user.manage alone — say, a helpdesk role —
+// could reset an admin's password and sign in as them.
 func (a *Admin) userChangeRefused(r *http.Request, target string) string {
 	if a.state.IsOwner(target) && !a.canDo(r, "owner.manage") {
 		return "Only an owner can change another owner's account."
 	}
+	for _, role := range a.globalRoles(target) {
+		if !a.canGrantRole(r, role) {
+			return fmt.Sprintf("You cannot change %s's account: they hold the %s role, which you could not grant.", target, role)
+		}
+	}
 	return ""
+}
+
+// canGrantRole reports whether the signed-in user may grant or remove a
+// role: they must hold every permission it carries beyond the member
+// baseline. The baseline — using models, managing one's own keys and
+// clients — is what every account has, so it confers no power over anyone;
+// requiring it too would stop a helpdesk role from managing plain members.
+func (a *Admin) canGrantRole(r *http.Request, roleID string) bool {
+	var perms []string
+	found := false
+	for _, b := range authz.BuiltinRoles() {
+		if b.ID == roleID {
+			perms, found = b.Permissions, true
+		}
+	}
+	if !found {
+		custom, _ := a.state.CustomRoles()
+		for _, c := range custom {
+			if c.ID == roleID {
+				perms, found = c.Permissions, true
+			}
+		}
+	}
+	if !found {
+		return false
+	}
+	baseline := map[string]bool{}
+	for _, b := range authz.BuiltinRoles() {
+		if b.ID == authz.RoleMember {
+			for _, p := range b.Permissions {
+				baseline[p] = true
+			}
+		}
+	}
+	for _, p := range perms {
+		if baseline[p] {
+			continue
+		}
+		perm, err := authz.ParsePermission(p)
+		if err != nil || !a.holdsPermission(r, perm) {
+			return false
+		}
+	}
+	return true
 }

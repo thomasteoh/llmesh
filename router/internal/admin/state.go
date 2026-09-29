@@ -1454,7 +1454,18 @@ func (s *State) SetClientTokenOwnerSlots(owner, tokenHash, model string, slots i
 	if cur := s.ClientSharing(tokenHash); cur != nil {
 		sh = *cur
 	}
-	sh.ReservedSlots = reservedFromOwnerSlots(t.OwnerSlots)
+	reserved := reservedFromOwnerSlots(t.OwnerSlots)
+	// owner_slots holds only per-model reservations; the every-model one is
+	// set on the sharing form and must survive a per-model change.
+	if n, ok := sh.ReservedSlots["*"]; ok && model != "*" && model != "any" {
+		if reserved == nil {
+			reserved = map[string]int{}
+		}
+		if _, set := reserved["*"]; !set {
+			reserved["*"] = n
+		}
+	}
+	sh.ReservedSlots = reserved
 	return s.SetClientSharing(tokenHash, sh)
 }
 

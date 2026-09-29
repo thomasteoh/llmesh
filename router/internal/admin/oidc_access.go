@@ -298,7 +298,9 @@ func (a *Admin) syncManagedAccess(u User, cfg OIDCConfig, roles []string, ident 
 			}
 		}
 		for r := range have {
-			if want[r] {
+			// Owners are made by owners; the provider only ever adds roles
+			// it maps, never takes the owner role away.
+			if want[r] || r == authz.RoleOwner {
 				continue
 			}
 			if err := s.Unbind(RoleBinding{Principal: userPrincipal(u.Username), Role: r}); err != nil {

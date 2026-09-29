@@ -130,9 +130,21 @@ func (a *Admin) oidcFromForm(r *http.Request, enabling bool) (OIDCConfig, error)
 	if oc.RoleMap, err = parseMapLines(r.FormValue("role_map")); err != nil {
 		return OIDCConfig{}, fmt.Errorf("role mapping: %w", err)
 	}
-	for provider, role := range oc.RoleMap {
+	mapped := map[string]string{}
+	for k, v := range oc.RoleMap {
+		mapped[k] = v
+	}
+	if oc.AdminRole != "" {
+		mapped[oc.AdminRole] = authz.RoleAdmin
+	}
+	for provider, role := range mapped {
 		if !a.state.roleExists(role) {
 			return OIDCConfig{}, fmt.Errorf("role mapping: %q maps to unknown role %q", provider, role)
+		}
+		// Mapping a role hands it to whoever the provider names, so it takes
+		// what granting the role directly would.
+		if !a.canGrantRole(r, role) {
+			return OIDCConfig{}, fmt.Errorf("role mapping: you cannot map to %q, which carries permissions you do not hold", role)
 		}
 		if role == authz.RoleTeamMaintainer || role == authz.RoleTeamMember {
 			return OIDCConfig{}, fmt.Errorf("role mapping: team roles come from the team mapping, not the role mapping")

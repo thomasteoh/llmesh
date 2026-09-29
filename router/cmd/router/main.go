@@ -302,6 +302,33 @@ func main() {
 	}
 	adminHandler.SetUpstreamReloader(func() { conn.Reload(ctx, adminHandler.State().GetUpstreamRouters()) })
 	adminHandler.SetConnectorStatus(conn.Connected)
+	// Jobs from upstream routers pass the same model access check as API
+	// keys, as the upstream's router principal.
+	conn.SetModelGate(func(req *types.InferenceRequest) (bool, string) {
+		var candidates []string
+		switch aliases := adminHandler.State().AliasMap(); {
+		case req.Model == "any":
+			candidates = h.ActiveModels()
+		case aliases[req.Model] != nil:
+			candidates = append(candidates, aliases[req.Model]...)
+		default:
+			candidates = []string{req.Model}
+		}
+		attrs := map[string]map[string]any{}
+		for _, m := range candidates {
+			a := h.ModelAttrs(m)
+			for k, v := range adminHandler.State().ModelAttrs(m) {
+				a[k] = v
+			}
+			attrs[m] = a
+		}
+		allowed, reason := adminHandler.State().AuthorizeUpstreamJob(req.Owner, candidates, attrs)
+		if len(allowed) == 0 {
+			return false, reason
+		}
+		req.AllowedModels = allowed
+		return true, ""
+	})
 
 	// Re-check identity-provider-managed accounts on the interval set in the
 	// portal (off unless configured).

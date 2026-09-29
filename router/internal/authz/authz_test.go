@@ -550,3 +550,35 @@ func TestPairClient(t *testing.T) {
 		t.Error("bob may use a private client")
 	}
 }
+
+// An allow policy on client.use cannot open a Private client or widen its
+// allowlist: the client's sharing setting must agree.
+func TestClientUsePolicyCannotOverrideSharing(t *testing.T) {
+	openAll := Policy{ID: "open", Effect: Allow, Enabled: true, Actions: []string{"*"}}
+	e := mustCompile(t, allModels, openAll)
+	private := Resource{Type: "client", Owner: "user:alice", Sharing: &Sharing{Mode: SharePrivate}}
+	if e.PairClient(bob, private, Context{}).Allowed {
+		t.Error("an allow-everything policy opened a private client")
+	}
+	allowlisted := Resource{Type: "client", Owner: "user:alice", Sharing: &Sharing{Mode: ShareOpen, With: []string{"user:carol"}}}
+	if e.PairClient(bob, allowlisted, Context{}).Allowed {
+		t.Error("an allow policy widened a client's allowlist")
+	}
+}
+
+// A team-scoped role never grants model use: a maintainer adding a viewer to
+// their team must not give the viewer model access.
+func TestTeamRoleGrantsNoModelUse(t *testing.T) {
+	e := mustCompile(t, allModels)
+	v := Subject{ID: "user:vic", Kind: KindUser, Teams: []string{"research"},
+		Bindings: []Binding{{Role: RoleViewer}, {Role: RoleTeamMaintainer, Team: "research"}}}
+	if e.Can(Request{Subject: v, Action: "model.use", Resource: model("m")}) {
+		t.Error("a team role gave a viewer model access")
+	}
+	if e.Can(Request{Subject: v, Action: "team.create", Resource: Resource{Type: "team"}}) {
+		t.Error("a team role granted team.create")
+	}
+	if e.Can(Request{Subject: alice, Action: "team.create", Resource: Resource{Type: "team"}}) {
+		t.Error("members may create teams")
+	}
+}

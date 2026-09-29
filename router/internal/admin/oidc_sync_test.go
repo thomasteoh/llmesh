@@ -175,6 +175,24 @@ func TestOIDCRevalidation(t *testing.T) {
 			t.Fatal("a provider outage disabled an account")
 		}
 	})
+	t.Run("expired client secret is not a refusal", func(t *testing.T) {
+		a, f := setup(t)
+		f.refreshErr = "invalid_client"
+		a.revalidateOIDC(context.Background())
+		if disabled(a) {
+			t.Fatal("a configuration error (invalid_client) disabled an account")
+		}
+	})
+	t.Run("last admin is never disabled", func(t *testing.T) {
+		a, f := setup(t)
+		a.state.UpdateUser("root", func(u *User) { u.Disabled = true })
+		a.state.Bind(RoleBinding{Principal: "user:alice", Role: authz.RoleAdmin})
+		f.refreshErr = "invalid_grant"
+		a.revalidateOIDC(context.Background())
+		if disabled(a) {
+			t.Fatal("revalidation disabled the last active admin")
+		}
+	})
 	t.Run("admin-disabled stays disabled", func(t *testing.T) {
 		a, _ := setup(t)
 		a.state.UpdateUser("alice", func(u *User) { u.Disabled = true })
@@ -215,5 +233,30 @@ func TestOIDCSyncSettingsValidation(t *testing.T) {
 	got := a.state.OIDC()
 	if got.RoleMap["ops"] != "operator" || got.RoleMap["audit"] != "auditor" || got.RevalidateMinutes != 30 {
 		t.Fatalf("stored: %+v", got)
+	}
+}
+
+// If the provider seems to refuse most accounts at once, the run disables
+// no one: that is a misconfiguration, not a mass deactivation.
+func TestOIDCRevalidationCircuitBreaker(t *testing.T) {
+	a, f := oidcPolicyAdmin(t, zitadelDoc("s1", "alice", "llmesh-user"), OIDCConfig{})
+	addTestUser(t, a, "root", "admin")
+	p := zitadelSyncPolicy()
+	p.Issuer = testOIDCIssuer
+	p.GroupsClaim, p.TeamMap, p.AttrMap = "", nil, nil
+	a.state.SetOIDC(p)
+	for _, sub := range []string{"s1", "s2", "s3"} {
+		f.account.doc = zitadelDoc(sub, "user-"+sub, "llmesh-user")
+		f.account.id = oidcSubjectID(testOIDCIssuer, sub)
+		if rr := oidcSignIn(t, a); rr.Code != http.StatusFound {
+			t.Fatalf("sign-in %s: %d", sub, rr.Code)
+		}
+	}
+	f.refreshErr = "invalid_grant"
+	a.revalidateOIDC(context.Background())
+	for _, u := range a.state.Users() {
+		if u.ManagedBy == providerOIDC && u.Disabled {
+			t.Errorf("%s was disabled by a run that refused every account", u.Username)
+		}
 	}
 }

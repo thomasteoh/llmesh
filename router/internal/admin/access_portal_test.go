@@ -96,8 +96,15 @@ func TestLastAdminCannotBeDisabled(t *testing.T) {
 	withRole(t, a, "old", authz.RoleOwner)
 	a.state.UpdateUser("old", func(u *User) { u.Disabled = true })
 	withRole(t, a, "adm", authz.RoleAdmin)
-	// Someone who can manage users without being an admin.
-	if err := a.state.SaveRole(authz.Role{ID: "usermgr", Permissions: []string{"user.manage", "user.view"}}); err != nil {
+	// Someone holding every admin permission under a custom role, so they may
+	// act on admins without counting as one themselves.
+	var adminPerms []string
+	for _, r := range authz.BuiltinRoles() {
+		if r.ID == authz.RoleAdmin {
+			adminPerms = r.Permissions
+		}
+	}
+	if err := a.state.SaveRole(authz.Role{ID: "usermgr", Permissions: adminPerms}); err != nil {
 		t.Fatal(err)
 	}
 	withRole(t, a, "hr", "usermgr")
@@ -208,5 +215,39 @@ func TestCapabilitiesAndBadge(t *testing.T) {
 	}
 	if bp := a.newBasePage("dashboard", User{Username: "mem"}, requestAs(t, a, "mem")); bp.RoleBadge != "" {
 		t.Errorf("a member should have no badge, got %q", bp.RoleBadge)
+	}
+}
+
+// user.manage alone cannot reach an admin: not by granting itself admin, not
+// by promoting, and not by resetting an admin's password.
+func TestUserManageCannotEscalate(t *testing.T) {
+	a := newTestAdmin(t)
+	withRole(t, a, "root", authz.RoleOwner)
+	withRole(t, a, "adm", authz.RoleAdmin)
+	if err := a.state.SaveRole(authz.Role{ID: "helpdesk", Permissions: []string{"user.manage", "user.view"}}); err != nil {
+		t.Fatal(err)
+	}
+	withRole(t, a, "hd", "helpdesk")
+	withRole(t, a, "bob", authz.RoleMember)
+
+	postAs(t, a, "hd", "/portal/settings/users/roles/add", url.Values{"username": {"hd"}, "role": {authz.RoleAdmin}}, a.handleUserRoleAdd)
+	postAs(t, a, "hd", "/portal/settings/users/promote", url.Values{"username": {"hd"}}, a.handleUserPromote)
+	if a.state.isPrivileged("hd") {
+		t.Fatal("user.manage granted itself admin")
+	}
+	postAs(t, a, "hd", "/portal/settings/users/roles/add", url.Values{"username": {"bob"}, "role": {authz.RoleOperator}}, a.handleUserRoleAdd)
+	if sameRoles(a.globalRoles("bob"), authz.RoleMember, authz.RoleOperator) {
+		t.Error("helpdesk granted a role carrying permissions it lacks")
+	}
+	before, _ := a.state.LookupUser("adm")
+	rr := postAs(t, a, "hd", "/portal/settings/users/reset-password", url.Values{"username": {"adm"}}, a.handleUserResetPassword)
+	if after, _ := a.state.LookupUser("adm"); after.PasswordHash != before.PasswordHash {
+		t.Fatalf("helpdesk reset an admin's password: %.200s", rr.Body.String())
+	}
+	// It can still manage a plain member.
+	before, _ = a.state.LookupUser("bob")
+	postAs(t, a, "hd", "/portal/settings/users/reset-password", url.Values{"username": {"bob"}}, a.handleUserResetPassword)
+	if after, _ := a.state.LookupUser("bob"); after.PasswordHash == before.PasswordHash {
+		t.Error("helpdesk could not reset a member's password")
 	}
 }

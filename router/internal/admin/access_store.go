@@ -825,7 +825,11 @@ func (s *State) SavePolicy(p authz.Policy, actor string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := authz.Compile(append(authz.BuiltinRoles(), roles...), next); err != nil {
+	e, err := authz.Compile(append(authz.BuiltinRoles(), roles...), next)
+	if err != nil {
+		return err
+	}
+	if err := s.checkNoLockout(e); err != nil {
 		return err
 	}
 	body, err := json.Marshal(p)
@@ -911,4 +915,48 @@ func (s *State) SetUserAttrs(username string, attrs map[string]string) error {
 	}
 	s.invalidateAccess()
 	return nil
+}
+
+// lockoutActions are what an owner needs to repair any access mistake.
+var lockoutActions = []string{"policy.manage", "user.manage", "role.manage", "owner.manage"}
+
+// checkNoLockout refuses a policy set under which no enabled owner could
+// still manage policies, users, roles, and owners. A deny policy is powerful
+// enough to take those away from everyone, and with them the means to undo
+// it short of editing the database.
+func (s *State) checkNoLockout(e *authz.Engine) error {
+	rows, err := s.db.Query(`SELECT u.username FROM role_bindings b JOIN users u ON b.principal = 'user:' || u.username
+		WHERE b.role = ? AND b.team = '' AND u.disabled = 0`, authz.RoleOwner)
+	if err != nil {
+		return err
+	}
+	var owners []string
+	for rows.Next() {
+		var n string
+		if rows.Scan(&n) == nil {
+			owners = append(owners, n)
+		}
+	}
+	rows.Close()
+	if len(owners) == 0 {
+		return nil // nobody to lock out (fresh router, or owners managed elsewhere)
+	}
+	for _, o := range owners {
+		subj, err := s.SubjectFor(o)
+		if err != nil {
+			continue
+		}
+		ok := true
+		for _, action := range lockoutActions {
+			typ, _, _ := strings.Cut(action, ".")
+			if !e.Can(authz.Request{Subject: subj, Action: action, Resource: authz.Resource{Type: typ}}) {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return nil
+		}
+	}
+	return fmt.Errorf("this would leave no owner able to manage policies, users, and roles")
 }

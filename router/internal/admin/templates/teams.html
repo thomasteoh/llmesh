@@ -24,7 +24,7 @@
 <div class="card{{if $t.Disabled}} row-dim{{end}}">
   <div class="section-header">
     <div class="card-title">{{$t.Name}} <span class="muted text-mono text-xs">team:{{$t.ID}}</span>{{if $t.Disabled}} {{template "status-badge" dict "Class" "disabled" "Label" "disabled"}}{{end}}{{if $t.ManagedBy}} <span class="badge muted-badge">SSO</span>{{end}}</div>
-    {{if $t.CanManage}}
+    {{if $t.CanControl}}
     <div class="flex gap-1">
       {{if $t.Disabled}}
       {{template "action-button" dict "Action" "/portal/teams/state" "CSRF" $.CSRFToken "Fields" (dict "team" $t.ID "action" "enable") "Class" "btn-success btn-xs" "Label" "Enable"}}
