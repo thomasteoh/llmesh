@@ -1915,7 +1915,7 @@ func buildClientGroups(rows []ClientTokenRow) []ClientUserGroup {
 		}
 		g := groupMap[row.Owner]
 		g.Tokens = append(g.Tokens, row)
-		if strings.Contains(row.Status, "connected") {
+		if row.Status == "connected" {
 			g.HasLive = true
 		}
 	}
