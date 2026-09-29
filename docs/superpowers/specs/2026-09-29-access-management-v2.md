@@ -1,6 +1,6 @@
 # Access management v2
 
-> **Status: approved 2026-09-29; phases 1–6 implemented.** Replaces the ad-hoc admin/member checks,
+> **Status: approved 2026-09-29; all seven phases implemented.** Replaces the ad-hoc admin/member checks,
 > per-user isolation flags, and per-token `owner_slots` with one authorization
 > model covering the portal, inference admission, and dispatch.
 
@@ -457,4 +457,27 @@ Implementation notes (phase 6):
   phase 7 maps them from identity-provider claims.
 - Settings forms carry their tab in the action (`…#tab-users`) and the
   portal script re-selects it when it swaps in the response.
+
+Implementation notes (phase 7):
+
+- Provider roles map to any llmesh roles (`RoleMap`, alongside the member and
+  admin roles); holding any mapped role grants access. A managed account's
+  router-wide roles become exactly the mapped set on each sign-in and each
+  revalidation, subject to the last-owner/admin guard.
+- `GroupsClaim` + `TeamMap` manage membership of the mapped teams only;
+  membership of other teams is left alone. `AttrMap` maps claims to
+  `subject.attrs`, replacing only the mapped attributes.
+- Revalidation (`RevalidateMinutes`, off by default, minimum 5) refreshes
+  each managed account's stored refresh token. It disables the account when
+  the provider answers no (400/401 or `invalid_grant`), when the refreshed
+  identity is a different subject, or when no mapped role remains; network
+  and server errors disable no one. `offline_access` is requested
+  automatically while it is on. Disabling records `disabled_by = oidc` and
+  drops the refresh token; the next successful sign-in re-enables such an
+  account, while an admin-disabled account stays disabled.
+- Refresh tokens are stored in plaintext beside the other secrets in the
+  state database.
+- As before, only accounts created by sign-in (`managed_by = oidc`) are
+  synced or revalidated; locally created accounts that link an identity keep
+  their llmesh roles.
 

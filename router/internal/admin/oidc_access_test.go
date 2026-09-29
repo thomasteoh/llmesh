@@ -47,27 +47,29 @@ func TestClaimRoles(t *testing.T) {
 	}
 }
 
-func TestRoleFor(t *testing.T) {
-	policy := OIDCConfig{RolesClaim: "roles", MemberRole: "user", AdminRole: "admin"}
+func TestRolesFor(t *testing.T) {
+	policy := OIDCConfig{RolesClaim: "roles", MemberRole: "user", AdminRole: "admin",
+		RoleMap: map[string]string{"ops": "operator", "audit": "auditor"}}
 	cases := []struct {
 		doc         string
-		wantRole    string
+		want        string
 		wantAllowed bool
 	}{
-		{`{"roles":["admin","user"]}`, "admin", true},
+		{`{"roles":["admin","user"]}`, "admin,member", true},
 		{`{"roles":["user"]}`, "member", true},
+		{`{"roles":["ops","audit"]}`, "auditor,operator", true},
 		{`{"roles":["other"]}`, "", false},
 		{`{}`, "", false},
 	}
 	for _, tc := range cases {
-		role, ok := policy.roleFor(rawClaims(t, tc.doc))
-		if role != tc.wantRole || ok != tc.wantAllowed {
-			t.Errorf("%s: got (%q, %v), want (%q, %v)", tc.doc, role, ok, tc.wantRole, tc.wantAllowed)
+		roles, ok := policy.rolesFor(rawClaims(t, tc.doc))
+		if strings.Join(roles, ",") != tc.want || ok != tc.wantAllowed {
+			t.Errorf("%s: got (%v, %v), want (%q, %v)", tc.doc, roles, ok, tc.want, tc.wantAllowed)
 		}
 	}
 	// With the policy off the provider has no say.
-	if role, ok := (OIDCConfig{}).roleFor(rawClaims(t, `{}`)); role != "" || !ok {
-		t.Errorf("policy off: got (%q, %v)", role, ok)
+	if roles, ok := (OIDCConfig{}).rolesFor(rawClaims(t, `{}`)); roles != nil || !ok {
+		t.Errorf("policy off: got (%v, %v)", roles, ok)
 	}
 }
 

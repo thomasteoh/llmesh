@@ -96,6 +96,8 @@ func createAccessSchema(db *sql.DB) error {
 		`ALTER TABLE api_keys ADD COLUMN last_used_at TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE api_keys ADD COLUMN created_by TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE api_keys ADD COLUMN scope TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE users ADD COLUMN oidc_refresh TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE users ADD COLUMN disabled_by TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE client_tokens ADD COLUMN sharing TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE client_tokens ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'`,
 		`ALTER TABLE client_tokens ADD COLUMN last_used_at TEXT NOT NULL DEFAULT ''`,

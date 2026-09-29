@@ -979,6 +979,10 @@ func (s *State) UpdateUser(username string, fn func(*User)) error {
 			return err
 		}
 	}
+	// Re-enabling clears whatever disabled the account.
+	if !u.Disabled && before.Disabled {
+		_, _ = s.db.Exec(`UPDATE users SET disabled_by = '' WHERE username = ?`, username)
+	}
 	// A disabled account is already refused on every request; ending its
 	// sessions as well means re-enabling it later does not revive them.
 	if u.Disabled && !before.Disabled {

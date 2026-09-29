@@ -303,6 +303,10 @@ func main() {
 	adminHandler.SetUpstreamReloader(func() { conn.Reload(ctx, adminHandler.State().GetUpstreamRouters()) })
 	adminHandler.SetConnectorStatus(conn.Connected)
 
+	// Re-check identity-provider-managed accounts on the interval set in the
+	// portal (off unless configured).
+	go adminHandler.RunOIDCRevalidation(ctx)
+
 	// Persistent time-series usage tracking, flushed to the state DB.
 	usageRec := admin.NewUsageRecorder(adminHandler.State(), logring.NewLogger(sink, "admin", slog.LevelInfo))
 

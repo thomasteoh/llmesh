@@ -580,6 +580,11 @@ type OAuthProviderSettings struct {
 	OIDCMemberRole string
 	OIDCAdminRole  string
 	OIDCProvision  bool
+	OIDCRoleMap    string // name=value lines
+	OIDCGroups     string
+	OIDCTeamMap    string
+	OIDCAttrMap    string
+	OIDCRevalidate int
 
 	// The viewing user's own link.
 	Linked bool
@@ -1436,6 +1441,11 @@ func (a *Admin) authSettings(r *http.Request, u User) AuthSettings {
 			ps.OIDCMemberRole = oc.MemberRole
 			ps.OIDCAdminRole = oc.AdminRole
 			ps.OIDCProvision = oc.Provision
+			ps.OIDCRoleMap = attrLines(oc.RoleMap)
+			ps.OIDCGroups = oc.GroupsClaim
+			ps.OIDCTeamMap = attrLines(oc.TeamMap)
+			ps.OIDCAttrMap = attrLines(oc.AttrMap)
+			ps.OIDCRevalidate = oc.RevalidateMinutes
 		}
 		providers = append(providers, ps)
 	}
