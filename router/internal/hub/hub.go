@@ -821,6 +821,7 @@ func (h *Hub) AvailableClientList() []ClientSummary {
 			Models:            models,
 			MaxConcurrent:     c.MaxConcurrent,
 			InFlight:          c.Busy(),
+			LocalBusy:         int(c.localBusy.Load()),
 			ModelContextSizes: ctxSizes,
 			OwnerSlots:        ownerSlots,
 			ModelModalities:   modalities,

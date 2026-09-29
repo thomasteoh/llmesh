@@ -149,6 +149,7 @@ func (r *InferenceRequest) ModelAllowed(model string) bool {
 func (r InferenceRequest) ForWorker() InferenceRequest {
 	r.Owner = ""
 	r.APIKeyLabel = ""
+	r.AllowedModels = nil
 	return r
 }
 
@@ -389,10 +390,13 @@ type ClientSummary struct {
 	Owner string
 	// Token is the hash of the client token the connection authenticated
 	// with; access management looks up the client's sharing setting by it.
-	Token             string
-	Models            map[string]bool
-	MaxConcurrent     int
-	InFlight          int            // current in-flight job count
+	Token         string
+	Models        map[string]bool
+	MaxConcurrent int
+	InFlight      int // slots taken: in-flight jobs plus LocalBusy
+	// LocalBusy is how many slots the worker reports its local API using —
+	// work for whoever sits at that machine, which share-when-idle yields to.
+	LocalBusy         int
 	ModelContextSizes map[string]int // n_ctx per model; 0 = unknown
 	OwnerSlots        map[string]int // model → slots reserved for owner; 0/unset = fully shared
 	// ModelModalities maps model name → advertised input modalities. A model

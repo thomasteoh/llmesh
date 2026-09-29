@@ -293,6 +293,11 @@ func (s *Scheduler) drainQueue() {
 	// ownerSideBusy reports whether owner-side work is running on c, which
 	// is what an idle-only client waits for to end.
 	ownerSideBusy := func(c types.ClientSummary) bool {
+		// Requests to the worker's local API come from the machine itself,
+		// which is the owner's side of it.
+		if c.LocalBusy > 0 {
+			return true
+		}
 		for _, j := range runningOn(c.ID) {
 			if pair(j.Owner, c).OwnerSide {
 				return true

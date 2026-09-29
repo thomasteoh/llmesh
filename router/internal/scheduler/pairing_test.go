@@ -87,6 +87,30 @@ func TestPairing_ShareWhenIdle(t *testing.T) {
 	}
 }
 
+// Local API use is the owner at their machine: a share-when-idle client is
+// not idle while it lasts.
+func TestPairing_ShareWhenIdleYieldsToLocalUse(t *testing.T) {
+	_, q, s, conn := pairingSetup(t, tablePairing{"bob@alice": {Allowed: true, IdleOnly: true}})
+	sendLocal := func(n int) {
+		msg, _ := json.Marshal(types.LocalBusyMsg{Type: "local_busy", Slots: n})
+		if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	sendLocal(1)
+	q.Push(types.InferenceRequest{ID: "bob-1", Model: "llama3", Owner: "bob", EnqueuedAt: time.Now()})
+	s.drainQueue()
+	if q.Len() != 1 {
+		t.Fatal("bob ran while the owner was using the machine locally")
+	}
+	sendLocal(0)
+	s.drainQueue()
+	if job := readJob(t, conn, 300*time.Millisecond); job == nil || job.Request.ID != "bob-1" {
+		t.Fatal("bob did not run once local use ended")
+	}
+}
+
 func TestPairing_PerRequesterCap(t *testing.T) {
 	_, q, s, conn := pairingSetup(t, tablePairing{"bob@alice": {Allowed: true, PerRequesterMax: 1}})
 	q.Push(types.InferenceRequest{ID: "bob-1", Model: "llama3", Owner: "bob", EnqueuedAt: time.Now()})
