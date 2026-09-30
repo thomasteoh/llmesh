@@ -101,16 +101,22 @@ type Client struct {
 	ModelModalities        map[string][]string // model name → advertised input modalities; absent = unknown
 	MaxConcurrent          int                 // 0 until "register" message received
 	inFlight               atomic.Int32
-	Name                   string
-	Owner                  string
-	Token                  string         // token hash (SHA-256 hex) — the hub never holds plaintext tokens
-	Version                string         // client version from register message
-	Kind                   string         // "llama.cpp", "shim", or "" from older workers
-	OwnerSlots             map[string]int // model → slots reserved for owner; 0/unset = fully shared
-	wg                     sync.WaitGroup // tracks writeLoop + readLoop goroutines
-	closeOnce              sync.Once      // ensures conn.Close() happens exactly once
-	sendMu                 sync.Mutex     // guards send channel close/send to prevent data race
-	sendClosed             bool
+	// localBusy is how many slots the worker reports its local API using or
+	// waiting for (LocalBusyMsg). The router cannot see that load otherwise.
+	localBusy atomic.Int32
+	// draining is set once the worker says it is shutting down; it gets no
+	// more jobs.
+	draining   atomic.Bool
+	Name       string
+	Owner      string
+	Token      string         // token hash (SHA-256 hex) — the hub never holds plaintext tokens
+	Version    string         // client version from register message
+	Kind       string         // "llama.cpp", "shim", or "" from older workers
+	OwnerSlots map[string]int // model → slots reserved for owner; 0/unset = fully shared
+	wg         sync.WaitGroup // tracks writeLoop + readLoop goroutines
+	closeOnce  sync.Once      // ensures conn.Close() happens exactly once
+	sendMu     sync.Mutex     // guards send channel close/send to prevent data race
+	sendClosed bool
 }
 
 // ClientSummary is an alias for types.ClientSummary for backward compatibility.
@@ -119,6 +125,16 @@ type ClientSummary = types.ClientSummary
 
 func (c *Client) InFlight() int {
 	return int(c.inFlight.Load())
+}
+
+// Busy is the slots taken: the router's jobs plus the worker's local load.
+func (c *Client) Busy() int {
+	return int(c.inFlight.Load() + c.localBusy.Load())
+}
+
+// hasRoom reports whether the client may take another job.
+func (c *Client) hasRoom() bool {
+	return !c.draining.Load() && c.Busy() < c.MaxConcurrent
 }
 
 func (c *Client) IncrInFlight() {
@@ -219,6 +235,14 @@ func (r InFlightRecord) ClientLabel() string {
 // need: once any output exists the request cannot be safely re-dispatched, because
 // a second attempt's body would be appended to the first's. For measuring latency
 // use FirstTokenAt instead.
+// ProducedOutput reports whether the caller has been sent any output for this
+// attempt: text, reasoning, or tool calls. Retrying after that would repeat it
+// to the caller, so it decides retries. FirstChunkAt counts text alone and
+// would let a reasoning model's thinking be streamed twice.
+func (r InFlightRecord) ProducedOutput() bool {
+	return r.live != nil && r.live.producedOutput.Load()
+}
+
 func (r InFlightRecord) FirstChunkAt() *time.Time {
 	if r.live == nil {
 		return nil
@@ -383,7 +407,7 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token
 		req := retryRequest(rec.Req)
 		// Only retry when no output was delivered; retrying a partially-streamed
 		// request would concatenate the retry onto the partial response.
-		if req.Attempts < MaxAttempts && rec.FirstChunkAt() == nil && h.OnRelease != nil {
+		if req.Attempts < MaxAttempts && !rec.ProducedOutput() && h.OnRelease != nil {
 			h.log.Warn("hub: client disconnected during inference, retrying",
 				"request_id", req.ID, "client_id", client.ID,
 				"attempt", req.Attempts, "max_attempts", MaxAttempts)
@@ -392,7 +416,7 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, name, owner, token
 			h.log.Warn("hub: failing orphaned job on disconnect",
 				"request_id", req.ID, "client_id", client.ID,
 				"attempt", req.Attempts, "max_attempts", MaxAttempts,
-				"partial", rec.FirstChunkAt() != nil)
+				"partial", rec.ProducedOutput())
 			if h.OnError != nil {
 				h.OnError(types.ErrorMsg{
 					Type:      "error",
@@ -487,8 +511,11 @@ type inboundMsg struct {
 	Usage          *types.UsageInfo `json:"usage"`
 	// error
 	Message string `json:"message"`
+	Final   bool   `json:"final"`
 	// release
 	Reason string `json:"reason"`
+	// local_busy
+	Slots int `json:"slots"`
 }
 
 func (h *Hub) dispatch(client *Client, data []byte) {
@@ -528,7 +555,26 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 		client.Kind = in.Kind
 		h.mu.Unlock()
 		h.log.Info("hub: client registered", "id", client.ID, "models", msg.Models, "max_concurrent", msg.MaxConcurrent, "version", msg.Version)
+		h.SendToClient(client.ID, types.RegisteredMsg{Type: "registered", Features: []string{types.FeatureLocalBusy, types.FeatureDrain}})
 		if h.OnAvailable != nil {
+			h.OnAvailable()
+		}
+
+	case "draining":
+		client.draining.Store(true)
+		h.log.Info("hub: client draining, no new jobs", "id", client.ID, "in_flight", client.InFlight())
+
+	case "local_busy":
+		n := in.Slots
+		if n < 0 {
+			n = 0
+		}
+		h.mu.RLock()
+		if max := client.MaxConcurrent; max > 0 && n > max {
+			n = max
+		}
+		h.mu.RUnlock()
+		if prev := client.localBusy.Swap(int32(n)); int32(n) < prev && h.OnAvailable != nil {
 			h.OnAvailable()
 		}
 
@@ -599,6 +645,7 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 			Type:      in.Type,
 			RequestID: in.RequestID,
 			Message:   in.Message,
+			Final:     in.Final,
 		}
 		rec, ok := h.untrackJob(msg.RequestID, client.ID)
 		if !ok {
@@ -616,7 +663,7 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 		// Only retry if no output has been delivered yet. Retrying after the
 		// caller has already received partial tokens would concatenate the new
 		// attempt's full response onto the partial one.
-		if req.Attempts < MaxAttempts && rec.FirstChunkAt() == nil && h.OnRelease != nil {
+		if !msg.Final && req.Attempts < MaxAttempts && !rec.ProducedOutput() && h.OnRelease != nil {
 			h.log.Warn("hub: client inference error, retrying",
 				"request_id", req.ID, "client_id", client.ID,
 				"message", msg.Message,
@@ -624,7 +671,7 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 			h.OnRelease(req)
 			return
 		}
-		if rec.FirstChunkAt() != nil {
+		if rec.ProducedOutput() {
 			h.log.Warn("hub: inference error after partial output, failing without retry",
 				"request_id", req.ID, "client_id", client.ID, "message", msg.Message)
 		}
@@ -633,6 +680,11 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 		}
 
 	case "release":
+		// Mark a stopping worker before requeueing what it hands back, or the
+		// scheduler can pick the same worker for the job again.
+		if in.Reason == types.ReleaseShutdown {
+			client.draining.Store(true)
+		}
 		rec, ok := h.untrackJob(in.RequestID, client.ID)
 		if !ok {
 			return // already completed, expired, reassigned, or unknown
@@ -643,12 +695,27 @@ func (h *Hub) dispatch(client *Client, data []byte) {
 			"client_id", client.ID,
 			"reason", in.Reason,
 		)
+		// A worker whose local API holds the slot hands the job back to run
+		// elsewhere. That is no failure of the job, so it costs no attempt —
+		// but only while the worker reports local load, which also keeps the
+		// scheduler from handing it straight back.
+		if in.Reason == types.ReleaseBusy && client.localBusy.Load() > 0 && !rec.ProducedOutput() && h.OnRelease != nil {
+			req := rec.Req
+			if req.RequestedModel != "" {
+				req.Model = req.RequestedModel
+			}
+			h.OnRelease(req)
+			if h.OnAvailable != nil {
+				h.OnAvailable()
+			}
+			return
+		}
 		req := retryRequest(rec.Req)
 		// Re-dispatch on release (e.g. graceful shutdown), but only while
 		// attempts remain and no output was delivered — otherwise a client that
 		// deterministically releases a job would bounce it between queue and
 		// client forever, and a partial stream must not be retried.
-		if req.Attempts < MaxAttempts && rec.FirstChunkAt() == nil && h.OnRelease != nil {
+		if req.Attempts < MaxAttempts && !rec.ProducedOutput() && h.OnRelease != nil {
 			h.OnRelease(req)
 		} else if h.OnError != nil {
 			h.OnError(types.ErrorMsg{
@@ -713,7 +780,7 @@ func (h *Hub) AvailableModels() map[string]bool {
 	defer h.mu.RUnlock()
 	models := make(map[string]bool)
 	for _, c := range h.clients {
-		if c.InFlight() < c.MaxConcurrent {
+		if c.hasRoom() {
 			for m := range c.Models {
 				models[m] = true
 			}
@@ -729,7 +796,7 @@ func (h *Hub) AvailableClientList() []ClientSummary {
 	defer h.mu.RUnlock()
 	var out []ClientSummary
 	for _, c := range h.clients {
-		if c.Models == nil || c.InFlight() >= c.MaxConcurrent {
+		if c.Models == nil || !c.hasRoom() {
 			continue
 		}
 		models := make(map[string]bool, len(c.Models))
@@ -757,7 +824,7 @@ func (h *Hub) AvailableClientList() []ClientSummary {
 			Token:             c.Token,
 			Models:            models,
 			MaxConcurrent:     c.MaxConcurrent,
-			InFlight:          c.InFlight(),
+			InFlight:          c.Busy(),
 			ModelContextSizes: ctxSizes,
 			OwnerSlots:        ownerSlots,
 			ModelModalities:   modalities,
@@ -796,8 +863,8 @@ func (h *Hub) AvailableSlotsByModel(owner string) []types.ModelSlots {
 		if c.Models == nil {
 			continue // not yet registered
 		}
-		free := c.MaxConcurrent - c.InFlight()
-		if free < 0 {
+		free := c.MaxConcurrent - c.Busy()
+		if free < 0 || c.draining.Load() {
 			free = 0
 		}
 		for m := range c.Models {

@@ -54,6 +54,10 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 	srv := &http.Server{
 		Addr:    addr,
 		Handler: mux,
+		// Bounds how long a connection may take to send its headers, so a
+		// caller that never finishes one cannot hold sockets open for good.
+		// No write timeout: a generation can stream for many minutes.
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	go func() {
@@ -114,6 +118,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	body, err = withChatTemplate(body, s.cfg.ChatTemplateOverride(envelope.Model))
+	if err != nil {
+		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+
 	target, err := url.Parse(endpoint)
 	if err != nil {
 		http.Error(w, `{"error":"invalid backend endpoint"}`, http.StatusInternalServerError)
@@ -125,7 +135,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	s.st.IncrActive()
 	defer func() {
-		s.pool.Release()
+		s.pool.ReleaseLocal()
 		s.st.DecrActive()
 		s.st.IncrDone()
 	}()
@@ -162,6 +172,28 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	proxy.ServeHTTP(w, r)
+}
+
+// withChatTemplate sets chat_template on a request body that has none, so a
+// template configured for the model applies to local requests as it does to
+// router jobs. A caller's own chat_template is left alone.
+func withChatTemplate(body []byte, template string) ([]byte, error) {
+	if template == "" {
+		return body, nil
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return nil, err
+	}
+	if _, set := fields["chat_template"]; set {
+		return body, nil
+	}
+	t, err := json.Marshal(template)
+	if err != nil {
+		return nil, err
+	}
+	fields["chat_template"] = t
+	return json.Marshal(fields)
 }
 
 // admit runs the checks every local request must pass and writes the refusal

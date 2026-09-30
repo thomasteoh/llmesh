@@ -43,7 +43,7 @@
                 <input type="hidden" name="token_hash" value="{{$row.TokenHash}}">
                 <input type="hidden" name="model" value="{{.Name}}">
                 <input type="number" name="slots" value="{{if gt .OwnerSlots 0}}{{.OwnerSlots}}{{end}}"
-                       min="0" placeholder="0" style="width:42px;text-align:center;"
+                       min="0" placeholder="0" style="width:60px;text-align:center;"
                        title="Slots reserved for owner (0 = fully shared)">
                 <button type="submit" class="btn-secondary btn-xs">set</button>
               </form>

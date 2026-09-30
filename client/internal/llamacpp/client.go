@@ -5,9 +5,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"llmesh/pkg/types"
@@ -27,11 +30,17 @@ const (
 	// single 10-second probe without being hung, and treating that as fatal
 	// killed exactly the large-context requests this timeout exists to protect.
 	healthCheckFailures = 3
-
-	// healthCheckInterval is how often to probe /health while waiting for the
-	// first token. Detects a crashed or hung llamacpp before inference begins.
-	healthCheckInterval = 30 * time.Second
 )
+
+// healthCheckInterval is how often to probe /health while waiting for the
+// first token, or for a non-streamed reply. Detects a crashed or hung llamacpp
+// that would otherwise hold the request until the router gave up. A variable
+// for tests.
+var healthCheckInterval = 30 * time.Second
+
+// ErrBackendHung is returned when the backend stopped answering health checks
+// while a request was waiting on it.
+var ErrBackendHung = errors.New("llama.cpp stopped answering health checks")
 
 // Chunk is one unit of streamed output handed to a ChunkCallback.
 type Chunk struct {
@@ -206,6 +215,86 @@ type Props struct {
 	Modalities []string
 }
 
+// BackendError is a non-200 answer from the backend, with the reason it gave.
+type BackendError struct {
+	Status  int
+	Message string
+}
+
+func (e *BackendError) Error() string {
+	if e.Message == "" {
+		return fmt.Sprintf("llama.cpp returned %d", e.Status)
+	}
+	return fmt.Sprintf("llama.cpp returned %d: %s", e.Status, e.Message)
+}
+
+// Final reports whether the backend rejected the request itself — malformed,
+// or more than it can take — so that another attempt, here or on another
+// worker running the same backend, would be refused the same way. An auth or
+// availability failure is this worker's own and is worth retrying elsewhere.
+func (e *BackendError) Final() bool {
+	switch e.Status {
+	case http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
+		return true
+	}
+	return false
+}
+
+// maxErrorBody bounds how much of an error response is read for its reason.
+const maxErrorBody = 4 << 10
+
+// backendError reads the reason from an error response: llama.cpp's
+// {"error":{"message":…}}, the {"error":"…"} or {"message":"…"} other servers
+// use, or failing those the start of the body as text.
+func backendError(resp *http.Response) error {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+	e := &BackendError{Status: resp.StatusCode}
+	var shaped struct {
+		Error   json.RawMessage `json:"error"`
+		Message string          `json:"message"`
+	}
+	if json.Unmarshal(body, &shaped) == nil {
+		var nested struct {
+			Message string `json:"message"`
+		}
+		var flat string
+		switch {
+		case json.Unmarshal(shaped.Error, &nested) == nil && nested.Message != "":
+			e.Message = nested.Message
+		case json.Unmarshal(shaped.Error, &flat) == nil && flat != "":
+			e.Message = flat
+		case shaped.Message != "":
+			e.Message = shaped.Message
+		}
+	}
+	if e.Message == "" {
+		e.Message = strings.TrimSpace(string(body))
+	}
+	if len(e.Message) > 500 {
+		e.Message = e.Message[:500] + "…"
+	}
+	return e
+}
+
+// Ready reports whether the backend is up and has its model loaded. llama.cpp
+// answers /health with 503 while loading; a server without /health (404) is
+// taken as ready, since it answered at all.
+func (c *Client) Ready(ctx context.Context) bool {
+	hctx, cancel := context.WithTimeout(ctx, healthCheckTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(hctx, http.MethodGet, c.endpoint+"/health", nil)
+	if err != nil {
+		return false
+	}
+	c.applyHeaders(req)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode != http.StatusServiceUnavailable
+}
+
 // ProbeModelID fetches /v1/models and returns the id of the first model the
 // endpoint advertises (llama.cpp serves one model per process). Returns "" on
 // any error or if no model is advertised.
@@ -327,25 +416,38 @@ func (c *Client) Infer(ctx context.Context, req types.InferenceRequest, chatTemp
 	httpReq.Header.Set("Content-Type", "application/json")
 	c.applyHeaders(httpReq)
 
+	// Watch /health until output starts. For a stream that is the first
+	// content token, which readStream signals by closing firstToken; a
+	// non-streamed reply arrives whole, so it is watched until it does.
+	// Started before the request, since llama.cpp sends nothing — not even
+	// headers — for a non-streamed request until it has finished.
+	firstToken := make(chan struct{})
+	var hung atomic.Bool
+	go c.watchHealth(inferCtx, func() {
+		hung.Store(true)
+		inferCancel()
+	}, firstToken, healthCheckInterval)
+	orHung := func(err error) error {
+		if err != nil && hung.Load() {
+			return ErrBackendHung
+		}
+		return err
+	}
+
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return fmt.Errorf("http: %w", err)
+		return orHung(fmt.Errorf("http: %w", err))
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("llama.cpp returned %d", resp.StatusCode)
+		return backendError(resp)
 	}
 
 	if req.Stream {
-		// firstToken is closed by readStream when the first content token arrives.
-		// The health-check goroutine below uses it to stop polling once inference
-		// is confirmed to be producing output.
-		firstToken := make(chan struct{})
-		go c.watchHealth(inferCtx, inferCancel, firstToken, healthCheckInterval)
-		return c.readStream(inferCtx, inferCancel, resp, cb, firstToken)
+		return orHung(c.readStream(inferCtx, inferCancel, resp, cb, firstToken))
 	}
-	return c.readBatch(resp, cb)
+	return orHung(c.readBatch(resp, cb))
 }
 
 // watchHealth polls /health every interval until firstToken is closed (first

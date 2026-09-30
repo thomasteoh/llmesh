@@ -5,6 +5,7 @@ import (
 	"html/template"
 	"io"
 	"llmesh/router/internal/authz"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -49,10 +50,33 @@ func renderPage(t *testing.T, page string, data any) {
 	if err != nil {
 		t.Fatalf("parse %s: %v", page, err)
 	}
-	if err := tmpl.Execute(io.Discard, data); err != nil {
+	var out strings.Builder
+	if err := tmpl.Execute(&out, data); err != nil {
 		t.Fatalf("execute %s: %v", page, err)
 	}
+	checkNoNestedForms(t, page, out.String())
 }
+
+// checkNoNestedForms fails on a <form> opened inside another. The HTML parser
+// drops the inner tag and its fields join the outer form, so the outer form
+// posts them too — which once made every sign-in settings save clear the
+// provider's secret.
+func checkNoNestedForms(t *testing.T, page, html string) {
+	t.Helper()
+	depth := 0
+	for _, m := range formTag.FindAllString(html, -1) {
+		if strings.HasPrefix(m, "</") {
+			depth--
+			continue
+		}
+		if depth > 0 {
+			t.Errorf("%s: a form is nested inside another: %s", page, m)
+		}
+		depth++
+	}
+}
+
+var formTag = regexp.MustCompile(`(?i)<form\b[^>]*>|</form>`)
 
 // renderStandalonePage executes a page that has no layout (the auth pages).
 func renderStandalonePage(t *testing.T, page string, data any) {

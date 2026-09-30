@@ -15,12 +15,16 @@ import (
 // connection. Init preserves in-flight counts, so a reconnect that re-advertises
 // a different max_concurrent adjusts capacity without losing accounting.
 type SlotPool struct {
-	mu           sync.Mutex
-	cond         *sync.Cond
-	capacity     int
-	ready        bool
-	inFlight     int
-	localWaiters int
+	mu            sync.Mutex
+	cond          *sync.Cond
+	capacity      int
+	ready         bool
+	inFlight      int
+	localWaiters  int
+	localInFlight int // slots held by local requests; part of inFlight
+	// onLocal is called, outside the lock, whenever LocalBusy may have
+	// changed, so the router can be told.
+	onLocal func()
 }
 
 func newSlotPool() *SlotPool {
@@ -45,6 +49,30 @@ func (p *SlotPool) Init(capacity int) {
 	p.cond.Broadcast()
 }
 
+// SetLocalHook registers fn to be called whenever LocalBusy may have changed.
+// fn runs on the goroutine that changed it and must not block for long.
+func (p *SlotPool) SetLocalHook(fn func()) {
+	p.mu.Lock()
+	p.onLocal = fn
+	p.mu.Unlock()
+}
+
+func (p *SlotPool) notifyLocal() {
+	p.mu.Lock()
+	fn := p.onLocal
+	p.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
+}
+
+// LocalBusy is how many slots local requests hold or are waiting for.
+func (p *SlotPool) LocalBusy() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.localInFlight + p.localWaiters
+}
+
 // AcquireLocal acquires a slot with priority over router jobs. If any slots
 // are free it returns immediately; otherwise it blocks until one is released.
 // Router jobs waiting for a slot will continue to yield as long as this call
@@ -63,6 +91,10 @@ func (p *SlotPool) AcquireLocal(ctx context.Context) bool {
 
 	p.mu.Lock()
 	p.localWaiters++
+	p.mu.Unlock()
+	// Waiting counts as local load too: the next free slot is spoken for.
+	p.notifyLocal()
+	p.mu.Lock()
 
 	for !p.ready || p.inFlight >= p.capacity {
 		if ctx.Err() != nil {
@@ -73,20 +105,42 @@ func (p *SlotPool) AcquireLocal(ctx context.Context) bool {
 			// the next Release, since the AfterFunc broadcast fired before
 			// localWaiters was decremented.
 			p.cond.Broadcast()
+			p.notifyLocal()
 			return false
 		}
 		p.cond.Wait()
 	}
 	p.inFlight++
+	p.localInFlight++
 	p.localWaiters--
 	p.mu.Unlock()
 	return true
+}
+
+// ReleaseLocal returns a slot taken by AcquireLocal.
+func (p *SlotPool) ReleaseLocal() {
+	p.mu.Lock()
+	if p.localInFlight > 0 {
+		p.localInFlight--
+	}
+	p.mu.Unlock()
+	p.Release()
+	p.notifyLocal()
 }
 
 // acquireRouter acquires a slot for a router-dispatched job. It yields to any
 // waiting local requests: if localWaiters > 0 this call blocks until all local
 // waiters have been served first. Returns false if ctx expires.
 func (p *SlotPool) acquireRouter(ctx context.Context) bool {
+	ok, _ := p.acquireRouterOrYield(ctx, false)
+	return ok
+}
+
+// acquireRouterOrYield is acquireRouter that, when yield is set, gives up
+// instead of waiting whenever local requests are what stands in the way. It
+// then returns busy: the job should go back to the router to run elsewhere,
+// rather than wait here for as long as someone at this machine keeps it busy.
+func (p *SlotPool) acquireRouterOrYield(ctx context.Context, yield bool) (ok, busy bool) {
 	// See AcquireLocal for why the broadcast is fenced by the lock.
 	stop := context.AfterFunc(ctx, func() {
 		p.mu.Lock()
@@ -100,13 +154,17 @@ func (p *SlotPool) acquireRouter(ctx context.Context) bool {
 	for !p.ready || p.inFlight >= p.capacity || p.localWaiters > 0 {
 		if ctx.Err() != nil {
 			p.mu.Unlock()
-			return false
+			return false, false
+		}
+		if yield && p.ready && p.localInFlight+p.localWaiters > 0 {
+			p.mu.Unlock()
+			return false, true
 		}
 		p.cond.Wait()
 	}
 	p.inFlight++
 	p.mu.Unlock()
-	return true
+	return true, false
 }
 
 // Release returns a slot to the pool and wakes waiting goroutines.

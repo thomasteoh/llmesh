@@ -2,11 +2,13 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"time"
 
 	clientPkg "llmesh/client"
+	"llmesh/client/internal/health"
 	"llmesh/client/internal/llamacpp"
 	"llmesh/client/internal/stats"
 	"llmesh/pkg/types"
@@ -20,7 +22,9 @@ type SendFn func(msg any) error
 // Handle processes a single job from the router. Returns a non-nil error only
 // when inference itself failed (not when ctx was cancelled).
 // ctx is cancelled when the WS connection drops (so in-flight llama.cpp requests abort).
-func Handle(ctx context.Context, job types.JobMsg, cfg *clientPkg.Config, send SendFn, st *stats.Stats) error {
+// br, when non-nil, is told how the request went, so a model that keeps
+// failing is withdrawn.
+func Handle(ctx context.Context, job types.JobMsg, cfg *clientPkg.Config, send SendFn, st *stats.Stats, br *health.Breaker) error {
 	req := job.Request
 	endpoint := cfg.EndpointFor(req.Model)
 	if endpoint == "" {
@@ -54,6 +58,11 @@ func Handle(ctx context.Context, job types.JobMsg, cfg *clientPkg.Config, send S
 	}()
 	defer close(keepAliveDone)
 
+	if br != nil {
+		br.Start(req.Model)
+		defer br.Done(req.Model)
+	}
+
 	llmClient := llamacpp.New(endpoint, cfg.HeadersFor(req.Model))
 	chatTemplate := cfg.ChatTemplateFor(req.Model)
 	err := llmClient.Infer(ctx, req, chatTemplate, func(c llamacpp.Chunk) {
@@ -78,12 +87,24 @@ func Handle(ctx context.Context, job types.JobMsg, cfg *clientPkg.Config, send S
 	})
 	if err != nil && ctx.Err() == nil {
 		log.Error("worker: infer error", "request_id", req.ID, "error", err)
+		var be *llamacpp.BackendError
+		final := errors.As(err, &be) && be.Final()
 		_ = send(types.ErrorMsg{
 			Type:      "error",
 			RequestID: req.ID,
 			Message:   err.Error(),
+			Final:     final,
 		})
+		// A final error is the request's fault; the backend answered it, so
+		// it says nothing against the model.
+		if br != nil && !final && br.Failure(req.Model) {
+			log.Warn("worker: model failing repeatedly, withdrawing it from the router for a while",
+				"model", req.Model, "until", br.OpenUntil(req.Model).Format(time.TimeOnly))
+		}
 		return err
+	}
+	if err == nil && br != nil {
+		br.Success(req.Model)
 	}
 	return nil
 }

@@ -13,7 +13,10 @@ import (
 	"log/slog"
 	"math/rand"
 	"net"
+	"net/url"
+	"reflect"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -33,6 +36,12 @@ const (
 	// out within it is better retried on the next tick than left queued.
 	pingWriteWait = 10 * time.Second
 )
+
+// reprobeInterval is how often a ModelWatcher's models are probed again, so a
+// backend that comes up, goes down, or is withdrawn is reflected in what the
+// router is told without waiting for the connection to drop. A variable for
+// tests.
+var reprobeInterval = 15 * time.Second
 
 // jitter returns d perturbed by ±20% to avoid a thundering herd of workers all
 // reconnecting in lockstep after a router restart.
@@ -57,6 +66,15 @@ type ConnStats interface {
 // For llmesh-client it probes llama.cpp; for llmesh-shim it reads from config (slots=0).
 type ModelProvider interface {
 	Models(ctx context.Context) ([]types.ModelInfo, int)
+}
+
+// ModelWatcher is implemented by a ModelProvider whose models can change while
+// connected: a backend starting late, crashing, or being withdrawn after
+// repeated failures. When WatchModels is true, Models is called again every
+// reprobeInterval (or at once after Recheck), and the worker registers afresh
+// whenever the result changes.
+type ModelWatcher interface {
+	WatchModels() bool
 }
 
 // JobDispatcher handles a single job received from the router.
@@ -92,6 +110,27 @@ type Conn struct {
 	ws        *websocket.Conn
 	cancelsMu sync.Mutex
 	cancels   map[string]context.CancelFunc
+
+	// localBusy is set while the router on the current connection has
+	// announced types.FeatureLocalBusy: it is told about local load, and a
+	// job that local requests leave no slot for is handed back to it.
+	localBusy atomic.Bool
+	// localKick wakes the goroutine that reports local load to the router.
+	localKick chan struct{}
+	// recheckKick asks the model watcher to probe now.
+	recheckKick chan struct{}
+
+	// drainTimeout is how long shutdown waits for jobs in flight to finish
+	// before handing the rest back; 0 hands them back at once. force ends
+	// the wait early (a second signal).
+	drainTimeout time.Duration
+	force        <-chan struct{}
+	// routerDrain is set while the router on the current connection has
+	// announced types.FeatureDrain; without it shutdown does not wait,
+	// since an older router would keep sending jobs meanwhile.
+	routerDrain atomic.Bool
+	// draining is set once shutdown has begun waiting for jobs.
+	draining atomic.Bool
 }
 
 // New creates a Conn. Call Run to start the connection loop.
@@ -104,8 +143,8 @@ func New(
 	jobs JobDispatcher,
 	log *slog.Logger,
 ) *Conn {
-	return &Conn{
-		routerURL:   routerURL,
+	c := &Conn{
+		routerURL:   DialURL(routerURL),
 		routerToken: routerToken,
 		maxConc:     maxConc,
 		version:     version,
@@ -115,6 +154,86 @@ func New(
 		log:         log,
 		pool:        newSlotPool(),
 		cancels:     make(map[string]context.CancelFunc),
+		localKick:   make(chan struct{}, 1),
+		recheckKick: make(chan struct{}, 1),
+	}
+	c.pool.SetLocalHook(c.kickLocal)
+	return c
+}
+
+// DialURL turns the router address a user may have written into the
+// WebSocket URL to dial: http:// and https:// become ws:// and wss://, since
+// the dialer accepts only those, and an address with no path gets the
+// router's worker endpoint, /ws/client.
+func DialURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	switch u.Scheme {
+	case "http":
+		u.Scheme = "ws"
+	case "https":
+		u.Scheme = "wss"
+	}
+	if u.Path == "" || u.Path == "/" {
+		u.Path = "/ws/client"
+	}
+	return u.String()
+}
+
+// SetDrain makes shutdown let jobs in flight finish, for up to timeout, before
+// handing the rest back to the router; closing force ends the wait early.
+// Call before Run. Only a router that supports draining is waited on.
+func (c *Conn) SetDrain(timeout time.Duration, force <-chan struct{}) {
+	c.drainTimeout = timeout
+	c.force = force
+}
+
+// Recheck asks for the models to be probed again now rather than at the next
+// interval, e.g. because one has just been withdrawn. It never blocks.
+func (c *Conn) Recheck() {
+	select {
+	case c.recheckKick <- struct{}{}:
+	default:
+	}
+}
+
+// jobCount is how many jobs this worker holds, running or waiting for a slot.
+func (c *Conn) jobCount() int {
+	c.cancelsMu.Lock()
+	defer c.cancelsMu.Unlock()
+	return len(c.cancels)
+}
+
+// waitForJobs blocks until no jobs remain, timeout passes, force is closed,
+// or ctx ends. It reports whether every job finished.
+func (c *Conn) waitForJobs(ctx context.Context, timeout time.Duration) bool {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	for c.jobCount() > 0 {
+		select {
+		case <-tick.C:
+		case <-deadline.C:
+			return false
+		case <-c.force:
+			return false
+		case <-ctx.Done():
+			return false
+		}
+	}
+	return true
+}
+
+// kickLocal asks for the router to be told the current local load. It never
+// blocks: the reporting goroutine reads the load when it sends, so wakeups
+// that arrive while one is pending can be dropped.
+func (c *Conn) kickLocal() {
+	select {
+	case c.localKick <- struct{}{}:
+	default:
 	}
 }
 
@@ -214,6 +333,26 @@ func (c *Conn) connect(outerCtx context.Context) (registered bool, err error) {
 		return conn.WriteMessage(websocket.TextMessage, data)
 	}
 
+	// Nothing is known about this router's features until it acknowledges
+	// the registration.
+	c.localBusy.Store(false)
+	c.routerDrain.Store(false)
+	reportLocal := func() {
+		if c.localBusy.Load() {
+			_ = send(types.LocalBusyMsg{Type: "local_busy", Slots: c.pool.LocalBusy()})
+		}
+	}
+	go func() {
+		for {
+			select {
+			case <-c.localKick:
+				reportLocal()
+			case <-connCtx.Done():
+				return
+			}
+		}
+	}()
+
 	// Keepalive: refresh read deadline on every pong.
 	conn.SetReadDeadline(time.Now().Add(pongWait))
 	conn.SetPongHandler(func(string) error {
@@ -254,12 +393,28 @@ func (c *Conn) connect(outerCtx context.Context) (registered bool, err error) {
 		}
 	}()
 
-	// Graceful shutdown watcher: on SIGTERM, notify the router about in-flight jobs
+	// Graceful shutdown watcher: on SIGTERM, let jobs in flight finish (when
+	// configured and the router supports it), then hand back whatever is left
 	// before cancelling job contexts and closing the connection.
 	go func() {
 		select {
 		case <-outerCtx.Done():
-			c.log.Info("ws: shutdown signal received, notifying router of in-flight jobs")
+			if c.drainTimeout > 0 && c.routerDrain.Load() {
+				// Stop new jobs first: the router marks this worker draining,
+				// and any job already on its way is handed straight back.
+				c.draining.Store(true)
+				_ = send(types.DrainingMsg{Type: "draining"})
+				if n := c.jobCount(); n > 0 {
+					c.log.Info("ws: shutting down, letting jobs in flight finish (signal again to stop now)",
+						"jobs", n, "timeout", c.drainTimeout.String())
+					if c.waitForJobs(connCtx, c.drainTimeout) {
+						c.log.Info("ws: jobs finished")
+					}
+				}
+			}
+			if n := c.jobCount(); n > 0 {
+				c.log.Info("ws: shutting down, handing jobs in flight back to the router", "jobs", n)
+			}
 			c.cancelsMu.Lock()
 			ids := make([]string, 0, len(c.cancels))
 			for id := range c.cancels {
@@ -270,7 +425,7 @@ func (c *Conn) connect(outerCtx context.Context) (registered bool, err error) {
 				_ = send(types.ReleaseMsg{
 					Type:      "release",
 					RequestID: id,
-					Reason:    "client_shutdown",
+					Reason:    types.ReleaseShutdown,
 				})
 			}
 			// Cancel job goroutines, then send WS close so the read loop exits.
@@ -310,6 +465,10 @@ func (c *Conn) connect(outerCtx context.Context) (registered bool, err error) {
 	c.st.SetConnected(true)
 	c.log.Info("ws: registered with router", "models", models, "max_concurrent", maxConc)
 
+	if w, ok := c.models.(ModelWatcher); ok && w.WatchModels() {
+		go c.watchModels(connCtx, models, maxConc, send, reprobeInterval)
+	}
+
 	// Re-arm the read deadline now that probing is behind us. It was armed
 	// before Models(), which issues unbounded HTTP probes to the backend — a
 	// llama.cpp still loading a large model, or busy prefilling a long prompt,
@@ -336,14 +495,32 @@ func (c *Conn) connect(outerCtx context.Context) (registered bool, err error) {
 			Type      string                 `json:"type"`
 			Request   types.InferenceRequest `json:"request"`
 			RequestID string                 `json:"request_id"`
+			Features  []string               `json:"features"`
 		}
 		if err := json.Unmarshal(data, &in); err != nil {
 			continue
 		}
 
 		switch in.Type {
+		case "registered":
+			for _, f := range in.Features {
+				switch f {
+				case types.FeatureLocalBusy:
+					c.localBusy.Store(true)
+					c.kickLocal() // the router starts from zero local load
+				case types.FeatureDrain:
+					c.routerDrain.Store(true)
+				}
+			}
+
 		case "job":
 			job := types.JobMsg{Type: in.Type, Request: in.Request}
+			// A job sent before the router saw that this worker is draining
+			// goes straight back, to run elsewhere.
+			if c.draining.Load() {
+				_ = send(types.ReleaseMsg{Type: "release", RequestID: job.Request.ID, Reason: types.ReleaseShutdown})
+				continue
+			}
 			// Pre-check before accepting the job.
 			// Try must be fast and non-blocking; it sends its own error if needed.
 			if !c.jobs.Try(job, send) {
@@ -378,7 +555,17 @@ func (c *Conn) connect(outerCtx context.Context) (registered bool, err error) {
 				// disconnect, or an explicit cancel), yielding to waiting local
 				// requests. The router requeues the job on disconnect, so no
 				// notification is needed on that path.
-				if !c.pool.acquireRouter(jobCtx) {
+				ok, busy := c.pool.acquireRouterOrYield(jobCtx, c.localBusy.Load())
+				if busy {
+					// Local requests hold the slot. Report the load first, so
+					// the router does not hand the job straight back, then
+					// return it to run elsewhere.
+					reportLocal()
+					c.log.Info("ws: local requests busy, returning job to router", "request_id", j.Request.ID)
+					_ = send(types.ReleaseMsg{Type: "release", RequestID: j.Request.ID, Reason: types.ReleaseBusy})
+					return
+				}
+				if !ok {
 					return
 				}
 				defer c.pool.Release()
@@ -407,3 +594,46 @@ func (c *Conn) connect(outerCtx context.Context) (registered bool, err error) {
 // SetKind sets the worker kind reported at registration ("llama.cpp",
 // "shim"). Call before Run.
 func (c *Conn) SetKind(kind string) { c.kind = kind }
+
+// watchModels probes models every reprobeInterval, or at once after Recheck,
+// and registers again whenever the models or slot count change. Registering
+// again on the same connection updates what the router knows without dropping
+// jobs in flight.
+func (c *Conn) watchModels(ctx context.Context, models []types.ModelInfo, maxConc int, send func(any) error, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+		case <-c.recheckKick:
+		case <-ctx.Done():
+			return
+		}
+		next, slots := c.models.Models(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		nextConc := c.maxConc
+		if nextConc <= 0 {
+			nextConc = slots
+		}
+		if nextConc < 1 {
+			nextConc = 1
+		}
+		if reflect.DeepEqual(next, models) && nextConc == maxConc {
+			continue
+		}
+		c.pool.Init(nextConc)
+		if err := send(types.RegisterMsg{
+			Type:          "register",
+			Models:        next,
+			MaxConcurrent: nextConc,
+			Version:       c.version,
+			Kind:          c.kind,
+		}); err != nil {
+			return
+		}
+		c.log.Info("ws: models changed, registered again", "models", next, "max_concurrent", nextConc)
+		models, maxConc = next, nextConc
+	}
+}

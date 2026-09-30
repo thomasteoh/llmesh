@@ -9,3 +9,6 @@ services:
     volumes:
       - ./client/config.yaml:/config.yaml:ro
     restart: unless-stopped
+    # Longer than shutdown_drain (60s by default), so jobs in flight can
+    # finish before Docker kills the client.
+    stop_grace_period: 90s

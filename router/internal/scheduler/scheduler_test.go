@@ -77,19 +77,28 @@ func registerModels(t *testing.T, conn *websocket.Conn, models ...string) {
 	time.Sleep(50 * time.Millisecond) // let hub process the register message
 }
 
-// readJob reads one message from conn and unmarshals it as a JobMsg.
+// readJob reads the next job from conn, skipping the registration
+// acknowledgement, and unmarshals it as a JobMsg.
 func readJob(t *testing.T, conn *websocket.Conn, timeout time.Duration) *types.JobMsg {
 	t.Helper()
 	conn.SetReadDeadline(time.Now().Add(timeout))
-	_, data, err := conn.ReadMessage()
-	if err != nil {
-		return nil
+	for {
+		_, data, err := conn.ReadMessage()
+		if err != nil {
+			return nil
+		}
+		var job types.JobMsg
+		if err := json.Unmarshal(data, &job); err != nil {
+			return nil
+		}
+		if job.Type == "registered" {
+			continue
+		}
+		if job.Type != "job" {
+			return nil
+		}
+		return &job
 	}
-	var job types.JobMsg
-	if err := json.Unmarshal(data, &job); err != nil || job.Type != "job" {
-		return nil
-	}
-	return &job
 }
 
 func TestDrainQueue_ExclusiveClient_SkipsNonOwnerJob(t *testing.T) {
