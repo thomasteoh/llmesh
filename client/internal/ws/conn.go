@@ -7,11 +7,14 @@ package ws
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
-	"sync/atomic"
+	"sync"
+	"time"
 
 	clientPkg "llmesh/client"
+	"llmesh/client/internal/health"
 	"llmesh/client/internal/llamacpp"
 	"llmesh/client/internal/stats"
 	"llmesh/client/internal/worker"
@@ -28,9 +31,13 @@ type Conn struct {
 
 // New creates a Conn wired to the given config and stats.
 func New(cfg *clientPkg.Config, version string, st *stats.Stats) *Conn {
-	models := &clientModelProvider{cfg: cfg}
-	jobs := &clientJobDispatcher{cfg: cfg, st: st}
+	br := health.NewBreaker(nil)
+	models := &clientModelProvider{cfg: cfg, breaker: br, backends: map[string]*backendState{}}
+	jobs := &clientJobDispatcher{cfg: cfg, st: st, breaker: br}
 	inner := wsclient.New(cfg.RouterURL, cfg.RouterToken, cfg.MaxConcurrent, version, st, models, jobs, log)
+	// Withdraw a model from the router as soon as it trips, not at the next
+	// health check, so it stops being sent jobs that will fail.
+	br.SetOnChange(inner.Recheck)
 	return &Conn{inner: inner}
 }
 
@@ -39,79 +46,160 @@ func (c *Conn) Run(ctx context.Context) {
 	c.inner.Run(ctx)
 }
 
+// SetDrain makes shutdown let jobs in flight finish for up to timeout; see
+// wsclient.Conn.SetDrain.
+func (c *Conn) SetDrain(timeout time.Duration, force <-chan struct{}) {
+	c.inner.SetDrain(timeout, force)
+}
+
 // SlotPool returns the shared concurrency pool. Pass this to the local API
 // server so local requests share the same slot budget as router-dispatched jobs.
 func (c *Conn) SlotPool() *wsclient.SlotPool { return c.inner.Pool() }
 
-// clientModelProvider probes llama.cpp for model capabilities on each (re)connection.
-type clientModelProvider struct {
-	cfg *clientPkg.Config
-	// pending records that the last probe found a backend not ready, so
-	// wsclient keeps probing until it is (wsclient.PendingReporter).
-	pending atomic.Bool
+// Health checks: how many failed in a row withdraw a backend's model, and how
+// long one round of probes against a backend may take.
+const (
+	downAfter    = 3
+	probeTimeout = 15 * time.Second
+)
+
+// backendState is what the provider remembers about one backend between
+// probes.
+type backendState struct {
+	failures int              // readiness probes failed in a row
+	last     *types.ModelInfo // what it last advertised; nil while withdrawn
+	slots    int              // its total_slots when last probed
+	up       bool             // has ever been ready
+	props    string           // last props logged, to log only changes
+	tripped  bool             // withdrawn by the breaker when last probed
 }
 
-// Pending reports whether the last Models call found a backend that was not
-// ready: unreachable, still loading, or unable to name its model.
-func (p *clientModelProvider) Pending() bool { return p.pending.Load() }
+// clientModelProvider probes the backends on each (re)connection and, as a
+// wsclient.ModelWatcher, again every few seconds while connected: a backend
+// that is down, or whose model keeps failing requests, is not advertised.
+type clientModelProvider struct {
+	cfg     *clientPkg.Config
+	breaker *health.Breaker
+
+	mu       sync.Mutex // serialises Models; guards backends
+	backends map[string]*backendState
+}
+
+// WatchModels makes wsclient call Models periodically while connected.
+func (p *clientModelProvider) WatchModels() bool { return true }
 
 func (p *clientModelProvider) Models(ctx context.Context) ([]types.ModelInfo, int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	models := make([]types.ModelInfo, 0, len(p.cfg.Models))
 	totalSlots := 0
-	pending := false
-	defer func() { p.pending.Store(pending) }()
 	for _, m := range p.cfg.Models {
-		lc := llamacpp.New(m.Endpoint, m.RequestHeaders())
-		// A backend still starting would register with no context size or
-		// slots, or not at all; note it so it is probed again once up.
-		if !lc.Ready(ctx) {
-			pending = true
+		st := p.backends[m.Endpoint]
+		if st == nil {
+			st = &backendState{}
+			p.backends[m.Endpoint] = st
 		}
-
-		// Resolve the model name: explicit config name wins; otherwise ask the
-		// endpoint what model it serves via /v1/models.
-		name := m.Name
-		if name == "" {
-			name = lc.ProbeModelID(ctx)
-			if name == "" {
-				log.Warn("ws: could not auto-detect model name from endpoint, skipping for now", "endpoint", m.Endpoint)
-				pending = true
-				continue
+		info, slots := p.probe(ctx, m, st)
+		if info == nil {
+			continue
+		}
+		if p.breaker.Open(info.Name) {
+			if !st.tripped {
+				log.Warn("ws: model withdrawn after repeated failures", "model", info.Name,
+					"until", p.breaker.OpenUntil(info.Name).Format(time.TimeOnly))
 			}
-			p.cfg.SetResolvedName(m.Endpoint, name)
-			log.Info("ws: auto-detected model name", "endpoint", m.Endpoint, "model", name)
+			st.tripped = true
+			continue
 		}
-
-		props := lc.ProbeProps(ctx)
-		modalities := m.EffectiveModalities(props.Modalities)
-		models = append(models, types.ModelInfo{
-			Name:         name,
-			ContextSize:  props.NCtx,
-			ContextTrain: props.NCtxTrain,
-			Modalities:   modalities,
-		})
-		if props.NCtx > 0 {
-			log.Info("ws: model props", "model", name,
-				"context_size", props.NCtx, "context_train", props.NCtxTrain,
-				"total_slots", props.TotalSlots, "modalities", modalities)
+		if st.tripped {
+			log.Info("ws: offering model again after its cooldown", "model", info.Name)
+			st.tripped = false
 		}
-		if props.ChatTemplate != "" {
-			p.cfg.SetDetectedTemplate(name, props.ChatTemplate)
-		}
-		totalSlots += props.TotalSlots
+		models = append(models, *info)
+		totalSlots += slots
 	}
 	return models, totalSlots
 }
 
+// probe checks one backend and returns what to advertise for it, or nil to
+// advertise nothing.
+func (p *clientModelProvider) probe(ctx context.Context, m clientPkg.ModelConfig, st *backendState) (*types.ModelInfo, int) {
+	pctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	lc := llamacpp.New(m.Endpoint, m.RequestHeaders())
+
+	if !lc.Ready(pctx) {
+		// A backend busy with requests can miss a health check without being
+		// down; if it has crashed those requests fail, and the breaker acts.
+		if st.last != nil && p.breaker.Active(st.last.Name) > 0 {
+			return st.last, st.slots
+		}
+		st.failures++
+		switch {
+		case st.last != nil && st.failures < downAfter:
+			return st.last, st.slots // one missed check is not an outage
+		case st.last != nil:
+			log.Warn("ws: backend not answering health checks, withdrawing its model",
+				"model", st.last.Name, "endpoint", m.Endpoint, "failed_checks", st.failures)
+			st.last = nil
+		case st.failures == 1:
+			log.Warn("ws: backend not ready yet, will keep checking", "endpoint", m.Endpoint)
+		}
+		return nil, 0
+	}
+	if st.failures > 0 && st.up {
+		log.Info("ws: backend answering again", "endpoint", m.Endpoint)
+	}
+	st.failures = 0
+	st.up = true
+
+	// Resolve the model name: explicit config name wins; otherwise ask the
+	// endpoint what model it serves via /v1/models.
+	name := m.Name
+	if name == "" {
+		name = lc.ProbeModelID(pctx)
+		if name == "" {
+			if st.last != nil {
+				log.Warn("ws: backend no longer names its model, withdrawing it", "endpoint", m.Endpoint)
+			}
+			st.last = nil
+			return nil, 0
+		}
+		p.cfg.SetResolvedName(m.Endpoint, name)
+	}
+
+	props := lc.ProbeProps(pctx)
+	modalities := m.EffectiveModalities(props.Modalities)
+	info := &types.ModelInfo{
+		Name:         name,
+		ContextSize:  props.NCtx,
+		ContextTrain: props.NCtxTrain,
+		Modalities:   modalities,
+	}
+	if key := fmt.Sprintf("%s %d %d %d %v", name, props.NCtx, props.NCtxTrain, props.TotalSlots, modalities); key != st.props {
+		st.props = key
+		log.Info("ws: model props", "model", name, "endpoint", m.Endpoint,
+			"context_size", props.NCtx, "context_train", props.NCtxTrain,
+			"total_slots", props.TotalSlots, "modalities", modalities)
+	}
+	if props.ChatTemplate != "" {
+		p.cfg.SetDetectedTemplate(name, props.ChatTemplate)
+	}
+	st.last = info
+	st.slots = props.TotalSlots
+	return info, props.TotalSlots
+}
+
 // clientJobDispatcher dispatches jobs via the llama.cpp worker.
 type clientJobDispatcher struct {
-	cfg *clientPkg.Config
-	st  *stats.Stats
+	cfg     *clientPkg.Config
+	st      *stats.Stats
+	breaker *health.Breaker
 }
 
 // Try always accepts jobs — llama.cpp validation happens at inference time.
 func (d *clientJobDispatcher) Try(_ types.JobMsg, _ func(any) error) bool { return true }
 
 func (d *clientJobDispatcher) Dispatch(ctx context.Context, job types.JobMsg, send func(any) error) error {
-	return worker.Handle(ctx, job, d.cfg, send, d.st)
+	return worker.Handle(ctx, job, d.cfg, send, d.st, d.breaker)
 }

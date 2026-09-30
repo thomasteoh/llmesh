@@ -345,6 +345,16 @@ type RegisteredMsg struct {
 // ReleaseBusy job without counting an attempt.
 const FeatureLocalBusy = "local_busy"
 
+// FeatureDrain: the router accepts DrainingMsg.
+const FeatureDrain = "drain"
+
+// DrainingMsg is sent by a worker that is shutting down but letting its jobs
+// in flight finish. The router sends it no new jobs; the connection stays up
+// until the jobs end or the worker hands them back.
+type DrainingMsg struct {
+	Type string `json:"type"` // "draining"
+}
+
 // MaxAttempts is the total number of times a request may be dispatched before
 // being failed back to the caller (initial attempt + retries on client errors/disconnects).
 // Defined here so the api package can use it without importing hub.
