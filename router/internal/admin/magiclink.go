@@ -88,6 +88,10 @@ func (a *Admin) handleMagicLinkVerify(w http.ResponseWriter, r *http.Request) {
 		a.renderLogin(w, r, "", "That sign-in link is no longer valid.")
 		return
 	}
+	if msg := managedElsewhere(u, "email"); msg != "" {
+		a.renderLogin(w, r, "", msg)
+		return
+	}
 	a.state.RecordAudit(u.Username, "auth.login.magiclink", entry.Email, a.clientIP(r))
 	a.startSession(w, r, u.Username)
 	http.Redirect(w, r, "/portal/", http.StatusFound)

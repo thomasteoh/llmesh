@@ -39,10 +39,23 @@ func googleAccount(sub, email string) providerAccount {
 	}
 }
 
+// testOIDCIssuer is the issuer the OIDC provider is configured with in tests.
+// Its endpoints are overridden to point at a fake, so it is never fetched.
+const testOIDCIssuer = "https://idp.test"
+
+func oidcAccount(sub, email string) providerAccount {
+	return providerAccount{
+		doc:   map[string]any{"sub": sub, "email": email, "email_verified": true},
+		id:    oidcSubjectID(testOIDCIssuer, sub),
+		label: email,
+	}
+}
+
 // testAccounts is the account each fake provider reports by default.
 var testAccounts = map[string]providerAccount{
 	providerGitHub: githubAccount(4242, "octocat"),
 	providerGoogle: googleAccount("sub-4242", "alice@example.com"),
+	providerOIDC:   oidcAccount("sub-4242", "alice@idp.test"),
 }
 
 // forEachProvider runs a subtest per provider.
@@ -59,8 +72,10 @@ type fakeProvider struct {
 	account providerAccount
 	// tokenErr, when set, is returned by the token endpoint as an OAuth error.
 	tokenErr string
-	// lastTokenForm records what the router posted to the token endpoint.
+	// lastTokenForm and lastTokenAuth record what the router posted to the
+	// token endpoint, and the Authorization header it posted it with.
 	lastTokenForm url.Values
+	lastTokenAuth string
 }
 
 func startFakeProvider(t *testing.T, account providerAccount) *fakeProvider {
@@ -70,6 +85,7 @@ func startFakeProvider(t *testing.T, account providerAccount) *fakeProvider {
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
 		r.ParseForm()
 		f.lastTokenForm = r.PostForm
+		f.lastTokenAuth = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
 		if f.tokenErr != "" {
 			json.NewEncoder(w).Encode(map[string]string{"error": f.tokenErr})
@@ -113,6 +129,11 @@ func configureFakeProvider(t *testing.T, a *Admin, provider string, account prov
 		userInfoURL:  f.srv.URL + "/userinfo",
 	}
 	a.httpClient = f.srv.Client()
+	if provider == providerOIDC {
+		if err := a.state.SetOIDC(OIDCConfig{Issuer: testOIDCIssuer}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := a.state.SetOAuth(provider, oauthProviders[provider].name,
 		OAuthConfig{Enabled: true, ClientID: "cid-" + provider, ClientSecret: "shh"}); err != nil {
 		t.Fatal(err)
@@ -485,7 +506,7 @@ func TestOAuthIdentitiesAreIndependentAcrossProviders(t *testing.T) {
 	}
 
 	// Either identity now signs her in.
-	for _, key := range oauthProviderOrder {
+	for _, key := range []string{providerGitHub, providerGoogle} {
 		stateCookie, nonce := startAuthorization(t, a, key, oauthModeLogin, nil)
 		if rr := callback(a, key, stateCookie, nonce, nil); rr.Code != http.StatusFound {
 			t.Fatalf("%s sign-in failed: %d %s", key, rr.Code, rr.Body.String())
@@ -607,6 +628,7 @@ func TestAuthorizationRequestParameters(t *testing.T) {
 	wantScopes := map[string]string{
 		providerGitHub: "read:user",
 		providerGoogle: "openid email",
+		providerOIDC:   "openid email profile",
 	}
 	forEachProvider(t, func(t *testing.T, key string) {
 		a, _ := newOAuthTestAdmin(t, key)

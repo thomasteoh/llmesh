@@ -214,8 +214,8 @@ type loginProvider struct {
 func (a *Admin) renderLoginWithEmail(w http.ResponseWriter, r *http.Request, notice, errMsg, email string) {
 	var providers []loginProvider
 	for _, key := range oauthProviderOrder {
-		p, ok := a.providerFor(key)
-		if !ok || !a.state.OAuth(key).Configured() {
+		p, _, ready := a.providerReady(key)
+		if !ready {
 			continue
 		}
 		providers = append(providers, loginProvider{Key: key, Name: p.name, Path: oauthStartPath(key)})
@@ -275,6 +275,10 @@ func (a *Admin) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// password, so it does not leak account existence to an attacker.
 	if u.Disabled {
 		a.renderLogin(w, r, "", "Account disabled.")
+		return
+	}
+	if msg := managedElsewhere(u, "password"); msg != "" {
+		a.renderLogin(w, r, "", msg)
 		return
 	}
 	a.startSession(w, r, username)

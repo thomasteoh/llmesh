@@ -35,7 +35,7 @@ llmesh is self-hosted and its security depends on how it is deployed:
   creation and travel in request headers, so protect them in transit and at
   the caller.
 - **Guard the sign-in secrets in the state database.** OAuth client secrets
-  (GitHub, Google) and an SMTP password, if you configure those sign-in
+  (GitHub, Google, OpenID Connect) and an SMTP password, if you configure those sign-in
   methods, are stored in the settings table in plaintext — the router has no
   key to encrypt them under that it would not also store beside them. None is
   ever rendered back into the portal or written to the log, but anyone who can
@@ -47,6 +47,10 @@ llmesh is self-hosted and its security depends on how it is deployed:
   readable by anything on the path. The same applies to an OAuth callback,
   which carries an authorization code, and Google will not accept a plain-HTTP
   redirect URI except on localhost.
+- **Provider roles take effect at sign-in, not instantly.** With OpenID
+  Connect access control on, removing a user's role at the provider stops
+  their next sign-in, but not a portal session already open or their API
+  keys. Disable the user here as well when access must end now.
 - **Register the redirect URI exactly.** Each provider's callback URL is shown
   on the settings page. Registering a broader pattern than the one shown, where
   a provider permits it, widens where an authorization code can be delivered.

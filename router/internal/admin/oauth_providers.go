@@ -12,11 +12,12 @@ import (
 const (
 	providerGitHub = "github"
 	providerGoogle = "google"
+	providerOIDC   = "oidc"
 )
 
 // oauthProviderOrder is the order providers appear on the login and settings
 // pages, so the two cannot drift apart.
-var oauthProviderOrder = []string{providerGitHub, providerGoogle}
+var oauthProviderOrder = []string{providerGitHub, providerGoogle, providerOIDC}
 
 var oauthProviders = map[string]oauthProvider{
 	providerGitHub: {
@@ -61,6 +62,23 @@ var oauthProviders = map[string]oauthProvider{
 		set: func(u *User, i oauthIdentity) {
 			u.GoogleUserID = i.ID
 			u.GoogleEmail = i.Label
+		},
+	},
+	// The OIDC descriptor is a template: its name and endpoints are the
+	// admin's, and providerFor fills them in from settings.
+	providerOIDC: {
+		key:  providerOIDC,
+		name: defaultOIDCName,
+		// profile adds preferred_username, the label shown when a provider
+		// reports no verified address. Nothing else in it is read.
+		scope:            "openid email profile",
+		extraTokenParams: map[string]string{"grant_type": "authorization_code"},
+		pkce:             true,
+		identity:         oidcIdentity,
+		get:              func(u User) oauthIdentity { return oauthIdentity{ID: u.OIDCSubject, Label: u.OIDCLabel} },
+		set: func(u *User, i oauthIdentity) {
+			u.OIDCSubject = i.ID
+			u.OIDCLabel = i.Label
 		},
 	},
 }

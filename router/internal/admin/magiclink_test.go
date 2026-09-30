@@ -122,6 +122,9 @@ func TestLoginPageOffersOnlyConfiguredMethods(t *testing.T) {
 
 	// Each provider appears once configured, and only that provider does.
 	for _, key := range oauthProviderOrder {
+		if key == providerOIDC {
+			setDiscoveredOIDC(t, a.state)
+		}
 		if err := a.state.SetOAuth(key, oauthProviders[key].name,
 			OAuthConfig{Enabled: true, ClientID: "id", ClientSecret: "shh"}); err != nil {
 			t.Fatal(err)
