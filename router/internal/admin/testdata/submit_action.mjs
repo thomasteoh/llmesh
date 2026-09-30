@@ -45,6 +45,32 @@ function mainOf(html) {
   return m ? el(m[1]) : null;
 }
 
+// Gives a parsed <main> the content column it sits in, holding the page's
+// flash banners the way layout.html renders them: beside <main>, not in it.
+function withFlashes(main, html) {
+  if (!main) return main;
+  const flashes = [...html.matchAll(/<div class="flash[^"]*"[^>]*>([^<]*)<\/div>/g)].map((m) => el(m[1]));
+  main.parentNode = { querySelectorAll: () => flashes };
+  return main;
+}
+
+// A content column around the current <main>, recording the banners it holds.
+function column(main, texts) {
+  const col = { flashes: [] };
+  const add = (text) => {
+    const f = el(text);
+    f.remove = () => {
+      col.flashes = col.flashes.filter((x) => x !== f);
+    };
+    col.flashes.push(f);
+  };
+  texts.forEach(add);
+  col.querySelectorAll = () => col.flashes.slice();
+  col.insertBefore = (node) => add(node.innerHTML);
+  main.parentNode = col;
+  return col;
+}
+
 function makeContext(opts) {
   const log = {
     fetches: [],
@@ -66,6 +92,7 @@ function makeContext(opts) {
     },
     removeEventListener() {},
     createElement: () => el(),
+    importNode: (node) => node,
     cookie: '',
     hidden: false,
   };
@@ -113,9 +140,10 @@ function makeContext(opts) {
     FormData: class {
       constructor() {}
     },
+    HTMLFormElement: class {},
     DOMParser: class {
       parseFromString(html) {
-        return { querySelector: (sel) => (sel === 'main' ? mainOf(html) : null) };
+        return { querySelector: (sel) => (sel === 'main' ? withFlashes(mainOf(html), html) : null) };
       }
     },
     fetch: (url, init) => {
@@ -302,6 +330,54 @@ await check('a body that fails mid-read after a successful create does not re-po
   assert(submitted === 0, `re-posted an action the server had already accepted (${submitted} resubmits)`);
   assert(log.reloaded === 1, `expected one reload, got ${log.reloaded}`);
 });
+
+await check("a page's banner replaces the one already showing", async () => {
+  const { context, currentMain } = makeContext({
+    respond: () =>
+      response({
+        status: 200,
+        headers: { 'Content-Type': 'text/html' },
+        body: '<html><body><div class="flash error" role="alert">Role mapping: bogus is not name=value</div><main><p>form</p></main></body></html>',
+      }),
+  });
+  const col = column(currentMain, ['Rule saved.']);
+  context.submitAction(form);
+  await settle();
+
+  const shown = col.flashes.map((f) => f.innerHTML);
+  assert(shown.length === 1 && shown[0].includes('bogus'), `banners after the swap: ${JSON.stringify(shown)}`);
+});
+
+await check('a page with no banner clears a stale one', async () => {
+  const { context, currentMain } = makeContext({
+    respond: (url, init) =>
+      (init && init.method) === 'POST'
+        ? response({ status: 204, headers: { 'X-Portal-Location': '/portal/api-keys' } })
+        : response({ status: 200, headers: { 'Content-Type': 'text/html' }, body: '<main><p>refreshed</p></main>' }),
+  });
+  const col = column(currentMain, ['Rule saved.']);
+  context.submitAction(form);
+  await settle();
+
+  assert(col.flashes.length === 0, `a stale banner survived: ${JSON.stringify(col.flashes.map((f) => f.innerHTML))}`);
+});
+
+for (const [cancelled, want] of [[true, 0], [false, 1]]) {
+  await check(`a ${cancelled ? 'cancelled' : 'confirmed'} confirmation posts ${want ? 'the action' : 'nothing'}`, async () => {
+    const { context, log, listeners } = makeContext({ respond: () => response({ status: 204 }) });
+    const target = Object.assign(new context.HTMLFormElement(), {
+      getAttribute: (name) => ({ method: 'POST', action: '/portal/clients/revoke' })[name] ?? null,
+      submit() {},
+    });
+    // An inline onsubmit confirm that returns false marks the event
+    // defaultPrevented; it still bubbles to the document listener.
+    listeners.submit({ defaultPrevented: cancelled, target, preventDefault() {} });
+    await settle();
+
+    const posts = log.fetches.filter((f) => f.method === 'POST');
+    assert(posts.length === want, `expected ${want} posts, got ${JSON.stringify(posts)}`);
+  });
+}
 
 if (failures.length) {
   console.log(`\n${failures.length} failing: ${failures.join(', ')}`);
