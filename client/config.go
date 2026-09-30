@@ -221,6 +221,18 @@ func (c *Config) KeepAliveInterval() time.Duration {
 	return half
 }
 
+// ChatTemplateOverride returns the chat template configured for the model in
+// the config file, or "" when none is. Unlike ChatTemplateFor it ignores the
+// template detected from the backend, which is the backend's own default.
+func (c *Config) ChatTemplateOverride(model string) string {
+	for _, m := range c.Models {
+		if en := c.effectiveName(m); en != "" && en == model {
+			return m.ChatTemplate
+		}
+	}
+	return ""
+}
+
 // ChatTemplateFor returns the chat template for the given model.
 // Manual config override takes priority; falls back to auto-detected template from /props.
 // Returns "" if neither is set (llama.cpp will use the model's built-in template).
