@@ -1634,6 +1634,11 @@ func (a *Admin) handleUserDisable(w http.ResponseWriter, r *http.Request) {
 		a.renderSettings(w, r, u, "", err.Error())
 		return
 	}
+	// Their tokens stop authenticating from here, but a client already
+	// connected would otherwise keep serving until it next reconnects.
+	for _, t := range a.state.ClientTokensFor(target, false) {
+		a.hub.CloseByToken(t.TokenHash)
+	}
 	a.state.RecordAudit(u.Username, "user.disable", target, a.clientIP(r))
 	redirectOrRefresh(w, r, "/portal/settings")
 }

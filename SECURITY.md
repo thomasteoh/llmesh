@@ -54,6 +54,10 @@ llmesh is self-hosted and its security depends on how it is deployed:
 - **Register the redirect URI exactly.** Each provider's callback URL is shown
   on the settings page. Registering a broader pattern than the one shown, where
   a provider permits it, widens where an authorization code can be delivered.
+- **Disable a user to cut off their access.** Disabling ends their portal
+  session, refuses their API keys and client tokens, and disconnects any
+  client already connected with one. Re-enabling restores them unchanged;
+  deleting the user (only possible once disabled) destroys them.
 - **Restrict the local client API** (`local_api_addr`) to a loopback bind, or
   set `local_api_token`, since it serves unauthenticated inference otherwise.
   It refuses browser requests, so a web page open on the machine cannot reach
