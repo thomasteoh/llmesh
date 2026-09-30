@@ -1,20 +1,20 @@
 {{define "content"}}
 <div class="page-head">
   <div class="page-title">Settings</div>
-  <div class="page-sub">Account, users, upstreams, and router options</div>
+  <div class="page-sub">Account, users, and router options</div>
 </div>
 <div class="tab-container">
   <div class="tab-bar underline">
     <button class="tab-btn active" data-tab-target="tab-password" data-tab-hash>Account</button>
-    {{if .IsAdmin}}
-    <button class="tab-btn" data-tab-target="tab-general" data-tab-hash>General</button>
-    <button class="tab-btn" data-tab-target="tab-signin" data-tab-hash>Sign-in</button>
-    <button class="tab-btn" data-tab-target="tab-users" data-tab-hash>Users</button>
-    <button class="tab-btn" data-tab-target="tab-upstreams" data-tab-hash>Upstreams</button>
-    <button class="tab-btn" data-tab-target="tab-optimization" data-tab-hash>Optimization</button>
-    <button class="tab-btn" data-tab-target="tab-pricing" data-tab-hash>Pricing</button>
-    <button class="tab-btn" data-tab-target="tab-logs" data-tab-hash data-tab-onactivate="logs">Logs</button>
-    {{end}}
+    {{if .Can.settings_manage}}<button class="tab-btn" data-tab-target="tab-general" data-tab-hash>General</button>
+    <button class="tab-btn" data-tab-target="tab-signin" data-tab-hash>Sign-in</button>{{end}}
+    {{if .Can.user_view}}<button class="tab-btn" data-tab-target="tab-users" data-tab-hash>Users</button>
+    <button class="tab-btn" data-tab-target="tab-roles" data-tab-hash>Roles</button>{{end}}
+    {{if .Can.policy_view}}<button class="tab-btn" data-tab-target="tab-models" data-tab-hash>Model access</button>
+    <button class="tab-btn" data-tab-target="tab-policies" data-tab-hash>Policies</button>{{end}}
+    {{if .Can.settings_manage}}<button class="tab-btn" data-tab-target="tab-optimization" data-tab-hash>Optimization</button>{{end}}
+    {{if .Can.pricing_manage}}<button class="tab-btn" data-tab-target="tab-pricing" data-tab-hash>Pricing</button>{{end}}
+    {{if .Can.settings_view}}<button class="tab-btn" data-tab-target="tab-logs" data-tab-hash data-tab-onactivate="logs">Logs</button>{{end}}
   </div>
 
   {{/* ── Password tab ── */}}
@@ -22,7 +22,7 @@
     <div class="settings-narrow">
       <div class="card">
         <div class="card-title">Change password</div>
-        <form method="POST" action="/portal/settings/password">
+        <form method="POST" action="/portal/settings/password#tab-password">
           <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
           <div class="form-group mb-3"><label>Current password</label><input name="current" type="password"></div>
           <div class="form-group mb-3"><label>New password</label><input name="new" type="password"></div>
@@ -40,7 +40,7 @@
 
         {{if .Auth.SMTPConfigured}}
         <div class="form-group mb-2"><label>Email address</label></div>
-        <form method="POST" action="/portal/settings/email">
+        <form method="POST" action="/portal/settings/email#tab-password">
           <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
           <div class="form-row mb-2">
             <div class="form-group">
@@ -55,7 +55,7 @@
           {{else}}
           <div class="identity-row mb-4">
             <p class="table-hint">{{template "status-badge" dict "Class" "offline" "Label" "unverified"}} Follow the link sent to this address to finish. Until then it cannot be used to sign in.</p>
-            {{template "action-button" dict "Action" "/portal/settings/email/resend" "CSRF" $.CSRFToken "Class" "btn-secondary btn-xs" "Label" "Resend link"}}
+            {{template "action-button" dict "Action" "/portal/settings/email/resend#tab-password" "CSRF" $.CSRFToken "Class" "btn-secondary btn-xs" "Label" "Resend link"}}
           </div>
           {{end}}
         {{else}}
@@ -79,17 +79,38 @@
         {{end}}{{end}}
       </div>
       {{end}}
+      <div class="card mt-3">
+        <div class="card-title">Sessions</div>
+        <p class="table-hint mb-3">Where you are signed in. Changing your password signs out everywhere but here.{{if .MyTeams}} You belong to: {{range $i, $t := .MyTeams}}{{if $i}}, {{end}}<a href="/portal/teams">{{$t}}</a>{{end}}.{{end}}</p>
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead><tr><th>Device</th><th>Address</th><th>Signed in</th><th>Last active</th><th></th></tr></thead>
+            <tbody>
+              {{range .MySessions}}
+              <tr>
+                <td class="text-xs">{{if .UserAgent}}{{.UserAgent}}{{else}}<span class="muted">unknown</span>{{end}}</td>
+                <td class="text-mono text-xs">{{.IP}}</td>
+                <td class="muted">{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
+                <td class="muted">{{.LastSeenAt.Format "2006-01-02 15:04"}}</td>
+                <td class="cell-actions">{{if eq .IDHash $.CurrentSession}}<span class="badge muted-badge">this session</span>{{else}}{{template "action-button" dict "Action" "/portal/settings/sessions/revoke#tab-password" "CSRF" $.CSRFToken "Fields" (dict "session" .IDHash) "Class" "btn-secondary btn-xs" "Label" "Sign out"}}{{end}}</td>
+              </tr>
+              {{end}}
+            </tbody>
+          </table>
+        </div>
+        {{if gt (len .MySessions) 1}}<div class="mt-2">{{template "action-button" dict "Action" "/portal/settings/sessions/revoke#tab-password" "CSRF" $.CSRFToken "Fields" (dict "all_others" "1") "Confirm" "Sign out every other session?" "Class" "btn-secondary" "Label" "Sign out everywhere else"}}</div>{{end}}
+      </div>
     </div>
   </div>
 
-  {{if .IsAdmin}}
+  {{if .Can.settings_manage}}
   {{/* ── General tab ── */}}
   <div id="tab-general" class="tab-panel">
     <div class="settings-narrow">
       <div class="card">
         <div class="card-title">Public address</div>
         <p class="table-hint mb-3">The hostname clients use to reach this router. It appears in the setup instructions and API endpoint URLs, and is written into downloadable client configs. Leave it blank to detect it automatically from the address you use to reach this portal; set it explicitly when the portal is reached over a different hostname than clients use (for example behind a reverse proxy).</p>
-        <form method="POST" action="/portal/settings/host">
+        <form method="POST" action="/portal/settings/host#tab-general">
           <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
           <div class="form-group mb-3">
             <label>Host <span class="muted">(hostname or host:port, no scheme)</span></label>
@@ -102,6 +123,8 @@
     </div>
   </div>
 
+  {{end}}
+  {{if .Can.settings_manage}}
   {{/* ── Sign-in tab ── */}}
   <div id="tab-signin" class="tab-panel">
     <div class="settings-narrow">
@@ -157,17 +180,25 @@
           <div class="form-group mb-3">
             <label>Roles claim <span class="muted">(optional — turns on access control)</span></label>
             <input name="roles_claim" value="{{$p.OIDCRolesClaim}}" placeholder="urn:zitadel:iam:org:project:roles" autocomplete="off">
-            <p class="field-desc">The userinfo claim holding the user's roles: a list, a string, or an object keyed by role. A dotted name reaches into nested objects (<code>realm_access.roles</code>). When set, a sign-in with neither role below is refused.</p>
+            <p class="field-desc">The userinfo claim holding the user's roles: a list, a string, or an object keyed by role. A dotted name reaches into nested objects (<code>realm_access.roles</code>). When set, a sign-in holding none of the mapped roles below is refused.</p>
+          </div>
+          <div class="form-group mb-3">
+            <label>Role mapping <span class="muted">(one <code>provider-role=llmesh-role</code> per line)</span></label>
+            <textarea name="role_map" rows="3" class="code-input" placeholder="llmesh-user=member&#10;llmesh-admin=admin&#10;llmesh-operator=operator" spellcheck="false">{{$p.OIDCRoleMap}}</textarea>
+            <p class="field-desc">Each mapped role grants access. Accounts created by sign-in hold exactly the roles the provider grants on every sign-in.</p>
           </div>
           <div class="form-row mb-3">
-            <div class="form-group">
-              <label>Member role</label>
-              <input name="member_role" value="{{$p.OIDCMemberRole}}" placeholder="llmesh-user" autocomplete="off">
-            </div>
-            <div class="form-group">
-              <label>Admin role</label>
-              <input name="admin_role" value="{{$p.OIDCAdminRole}}" placeholder="llmesh-admin" autocomplete="off">
-            </div>
+            <div class="form-group"><label>Groups claim <span class="muted">(optional)</span></label><input name="groups_claim" value="{{$p.OIDCGroups}}" placeholder="groups" autocomplete="off"></div>
+            <div class="form-group flex-2"><label>Team mapping <span class="muted">(<code>group=team-id</code> per line)</span></label>
+              <textarea name="team_map" rows="2" class="code-input" placeholder="research-staff=research" spellcheck="false">{{$p.OIDCTeamMap}}</textarea></div>
+          </div>
+          <div class="form-group mb-3">
+            <label>Attribute mapping <span class="muted">(<code>claim=attribute</code> per line; policies read <code>subject.attrs.&lt;attribute&gt;</code>)</span></label>
+            <textarea name="attr_map" rows="2" class="code-input" placeholder="department=department" spellcheck="false">{{$p.OIDCAttrMap}}</textarea>
+          </div>
+          <div class="form-group mb-3">
+            <label>Revalidate every <input type="number" min="0" name="revalidate_minutes" value="{{$p.OIDCRevalidate}}" style="width:70px"> minutes <span class="muted">(0 = off)</span></label>
+            <p class="field-desc">Re-checks accounts created by sign-in with the provider using a refresh token (<code>offline_access</code> is requested automatically). An account the provider has deactivated, or that has lost every mapped role, is disabled — ending its sessions and stopping its keys and clients — and comes back when the provider vouches for it at its next sign-in. A provider that cannot be reached disables no one.</p>
           </div>
           <div class="form-group mb-3">
             <label><input type="checkbox" name="provision" {{if $p.OIDCProvision}}checked{{end}}> Create an account on first sign-in</label>
@@ -199,7 +230,7 @@
       <div class="card mt-3">
         <div class="card-title">Email sign-in</div>
         <p class="table-hint mb-3">Configure an SMTP relay to let users sign in with a link emailed to them. Without one, the login page does not offer it and users cannot verify an address. A link is only ever sent to an address a user has verified on their own account.</p>
-        <form method="POST" action="/portal/settings/auth/smtp">
+        <form method="POST" action="/portal/settings/auth/smtp#tab-signin">
           <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
           <div class="form-row mb-3">
             <div class="form-group">
@@ -243,7 +274,7 @@
         </form>
         {{/* Outside the settings form, for the reason given at Clear secret. */}}
         {{if .Auth.SMTPHasPassword}}
-        <form id="clear-smtp-password" method="POST" action="/portal/settings/auth/smtp" class="form-inline"
+        <form id="clear-smtp-password" method="POST" action="/portal/settings/auth/smtp#tab-signin" class="form-inline"
               onsubmit="return confirm('Clear the stored SMTP password?')">
           <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
           <input type="hidden" name="clear_password" value="1">
@@ -254,7 +285,7 @@
         <div class="mt-4">
           <div class="card-title">Send a test message</div>
           <p class="table-hint mb-3">Uses the saved settings above, so save first. Delivery failures are reported here in the relay&rsquo;s own words.</p>
-          <form method="POST" action="/portal/settings/auth/smtp/test">
+          <form method="POST" action="/portal/settings/auth/smtp/test#tab-signin">
             <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
             <div class="form-row">
               <div class="form-group">
@@ -269,56 +300,73 @@
     </div>
   </div>
 
+  {{end}}
+  {{if .Can.user_view}}
   {{/* ── Users tab ── */}}
   <div id="tab-users" class="tab-panel">
     <div class="mt-2">
       <div class="section-header">
         <div class="section-title">Users</div>
-        <form method="POST" action="/portal/settings/users" class="inline-form">
+        {{if .Can.user_manage}}
+        <form method="POST" action="/portal/settings/users#tab-users" class="inline-form">
           <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
           <input name="username" placeholder="username" class="inline-input">
           <input name="password" type="password" placeholder="password" class="inline-input">
           <button type="submit" class="btn">Add user</button>
         </form>
+        {{end}}
       </div>
       <div class="table-scroll">
         <table class="data-table">
-          <thead><tr><th>Username</th><th>Role</th><th>Status</th><th>Isolation</th><th></th></tr></thead>
+          <thead><tr><th>Username</th><th>Roles</th><th>Status</th><th></th></tr></thead>
           <tbody>
-            {{range .Users}}
-            <tr{{if .Disabled}} class="row-dim"{{end}}>
-              <td>{{.Username}}{{if .IsSelf}} <span class="muted">(you)</span>{{end}}</td>
-              <td>{{template "status-badge" dict "Class" .Role "Label" .Role}}{{if .ManagedBy}} <span class="badge muted-badge" title="Created by single sign-on; role follows the identity provider">SSO</span>{{end}}</td>
-              <td>{{if .Disabled}}{{template "status-badge" dict "Class" "disabled" "Label" "disabled"}}{{else}}{{template "status-badge" dict "Class" "active" "Label" "active"}}{{end}}</td>
+            {{range $u := .Users}}
+            <tr{{if $u.Disabled}} class="row-dim"{{end}}>
+              <td>{{$u.Username}}{{if $u.IsSelf}} <span class="muted">(you)</span>{{end}}{{if $u.ManagedBy}} <span class="badge muted-badge" title="Created by single sign-on; role follows the identity provider">SSO</span>{{end}}
+                {{if or $u.Attrs $.Can.user_manage}}
+                <details class="user-attrs"><summary class="muted text-xs">attributes{{if $u.Attrs}} ✓{{end}}</summary>
+                  <form method="POST" action="/portal/settings/users/attrs#tab-users">
+                    <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+                    <input type="hidden" name="username" value="{{$u.Username}}">
+                    <textarea name="attrs" rows="3" class="code-input" placeholder="department=finance" spellcheck="false"{{if not $.Can.user_manage}} readonly{{end}}>{{$u.Attrs}}</textarea>
+                    {{if $.Can.user_manage}}<button type="submit" class="btn-secondary btn-xs">Save</button>{{end}}
+                  </form>
+                </details>
+                {{end}}
+              </td>
               <td>
-                <div class="flex gap-1">
-                  {{if .SendIsolation}}
-                    {{template "action-button" dict "Action" "/portal/settings/users/isolation" "CSRF" $.CSRFToken "Fields" (dict "username" .Username "field" "send" "value" "0") "Class" "btn-danger btn-xs" "Label" "Send: isolated" "Title" "Requests run only on this user's own clients — click to share"}}
-                  {{else}}
-                    {{template "action-button" dict "Action" "/portal/settings/users/isolation" "CSRF" $.CSRFToken "Fields" (dict "username" .Username "field" "send" "value" "1") "Class" "btn-secondary btn-xs" "Label" "Send: shared" "Title" "Requests may use any client — click to isolate to own clients"}}
-                  {{end}}
-                  {{if .ReceiveIsolation}}
-                    {{template "action-button" dict "Action" "/portal/settings/users/isolation" "CSRF" $.CSRFToken "Fields" (dict "username" .Username "field" "receive" "value" "0") "Class" "btn-danger btn-xs" "Label" "Recv: isolated" "Title" "This user's clients serve only their own requests — click to share"}}
-                  {{else}}
-                    {{template "action-button" dict "Action" "/portal/settings/users/isolation" "CSRF" $.CSRFToken "Fields" (dict "username" .Username "field" "receive" "value" "1") "Class" "btn-secondary btn-xs" "Label" "Recv: shared" "Title" "This user's clients may serve anyone — click to isolate to own requests"}}
+                <div class="flex gap-1 items-center role-chips">
+                  {{range $u.Roles}}
+                  <span class="badge {{.}}">{{.}}{{if and $.Can.user_manage (eq $u.ManagedBy "")}}{{template "action-button" dict "Action" "/portal/settings/users/roles/remove#tab-users" "CSRF" $.CSRFToken "Fields" (dict "username" $u.Username "role" .) "Confirm" (printf "Remove the %s role from %s?" . $u.Username) "Class" "chip-remove" "Label" "✕" "Title" "Remove role"}}{{end}}</span>
+                  {{else}}<span class="muted">none</span>{{end}}
+                  {{if and $.Can.user_manage (eq $u.ManagedBy "")}}
+                  <form method="POST" action="/portal/settings/users/roles/add#tab-users" class="inline-flex items-center gap-1">
+                    <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+                    <input type="hidden" name="username" value="{{$u.Username}}">
+                    <select name="role" class="select-xs" aria-label="Add a role to {{$u.Username}}" required>
+                      <option value="" disabled selected>add role…</option>
+                      {{range $.Roles}}{{if not .TeamRole}}{{if or (ne .ID "owner") $.Can.owner_manage}}<option value="{{.ID}}">{{.Name}}</option>{{end}}{{end}}{{end}}
+                    </select>
+                    <button type="submit" class="btn-secondary btn-xs" title="Add role">+</button>
+                  </form>
                   {{end}}
                 </div>
               </td>
+              <td>{{if $u.Disabled}}{{template "status-badge" dict "Class" "disabled" "Label" "disabled"}}{{else}}{{template "status-badge" dict "Class" "active" "Label" "active"}}{{end}}</td>
               <td class="cell-actions">
-                {{if not .IsSelf}}
+                {{if and $.Can.user_manage (not $u.IsSelf)}}
                 <div class="flex gap-1 justify-end">
-                  {{if .Disabled}}
-                    {{template "action-button" dict "Action" "/portal/settings/users/enable" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Class" "btn-success" "Label" "Enable"}}
-                    {{template "action-button" dict "Action" "/portal/settings/users/delete" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Confirm" (printf "Delete %s permanently? Their API keys and client tokens will be revoked. This cannot be undone." .Username) "Class" "btn-danger" "Label" "Delete"}}
+                  {{if $u.Disabled}}
+                    {{template "action-button" dict "Action" "/portal/settings/users/enable#tab-users" "CSRF" $.CSRFToken "Fields" (dict "username" $u.Username) "Class" "btn-success" "Label" "Enable"}}
+                    {{template "action-button" dict "Action" "/portal/settings/users/delete#tab-users" "CSRF" $.CSRFToken "Fields" (dict "username" $u.Username) "Confirm" (printf "Delete %s permanently? Their API keys and client tokens will be revoked. This cannot be undone." $u.Username) "Class" "btn-danger" "Label" "Delete"}}
                   {{else}}
-                    {{if .ManagedBy}}
-                    {{template "action-button" dict "Action" "/portal/settings/users/reset-password" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Confirm" (printf "Set a password for %s? The account stops being managed by single sign-on: its role will no longer follow the identity provider and it can sign in any way. A temporary password will be shown once." .Username) "Class" "btn-secondary" "Label" "Take over"}}
+                    {{if $u.ManagedBy}}
+                    {{template "action-button" dict "Action" "/portal/settings/users/reset-password#tab-users" "CSRF" $.CSRFToken "Fields" (dict "username" $u.Username) "Confirm" (printf "Set a password for %s? The account stops being managed by single sign-on: its role will no longer follow the identity provider and it can sign in any way. A temporary password will be shown once." $u.Username) "Class" "btn-secondary" "Label" "Take over"}}
                     {{else}}
-                    {{if eq .Role "admin"}}{{template "action-button" dict "Action" "/portal/settings/users/demote" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Confirm" (printf "Demote %s from admin to member?" .Username) "Class" "btn-secondary" "Label" "Demote"}}{{end}}
-                    {{if eq .Role "member"}}{{template "action-button" dict "Action" "/portal/settings/users/promote" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Class" "btn-secondary" "Label" "Promote"}}{{end}}
-                    {{template "action-button" dict "Action" "/portal/settings/users/reset-password" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Confirm" (printf "Reset the password for %s? A temporary password will be shown once." .Username) "Class" "btn-secondary" "Label" "Reset password"}}
+                    {{template "action-button" dict "Action" "/portal/settings/users/reset-password#tab-users" "CSRF" $.CSRFToken "Fields" (dict "username" $u.Username) "Confirm" (printf "Reset the password for %s? A temporary password will be shown once, and they will be signed out everywhere." $u.Username) "Class" "btn-secondary" "Label" "Reset password"}}
                     {{end}}
-                    {{template "action-button" dict "Action" "/portal/settings/users/disable" "CSRF" $.CSRFToken "Fields" (dict "username" .Username) "Confirm" (printf "Disable %s? They will not be able to sign in." .Username) "Class" "btn-danger" "Label" "Disable"}}
+                    {{template "action-button" dict "Action" "/portal/settings/users/sign-out#tab-users" "CSRF" $.CSRFToken "Fields" (dict "username" $u.Username) "Confirm" (printf "Sign %s out of every session?" $u.Username) "Class" "btn-secondary" "Label" "Sign out"}}
+                    {{template "action-button" dict "Action" "/portal/settings/users/disable#tab-users" "CSRF" $.CSRFToken "Fields" (dict "username" $u.Username) "Confirm" (printf "Disable %s? They will be signed out, and their keys and clients will stop working." $u.Username) "Class" "btn-danger" "Label" "Disable"}}
                   {{end}}
                 </div>
                 {{end}}
@@ -328,72 +376,245 @@
           </tbody>
         </table>
       </div>
-      <p class="table-hint">Cannot disable or demote yourself. At least one active admin must remain. Isolation limits a user's routing: <em>Send</em> keeps their requests on their own clients; <em>Recv</em> keeps their clients serving only their own requests. The two are independent.</p>
+      <p class="table-hint">Roles are named sets of permissions; see the Roles tab. Only an owner can grant the owner role or change an owner's account. At least one active admin or owner must remain. To keep someone&rsquo;s clients to themselves, set those clients to <em>Private</em> on the Clients page; to keep their requests off other people&rsquo;s hardware, add a deny rule on <code>client.use</code> under Policies.</p>
     </div>
   </div>
 
-  {{/* ── Upstreams tab ── */}}
-  <div id="tab-upstreams" class="tab-panel">
+  {{end}}
+  {{if .Can.user_view}}
+  {{/* ── Roles tab ── */}}
+  <div id="tab-roles" class="tab-panel">
     <div class="mt-2">
-      <div class="section-header">
-        <div class="section-title">Upstream routers</div>
-        <button class="btn-secondary" data-toggle-target="upstream-add-form">+ Add</button>
-      </div>
-      <p class="table-hint mb-3">Connect this router to an orchestrator router as a client. Create a client token on the upstream router, then add it here. Models are advertised automatically.</p>
-
-      {{/* Add form — hidden until "+ Add" is clicked */}}
-      <div id="upstream-add-form" class="hidden mb-4">
-        <div class="card">
-          <div class="card-title">Add upstream router</div>
-          <form method="POST" action="/portal/settings/upstream/add">
-            <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-            <div class="form-group mb-3"><label>Name <span class="muted">(optional label)</span></label><input name="name" placeholder="e.g. orchestrator"></div>
-            <div class="form-group mb-3"><label>URL</label><input name="url" placeholder="https://orchestrator.example.com"></div>
-            <div class="form-group mb-3"><label>Token</label><input name="token" placeholder="ct-..."></div>
-            <div class="form-group mb-4">
-              <label>Job priority <span class="muted">(applied to jobs routed from this upstream)</span></label>
-              <select name="priority"><option value="normal" selected>normal</option><option value="high">high</option><option value="low">low</option></select>
-            </div>
-            <div class="flex gap-2">
-              <button type="submit" class="btn">Add</button>
-              <button type="button" class="btn-secondary" data-toggle-target="upstream-add-form">Cancel</button>
-            </div>
-          </form>
-        </div>
-      </div>
-
-      {{if .Upstreams}}
+      <div class="section-header"><div class="section-title">Roles</div></div>
+      <p class="table-hint mb-3">A role is a named set of permissions. Permissions ending <code>.own</code> reach what a user owns, <code>.team</code> what their teams own, and <code>.any</code> everything. Built-in roles cannot be changed; create a custom role to grant a different set. Which models someone may use is decided by model access rules, not roles.</p>
       <div class="table-scroll">
         <table class="data-table">
-          <thead><tr><th>Name</th><th>URL</th><th>Priority</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>Role</th><th>Description</th><th>Permissions</th><th></th></tr></thead>
           <tbody>
-            {{range .Upstreams}}
+            {{range .Roles}}
             <tr>
-              <td>{{if .Name}}{{.Name}}{{else}}<span class="muted">—</span>{{end}}</td>
-              <td class="muted text-mono">{{.URL}}</td>
-              <td>{{if eq .Priority "high"}}{{template "status-badge" dict "Class" "high" "Label" "high"}}{{else if eq .Priority "low"}}{{template "status-badge" dict "Class" "low" "Label" "low"}}{{else}}{{template "status-badge" dict "Class" "normal" "Label" "normal"}}{{end}}</td>
-              <td>{{if .Connected}}{{template "status-badge" dict "Class" "connected" "Label" "● connected"}}{{else}}{{template "status-badge" dict "Class" "offline" "Label" "○ connecting…"}}{{end}}</td>
-              <td class="cell-actions">
-                {{template "action-button" dict "Action" "/portal/settings/upstream/remove" "CSRF" $.CSRFToken "Fields" (dict "url" .URL) "Confirm" (printf "Remove upstream %s?" .URL) "Class" "btn-danger btn-xs icon-btn" "Label" "✕" "Title" "Remove"}}
-              </td>
+              <td><strong>{{.Name}}</strong><br><span class="muted text-mono text-xs">{{.ID}}</span>{{if .Builtin}} <span class="badge muted-badge">built-in</span>{{end}}{{if .TeamRole}} <span class="badge muted-badge">team</span>{{end}}</td>
+              <td class="muted">{{.Description}}</td>
+              <td class="text-xs text-mono">{{range $i, $p := .Permissions}}{{if $i}}, {{end}}{{$p}}{{end}}</td>
+              <td class="cell-actions">{{if and $.Can.role_manage (not .Builtin)}}{{template "action-button" dict "Action" "/portal/settings/roles/delete#tab-roles" "CSRF" $.CSRFToken "Fields" (dict "id" .ID) "Confirm" (printf "Delete the %s role? Everyone holding it loses its permissions." .ID) "Class" "btn-danger btn-xs icon-btn" "Label" "✕" "Title" "Delete"}}{{end}}</td>
             </tr>
             {{end}}
           </tbody>
         </table>
       </div>
-      {{else}}
-      <p class="table-hint">No upstream routers configured.</p>
+      {{if .Can.role_manage}}
+      <div class="card mt-3">
+        <div class="card-title">Create or replace a custom role</div>
+        <form method="POST" action="/portal/settings/roles#tab-roles">
+          <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+          <div class="form-row mb-3">
+            <div class="form-group"><label>ID</label><input name="id" placeholder="billing" autocomplete="off"></div>
+            <div class="form-group flex-2"><label>Name</label><input name="name" placeholder="Billing" autocomplete="off"></div>
+          </div>
+          <div class="form-group mb-3"><label>Description</label><input name="description" autocomplete="off"></div>
+          <div class="perm-grid mb-3">
+            {{range .PermissionGroups}}
+            <fieldset class="perm-group">
+              <legend>{{.Resource}}</legend>
+              {{range .Permissions}}<label class="perm-item"><input type="checkbox" name="perm" value="{{.}}"> <code>{{.}}</code></label>{{end}}
+            </fieldset>
+            {{end}}
+          </div>
+          <p class="field-desc mb-3">You can only grant permissions you hold yourself. Saving an existing custom role's ID replaces it.</p>
+          <button type="submit" class="btn">Save role</button>
+        </form>
+      </div>
       {{end}}
     </div>
   </div>
 
+  {{end}}
+  {{if .Can.policy_view}}
+  {{/* ── Model access tab ── */}}
+  <div id="tab-models" class="tab-panel">
+    <div class="mt-2">
+      <div class="section-header"><div class="section-title">Model access</div></div>
+      <p class="table-hint mb-3">Who may use which models. A model is usable when some <strong>allow</strong> rule covers it and no <strong>deny</strong> rule does; deny always wins. Patterns match concrete model names (<code>*</code> matches anything); an alias is usable when one of its targets is, and only ever routes to a target the caller may use. Removing every allow rule makes all models unavailable to everyone.</p>
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>Rule</th><th>Effect</th><th>Models</th><th>Who</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            {{range .ModelRules}}
+            <tr{{if not .Enabled}} class="row-dim"{{end}}>
+              <td>{{.Name}}<br><span class="muted text-mono text-xs">{{.ID}}</span>{{if .Advanced}} <span class="badge muted-badge" title="Has conditions or covers other actions">advanced</span>{{end}}</td>
+              <td>{{if eq .Effect "deny"}}<span class="badge badge-warning">deny</span>{{else}}<span class="badge active">allow</span>{{end}}</td>
+              <td class="text-mono text-xs">{{range $i, $m := .Models}}{{if $i}}, {{end}}{{$m}}{{else}}any{{end}}</td>
+              <td>{{.Who}}</td>
+              <td>{{if .Enabled}}{{template "status-badge" dict "Class" "active" "Label" "on"}}{{else}}{{template "status-badge" dict "Class" "disabled" "Label" "off"}}{{end}}</td>
+              <td class="cell-actions">
+                {{if $.Can.policy_manage}}
+                <div class="flex gap-1 justify-end">
+                  {{template "action-button" dict "Action" "/portal/settings/model-access/toggle#tab-models" "CSRF" $.CSRFToken "Fields" (dict "id" .ID) "Class" "btn-secondary btn-xs" "Label" (printf "%s" (or (and .Enabled "Turn off") "Turn on"))}}
+                  {{template "action-button" dict "Action" "/portal/settings/model-access/delete#tab-models" "CSRF" $.CSRFToken "Fields" (dict "id" .ID) "Confirm" "Delete this rule?" "Class" "btn-danger btn-xs icon-btn" "Label" "✕" "Title" "Delete"}}
+                </div>
+                {{end}}
+              </td>
+            </tr>
+            {{else}}
+            <tr><td colspan="6" class="muted">No rules: nobody can use any model.</td></tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+      {{if .Can.policy_manage}}
+      <div class="card mt-3">
+        <div class="card-title">Add a rule</div>
+        <form method="POST" action="/portal/settings/model-access#tab-models">
+          <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+          <div class="form-row mb-3">
+            <div class="form-group"><label>Effect</label><select name="effect"><option value="allow">allow</option><option value="deny">deny</option></select></div>
+            <div class="form-group flex-2"><label>Models</label><input name="models" placeholder="gpt-4o, claude-*" autocomplete="off"></div>
+            <div class="form-group flex-2"><label>Name <span class="muted">(optional)</span></label><input name="name" autocomplete="off"></div>
+          </div>
+          <div class="form-row mb-3">
+            <div class="form-group"><label>Users</label><input name="users" placeholder="alice, bob" autocomplete="off"></div>
+            <div class="form-group"><label>Teams</label><input name="teams" placeholder="finance" autocomplete="off"></div>
+            <div class="form-group"><label>Roles</label><input name="roles" placeholder="admin" autocomplete="off"></div>
+          </div>
+          <p class="field-desc mb-3">Leave users, teams, and roles empty to cover everyone. Filling more than one narrows the rule to callers matching all of them.</p>
+          <button type="submit" class="btn">Add rule</button>
+        </form>
+      </div>
+      {{end}}
+    </div>
+  </div>
+
+  {{end}}
+  {{if .Can.policy_view}}
+  {{/* ── Policies tab ── */}}
+  <div id="tab-policies" class="tab-panel">
+    <div class="mt-2">
+      <div class="section-header"><div class="section-title">Policies</div></div>
+      <p class="table-hint mb-3">Every access rule, including model access rules and the isolation rules converted from the old per-user switches. A rule applies to a subject, actions, and a resource, optionally with a condition over attributes. <strong>Deny</strong> always wins over allow; with no applicable allow the answer is no. A condition that reads an attribute the request lacks never grants access and never lets anyone past a deny. Attributes: <code>subject.id</code>, <code>subject.roles</code>, <code>subject.teams</code>, <code>subject.attrs.&lt;name&gt;</code>; <code>resource.id</code>, <code>resource.owner</code>, <code>resource.team</code>, and for models <code>resource.context_size</code>, <code>resource.modalities</code>, <code>resource.served_by_kind</code> (<code>llama.cpp</code>, <code>shim</code>, <code>router</code>, <code>mixed</code>) — as the worker reports it, so a rule on it trusts whoever runs the worker, <code>resource.pricing_basis</code>; <code>context.time</code>, <code>context.source_ip</code>, <code>context.endpoint</code>, <code>context.priority</code>, <code>context.credential_kind</code>. Operators: <code>eq ne in not_in has glob cidr lt le gt ge exists time_between</code>, combined with <code>all</code>, <code>any</code>, <code>not</code>.</p>
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>Policy</th><th>Effect</th><th>Actions</th><th>Applies to</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            {{range .Policies}}
+            <tr{{if not .Enabled}} class="row-dim"{{end}}>
+              <td>{{.Name}}<br><span class="muted text-mono text-xs">{{.ID}}</span></td>
+              <td>{{if eq .Effect "deny"}}<span class="badge badge-warning">deny</span>{{else}}<span class="badge active">allow</span>{{end}}</td>
+              <td class="text-mono text-xs">{{.Actions}}</td>
+              <td class="text-xs">{{.Summary}}
+                <details><summary class="muted">JSON</summary>
+                  <form method="POST" action="/portal/settings/policies#tab-policies">
+                    <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+                    <textarea name="policy" rows="12" class="code-input" spellcheck="false"{{if not $.Can.policy_manage}} readonly{{end}}>{{.JSON}}</textarea>
+                    {{if $.Can.policy_manage}}<button type="submit" class="btn-secondary btn-xs mt-1">Save</button>{{end}}
+                  </form>
+                </details>
+              </td>
+              <td>{{if .Enabled}}{{template "status-badge" dict "Class" "active" "Label" "on"}}{{else}}{{template "status-badge" dict "Class" "disabled" "Label" "off"}}{{end}}</td>
+              <td class="cell-actions">
+                {{if $.Can.policy_manage}}
+                <div class="flex gap-1 justify-end">
+                  {{template "action-button" dict "Action" "/portal/settings/policies/toggle#tab-policies" "CSRF" $.CSRFToken "Fields" (dict "id" .ID) "Class" "btn-secondary btn-xs" "Label" (or (and .Enabled "Turn off") "Turn on")}}
+                  {{template "action-button" dict "Action" "/portal/settings/policies/delete#tab-policies" "CSRF" $.CSRFToken "Fields" (dict "id" .ID) "Confirm" "Delete this policy?" "Class" "btn-danger btn-xs icon-btn" "Label" "✕" "Title" "Delete"}}
+                </div>
+                {{end}}
+              </td>
+            </tr>
+            {{else}}
+            <tr><td colspan="6" class="muted">No policies.</td></tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+
+      {{if .Can.policy_manage}}
+      <div class="card mt-3">
+        <div class="card-title">New policy</div>
+        <form method="POST" action="/portal/settings/policies#tab-policies">
+          <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+          <textarea name="policy" rows="16" class="code-input" spellcheck="false">{{.PolicyTemplate}}</textarea>
+          <p class="field-desc mb-2">Saving an existing policy's id replaces it. A policy is checked against all the others before it is stored; one that would not compile is refused. Try it in the simulator first.</p>
+          <button type="submit" class="btn">Save policy</button>
+        </form>
+      </div>
+      {{end}}
+
+      {{if .Can.policy_simulate}}
+      <div class="card mt-3" id="simulator">
+        <div class="card-title">Simulator</div>
+        <p class="table-hint mb-3">Ask whether someone may do something, and why. Paste a draft policy to see what it would change, for this question or for every request in the last day.</p>
+        <form method="POST" action="/portal/settings/simulate#tab-policies">
+          <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+          <div class="form-row mb-2">
+            <div class="form-group"><label>Who</label>
+              <select name="subject_kind">
+                <option value="user"{{if eq .SimForm.SubjectKind "user"}} selected{{end}}>user</option>
+                <option value="team"{{if eq .SimForm.SubjectKind "team"}} selected{{end}}>team</option>
+                <option value="key"{{if eq .SimForm.SubjectKind "key"}} selected{{end}}>API key</option>
+              </select></div>
+            <div class="form-group flex-2"><label>Name <span class="muted">(username, team id, or full key)</span></label><input name="subject" value="{{.SimForm.Subject}}" autocomplete="off"></div>
+            <div class="form-group flex-2"><label>Action</label>
+              <select name="action">{{range .Actions}}<option value="{{.}}"{{if eq . $.SimForm.Action}} selected{{end}}>{{.}}</option>{{end}}</select></div>
+          </div>
+          <div class="form-row mb-2">
+            <div class="form-group"><label>Resource type</label><input name="res_type" value="{{or .SimForm.ResType "model"}}" autocomplete="off"></div>
+            <div class="form-group flex-2"><label>Resource id <span class="muted">(model name, token hash…)</span></label><input name="res_id" value="{{.SimForm.ResID}}" autocomplete="off"></div>
+            <div class="form-group"><label>Owner <span class="muted">(optional)</span></label><input name="res_owner" value="{{.SimForm.ResOwner}}" autocomplete="off"></div>
+          </div>
+          <div class="form-row mb-2">
+            <div class="form-group"><label>Time <span class="muted">(default now)</span></label><input type="datetime-local" name="time" value="{{.SimForm.Time}}"></div>
+            <div class="form-group"><label>Source IP</label><input name="source_ip" value="{{.SimForm.SourceIP}}" autocomplete="off"></div>
+            <div class="form-group"><label>Endpoint</label><input name="endpoint" value="{{.SimForm.Endpoint}}" placeholder="/v1/chat/completions" autocomplete="off"></div>
+          </div>
+          <div class="form-group mb-2"><label>Draft policy <span class="muted">(optional JSON)</span></label><textarea name="draft" rows="6" class="code-input" spellcheck="false">{{.SimForm.Draft}}</textarea></div>
+          <div class="flex gap-2">
+            <button type="submit" class="btn">Check</button>
+            <button type="submit" name="replay" value="1" class="btn-secondary">Replay last 24h with draft</button>
+          </div>
+        </form>
+        {{with .Sim}}
+        <div class="sim-result mt-3" role="status">
+          {{if .Error}}<p class="form-error">{{.Error}}</p>
+          {{else if .Replay}}
+            <p><strong>{{.Replay.Requests}}</strong> requests in the last {{.Replay.Window}}: the draft would deny <strong>{{.Replay.NewlyDenied}}</strong> now allowed and allow <strong>{{.Replay.NewlyAllowed}}</strong> now denied.</p>
+            {{if .Replay.Changes}}
+            <table class="data-table mt-2"><thead><tr><th>Owner</th><th>Model</th><th>Requests</th><th>Now</th><th>With draft</th><th>Decided by</th></tr></thead><tbody>
+              {{range .Replay.Changes}}<tr><td>{{.Owner}}</td><td class="text-mono text-xs">{{.Model}}</td><td>{{.Requests}}</td><td>{{if .Before}}allowed{{else}}denied{{end}}</td><td>{{if .After}}allowed{{else}}denied{{end}}</td><td class="text-mono text-xs">{{.By}}</td></tr>{{end}}
+            </tbody></table>
+            {{end}}
+          {{else}}
+            <p>Now: {{if .Current.Allowed}}<span class="badge active">allowed</span>{{else}}<span class="badge badge-warning">denied</span>{{end}} decided by <code>{{.Current.By}}</code>{{if .Current.Reason}} — {{.Current.Reason}}{{end}}</p>
+            {{with .WithDraft}}<p>With draft: {{if .Allowed}}<span class="badge active">allowed</span>{{else}}<span class="badge badge-warning">denied</span>{{end}} decided by <code>{{.By}}</code>{{if .Reason}} — {{.Reason}}{{end}}</p>{{end}}
+          {{end}}
+        </div>
+        {{end}}
+      </div>
+      {{end}}
+
+      <div class="card mt-3">
+        <div class="card-title">Recent denials</div>
+        <p class="table-hint mb-2">Requests refused a model since the router started, newest first. The router log keeps the full record.</p>
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead><tr><th>When</th><th>Who</th><th>Models</th><th>Why</th></tr></thead>
+            <tbody>
+              {{range .Denials}}<tr><td class="muted">{{.At.Format "2006-01-02 15:04:05"}}</td><td class="text-mono text-xs">{{.Subject}}</td><td class="text-mono text-xs">{{.Resource}}</td><td class="text-xs">{{.Reason}}</td></tr>
+              {{else}}<tr><td colspan="4" class="muted">None.</td></tr>{{end}}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {{end}}
+  {{if .Can.settings_manage}}
   {{/* ── Optimization tab ── */}}
   <div id="tab-optimization" class="tab-panel">
     <div class="settings-narrow">
       <div class="card">
         <div class="card-title">Request optimization</div>
         <p class="table-hint mb-3">Transformations applied to inbound requests. All default off; each is independent. None change what the model sees beyond the stated effect.</p>
-        <form method="POST" action="/portal/settings/optimization">
+        <form method="POST" action="/portal/settings/optimization#tab-optimization">
           <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
 
           <div class="form-group mb-3">
@@ -427,6 +648,8 @@
     </div>
   </div>
 
+  {{end}}
+  {{if .Can.pricing_manage}}
   {{/* ── Pricing tab ── */}}
   <div id="tab-pricing" class="tab-panel">
     <div class="card">
@@ -439,7 +662,7 @@
         locally should stay <mono>estimated</mono> so the two are never totalled together.
       </p>
 
-      <form method="POST" action="/portal/settings/currency" class="inline-form mb-4">
+      <form method="POST" action="/portal/settings/currency#tab-pricing" class="inline-form mb-4">
         <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
         <label for="currency">Currency</label>
         <input id="currency" name="currency" value="{{.Currency}}" maxlength="8" style="width:90px;"
@@ -468,7 +691,7 @@
                 {{if not .Configured}}<span class="badge muted-badge" title="No rate configured — this model's requests contribute nothing to cost totals">unpriced</span>{{end}}
               </td>
               <td colspan="4">
-                <form method="POST" action="/portal/settings/pricing" class="inline-form">
+                <form method="POST" action="/portal/settings/pricing#tab-pricing" class="inline-form">
                   <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
                   <input type="hidden" name="model" value="{{.Model}}">
                   <input name="input_rate" value="{{.InputRate}}" placeholder="0" inputmode="decimal"
@@ -482,7 +705,7 @@
                   <button type="submit" class="btn-secondary btn-xs">Save</button>
                 </form>
                 {{if .Configured}}
-                {{template "action-button" dict "Action" "/portal/settings/pricing/delete" "CSRF" $.CSRFToken "Fields" (dict "model" .Model) "Confirm" (printf "Clear pricing for %s? Its usage will stop contributing to cost totals." .Model) "Class" "btn-danger btn-xs" "Label" "Clear" "Title" "Return this model to unpriced"}}
+                {{template "action-button" dict "Action" "/portal/settings/pricing/delete#tab-pricing" "CSRF" $.CSRFToken "Fields" (dict "model" .Model) "Confirm" (printf "Clear pricing for %s? Its usage will stop contributing to cost totals." .Model) "Class" "btn-danger btn-xs" "Label" "Clear" "Title" "Return this model to unpriced"}}
                 {{end}}
               </td>
             </tr>
@@ -495,6 +718,8 @@
     </div>
   </div>
 
+  {{end}}
+  {{if .Can.settings_view}}
   {{/* ── Logs tab ── */}}
   <div id="tab-logs" class="tab-panel">
     <div class="logs-toolbar">

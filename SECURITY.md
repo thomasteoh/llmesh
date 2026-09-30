@@ -35,7 +35,8 @@ llmesh is self-hosted and its security depends on how it is deployed:
   creation and travel in request headers, so protect them in transit and at
   the caller.
 - **Guard the sign-in secrets in the state database.** OAuth client secrets
-  (GitHub, Google, OpenID Connect) and an SMTP password, if you configure those sign-in
+  (GitHub, Google, OpenID Connect), OIDC refresh tokens for revalidated
+  accounts, and an SMTP password, if you configure those sign-in
   methods, are stored in the settings table in plaintext — the router has no
   key to encrypt them under that it would not also store beside them. None is
   ever rendered back into the portal or written to the log, but anyone who can
@@ -47,13 +48,22 @@ llmesh is self-hosted and its security depends on how it is deployed:
   readable by anything on the path. The same applies to an OAuth callback,
   which carries an authorization code, and Google will not accept a plain-HTTP
   redirect URI except on localhost.
-- **Provider roles take effect at sign-in, not instantly.** With OpenID
-  Connect access control on, removing a user's role at the provider stops
-  their next sign-in, but not a portal session already open or their API
-  keys. Disable the user here as well when access must end now.
+- **Provider roles take effect at sign-in, or at the next revalidation.**
+  With OpenID Connect access control on, removing a user's role at the
+  provider stops their next sign-in. Turn on revalidation to have llmesh
+  also disable the account — ending sessions and stopping keys — within
+  the interval; otherwise disable the user here when access must end now.
+- **Access rules that match on source address trust the socket peer** unless
+  `trust_proxy_headers` is on. Turn it on only behind a proxy that sets
+  `X-Forwarded-For` itself; otherwise any caller could claim any address.
 - **Register the redirect URI exactly.** Each provider's callback URL is shown
   on the settings page. Registering a broader pattern than the one shown, where
   a provider permits it, widens where an authorization code can be delivered.
+- **Portal sessions are stored hashed** in the state database and survive a
+  restart. Changing a password signs out the account's other sessions;
+  resetting one or disabling the account signs out all of them.
+- **Give API keys an expiry** where you can. An expired key is refused, and
+  each key shows when it was last used.
 - **Disable a user to cut off their access.** Disabling ends their portal
   session, refuses their API keys and client tokens, and disconnects any
   client already connected with one. Re-enabling restores them unchanged;

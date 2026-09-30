@@ -31,8 +31,8 @@ func TestAddUser_LookupUser(t *testing.T) {
 		t.Fatal("expected NeedsSetup=false after AddUser")
 	}
 	u, ok := s.LookupUser("alice")
-	if !ok || u.Role != "admin" {
-		t.Fatalf("got %+v ok=%v", u, ok)
+	if !ok || !s.isPrivileged("alice") {
+		t.Fatalf("got %+v ok=%v privileged=%v", u, ok, s.isPrivileged("alice"))
 	}
 	// persists across reload
 	s2, _ := LoadState(f)
@@ -49,12 +49,12 @@ func TestLookupUser_NotFound(t *testing.T) {
 	}
 }
 
-func TestActiveAdminCount(t *testing.T) {
+func TestOtherActivePrivileged(t *testing.T) {
 	s, _ := LoadState(filepath.Join(t.TempDir(), "state.json"))
 	s.AddUser(User{Username: "a", Role: "admin", Disabled: false})
 	s.AddUser(User{Username: "b", Role: "admin", Disabled: true})
 	s.AddUser(User{Username: "c", Role: "member", Disabled: false})
-	if n := s.ActiveAdminCount(); n != 1 {
+	if n := s.otherActivePrivileged("c"); n != 1 {
 		t.Fatalf("want 1, got %d", n)
 	}
 }
@@ -469,58 +469,16 @@ func TestMigrateSecretColumns(t *testing.T) {
 	if !ok {
 		t.Fatal("migrated token not found by plaintext lookup")
 	}
-	if tok.Name != "mac" || tok.Owner != "bob" || tok.OwnerSlots["m1"] != 2 {
+	if tok.Name != "mac" || tok.Owner != "bob" {
 		t.Fatalf("migrated token fields wrong: %+v", tok)
+	}
+	// Its owner slots became reserved slots in the sharing setting.
+	if sh := s.ClientSharing(tok.TokenHash); sh == nil || sh.ReservedSlots["m1"] != 2 {
+		t.Fatalf("migrated owner slots not in sharing: %+v", sh)
 	}
 
 	// The plaintext columns must be gone.
 	if tableHasColumn(s.db, "api_keys", "key") || tableHasColumn(s.db, "client_tokens", "token") {
 		t.Fatal("plaintext columns still present after migration")
-	}
-}
-
-func TestUserIsolation_SetGetAndMap(t *testing.T) {
-	s, _ := LoadState(filepath.Join(t.TempDir(), "state.json"))
-	s.AddUser(User{Username: "alice", Role: "member"})
-	s.AddUser(User{Username: "bob", Role: "member"})
-
-	// Default: no isolation, empty map.
-	if u, _ := s.LookupUser("alice"); u.SendIsolation || u.ReceiveIsolation {
-		t.Fatal("expected no isolation by default")
-	}
-	if m := s.IsolationMap(); len(m) != 0 {
-		t.Fatalf("expected empty isolation map, got %d", len(m))
-	}
-
-	// Set send-only isolation for alice; it must persist and appear in the map.
-	if err := s.SetUserIsolation("alice", true, false); err != nil {
-		t.Fatal(err)
-	}
-	u, _ := s.LookupUser("alice")
-	if !u.SendIsolation || u.ReceiveIsolation {
-		t.Fatalf("unexpected flags after set: %+v", u)
-	}
-	m := s.IsolationMap()
-	if !m["alice"].SendIsolated || m["alice"].ReceiveIsolated {
-		t.Fatalf("map entry wrong: %+v", m["alice"])
-	}
-	if _, ok := m["bob"]; ok {
-		t.Fatal("non-isolated user must not appear in the map")
-	}
-
-	// Toggling receive on for alice must not clobber send (cache invalidated).
-	if err := s.SetUserIsolation("alice", true, true); err != nil {
-		t.Fatal(err)
-	}
-	if m := s.IsolationMap(); !m["alice"].SendIsolated || !m["alice"].ReceiveIsolated {
-		t.Fatalf("expected both flags set, got %+v", m["alice"])
-	}
-
-	// Clearing reverts to an empty map.
-	if err := s.SetUserIsolation("alice", false, false); err != nil {
-		t.Fatal(err)
-	}
-	if m := s.IsolationMap(); len(m) != 0 {
-		t.Fatalf("expected empty map after clear, got %d", len(m))
 	}
 }

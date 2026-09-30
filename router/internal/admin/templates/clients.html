@@ -62,6 +62,46 @@
 {{end}}
 {{end}}
 
+{{define "sharing-subrow"}}
+{{/* Who else this machine serves. Expects a ClientTokenRow as '.'. The three
+     presets are the whole of the simple interface; Advanced holds the rest. */}}
+{{$row := .}}
+<tr>
+  <td colspan="4" style="padding:0;">
+    <div class="client-connections sharing-block">
+      <span class="perf-title">Sharing</span>
+      {{if .CanShare}}
+      <div class="seg" role="group" aria-label="Sharing for {{.Name}}">
+        {{range $m := (list "private" "idle" "shared")}}
+        <form method="POST" action="/portal/clients/sharing" class="form-inline">
+          <input type="hidden" name="_csrf" value="{{$row.CSRFToken}}">
+          <input type="hidden" name="token_hash" value="{{$row.TokenHash}}">
+          <input type="hidden" name="mode" value="{{$m}}">
+          <button type="submit" class="seg-btn{{if eq $row.SharingMode $m}} active{{end}}" aria-pressed="{{eq $row.SharingMode $m}}"
+            title="{{if eq $m "private"}}Only you{{if hasPrefix $row.Owner "team:"}} and your team{{end}}{{else if eq $m "idle"}}Others may use it only while you are not{{else}}Others may use it any time; your work goes first{{end}}">{{if eq $m "private"}}Private{{else if eq $m "idle"}}Share when idle{{else}}Shared{{end}}</button>
+        </form>
+        {{end}}
+      </div>
+      <details class="sharing-advanced">
+        <summary class="muted">Advanced</summary>
+        <form method="POST" action="/portal/clients/sharing" class="form-row mt-2">
+          <input type="hidden" name="_csrf" value="{{$row.CSRFToken}}">
+          <input type="hidden" name="token_hash" value="{{$row.TokenHash}}">
+          <input type="hidden" name="mode" value="{{$row.SharingMode}}">
+          <div class="form-group flex-2"><label>Share only with <span class="muted">(users, <code>team:&lt;id&gt;</code>, <code>role:&lt;id&gt;</code>; empty = anyone permitted)</span></label><input name="with" value="{{.SharingWith}}" autocomplete="off"></div>
+          <div class="form-group"><label>Max jobs per requester <span class="muted">(0 = no cap)</span></label><input type="number" min="0" name="per_requester_max" value="{{.PerRequesterMax}}"></div>
+          <div class="form-group"><label>Reserved slots, every model <span class="muted">(per-model above)</span></label><input type="number" min="0" name="reserved_default" value="{{.ReservedDefault}}"></div>
+          <button type="submit" class="btn-secondary">Save</button>
+        </form>
+      </details>
+      {{else}}
+      <span class="muted">{{if eq .SharingMode "private"}}Private{{else if eq .SharingMode "idle"}}Shared when idle{{else}}Shared{{end}}</span>
+      {{end}}
+    </div>
+  </td>
+</tr>
+{{end}}
+
 {{define "perf-subrow"}}
 {{/* Recent inference performance sub-row for a client token.
      Expects a ClientTokenRow as '.'; renders nothing when .Perf is nil, which
@@ -201,9 +241,9 @@
         <label>Name</label>
         <div class="prefix-wrap"><span class="prefix">{{.Username}}/</span><input name="name" placeholder="macbook-pro"></div>
       </div>
-      {{if .IsAdmin}}
+      {{if .Users}}
       <div class="form-group">
-        <label>For user <span class="muted">(optional)</span></label>
+        <label>Owner <span class="muted">(optional: a user or team:&lt;id&gt;)</span></label>
         <input name="for_user" list="client-user-list" placeholder="{{.Username}}">
         <datalist id="client-user-list">{{range .Users}}<option value="{{.}}">{{end}}</datalist>
       </div>
@@ -214,7 +254,7 @@
   </form>
 </div>
 
-{{if .IsAdmin}}
+{{if .Can.fleet_view}}
 {{/* ─── Admin grouped view with filter + pagination ─── */}}
 <div class="filter-bar">
   <input type="text" id="client-filter" placeholder="Filter users and clients&hellip;" autocomplete="off" spellcheck="false" aria-label="Filter users and clients">
@@ -249,6 +289,7 @@
           {{template "conn-subrow" .}}
           {{template "perf-subrow" .}}
           {{template "models-subrow" .}}
+          {{template "sharing-subrow" .}}
           {{end}}
         </tbody>
       </table>
@@ -288,6 +329,7 @@
       {{template "conn-subrow" .}}
       {{template "perf-subrow" .}}
       {{template "models-subrow" .}}
+      {{template "sharing-subrow" .}}
       {{else}}
       <tr class="empty-row"><td colspan="4">No client tokens yet.</td></tr>
       {{end}}

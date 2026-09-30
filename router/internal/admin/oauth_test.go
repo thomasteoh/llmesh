@@ -76,6 +76,11 @@ type fakeProvider struct {
 	// token endpoint, and the Authorization header it posted it with.
 	lastTokenForm url.Values
 	lastTokenAuth string
+	// refreshErr and refreshStatus shape the answer to a refresh_token
+	// grant: an OAuth error (sent as 400), or a bare HTTP status.
+	refreshErr    string
+	refreshStatus int
+	refreshes     int
 }
 
 func startFakeProvider(t *testing.T, account providerAccount) *fakeProvider {
@@ -87,11 +92,24 @@ func startFakeProvider(t *testing.T, account providerAccount) *fakeProvider {
 		f.lastTokenForm = r.PostForm
 		f.lastTokenAuth = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
+		if r.PostForm.Get("grant_type") == "refresh_token" {
+			f.refreshes++
+			switch {
+			case f.refreshErr != "":
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]string{"error": f.refreshErr})
+			case f.refreshStatus != 0:
+				w.WriteHeader(f.refreshStatus)
+			default:
+				json.NewEncoder(w).Encode(map[string]string{"access_token": "at_test", "refresh_token": "rt-rotated", "token_type": "bearer"})
+			}
+			return
+		}
 		if f.tokenErr != "" {
 			json.NewEncoder(w).Encode(map[string]string{"error": f.tokenErr})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]string{"access_token": "at_test", "token_type": "bearer"})
+		json.NewEncoder(w).Encode(map[string]string{"access_token": "at_test", "refresh_token": "rt-1", "token_type": "bearer"})
 	})
 	mux.HandleFunc("/userinfo", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer at_test" {

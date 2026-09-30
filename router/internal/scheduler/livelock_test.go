@@ -48,7 +48,6 @@ func (d *countingDispatcher) IncrInFlight(string)                          {}
 func (d *countingDispatcher) DecrInFlight(string)                          {}
 func (d *countingDispatcher) TrackJob(string, types.InferenceRequest) bool { return true }
 func (d *countingDispatcher) UntrackJob(string, string) bool               { return true }
-func (d *countingDispatcher) NonOwnerInFlight(string, string, string) int  { return 0 }
 
 // A queue that offers a request it cannot remove must not spin the drain loop.
 // The loop runs on the single scheduler goroutine, so spinning means no request

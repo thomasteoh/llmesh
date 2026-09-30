@@ -33,9 +33,9 @@
         <label>Label</label>
         <div class="prefix-wrap"><span class="prefix">{{.Username}}/</span><input name="label" placeholder="prod-agents"></div>
       </div>
-      {{if .IsAdmin}}
+      {{if .Users}}
       <div class="form-group" style="flex:1;">
-        <label>For user <span class="muted">(optional)</span></label>
+        <label>Owner <span class="muted">(optional: a user or team:&lt;id&gt;)</span></label>
         <input name="for_user" list="user-list" placeholder="{{.Username}}">
         <datalist id="user-list">{{range .Users}}<option value="{{.}}">{{end}}</datalist>
       </div>
@@ -44,21 +44,41 @@
         <label>Priority</label>
         <select name="priority"><option value="normal">normal</option><option value="high">high</option><option value="low">low</option></select>
       </div>
+      <div class="form-group" style="flex:1;">
+        <label>Expires</label>
+        <select name="expires_days"><option value="0">never</option><option value="7">in 7 days</option><option value="30">in 30 days</option><option value="90">in 90 days</option><option value="365">in 1 year</option></select>
+      </div>
       <button type="submit" class="btn">Generate key</button>
     </div>
+    <details class="mt-2">
+      <summary class="muted">Restrict this key <span class="muted">(optional)</span></summary>
+      <div class="form-row mt-2">
+        <div class="form-group flex-2">
+          <label>Models <span class="muted">(comma-separated patterns, e.g. <code>qwen3-*</code>)</span></label>
+          <input name="scope_models" placeholder="any model you may use" autocomplete="off">
+        </div>
+        <div class="form-group flex-2">
+          <label>Endpoints</label>
+          <label class="muted"><input type="checkbox" name="scope_endpoints" value="/v1/chat/completions"> chat completions</label>
+          <label class="muted"><input type="checkbox" name="scope_endpoints" value="/v1/messages"> messages</label>
+          <label class="muted"><input type="checkbox" name="scope_endpoints" value="/v1/responses"> responses</label>
+        </div>
+      </div>
+      <p class="field-desc">A restriction only narrows what you can already do: a model you may not use stays unavailable whatever the key lists. Leave both empty for no restriction.</p>
+    </details>
     {{if .FormError}}<p class="form-error">{{.FormError}}</p>{{end}}
   </form>
 </div>
 <div class="table-scroll">
   <table class="data-table">
-    <thead><tr><th>Label</th><th>Key</th><th>Priority</th><th>Created</th><th></th></tr></thead>
+    <thead><tr><th>Label</th><th>Key</th><th>Priority</th><th>Restricted to</th><th>Created</th><th>Expires</th><th>Last used</th><th></th></tr></thead>
     <tbody>
       {{range .Keys}}
       <tr>
         <td data-label="Label"><span class="muted">{{.Owner}}/</span>{{.Label}}</td>
         <td data-label="Key" class="muted text-mono text-xs">{{.KeyPrefix}}</td>
         <td data-label="Priority">
-          {{if $.IsAdmin}}
+          {{if $.Can.key_limits_any}}
           <form method="POST" action="/portal/api-keys/priority" class="inline-flex items-center gap-1">
             <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
             <input type="hidden" name="key_hash" value="{{.KeyHash}}">
@@ -73,7 +93,10 @@
           <span class="badge {{.Priority}}">{{.Priority}}</span>
           {{end}}
         </td>
+        <td data-label="Restricted to" class="muted text-xs">{{if .Scope.Empty}}—{{else}}{{range $i, $m := .Scope.Models}}{{if $i}}, {{end}}<code>{{$m}}</code>{{end}}{{if and .Scope.Models .Scope.Endpoints}}; {{end}}{{range $i, $e := .Scope.Endpoints}}{{if $i}}, {{end}}{{$e}}{{end}}{{end}}</td>
         <td data-label="Created" class="muted">{{.CreatedAt.Format "2006-01-02"}}</td>
+        <td data-label="Expires" class="muted">{{if .ExpiresAt.IsZero}}never{{else}}{{.ExpiresAt.Format "2006-01-02"}}{{end}}</td>
+        <td data-label="Last used" class="muted">{{if .LastUsedAt.IsZero}}never{{else}}{{.LastUsedAt.Format "2006-01-02 15:04"}}{{end}}</td>
         <td class="cell-actions">
           {{template "action-button" dict "Action" "/portal/api-keys/revoke" "CSRF" $.CSRFToken "Fields" (dict "key_hash" .KeyHash) "Confirm" "Revoke this API key? This cannot be undone." "Class" "btn-danger btn-xs icon-btn" "Label" "✕" "Title" "Revoke"}}
         </td>
@@ -84,5 +107,5 @@
     </tbody>
   </table>
 </div>
-<p class="table-hint">Keys shown truncated. Click &#10697; to copy full value. Keys cannot be recovered after leaving this page.{{if .IsAdmin}} Admins can change priority using the ✓ button.{{end}}</p>
+<p class="table-hint">Keys shown truncated. Click &#10697; to copy full value. Keys cannot be recovered after leaving this page.{{if .Can.key_limits_any}} You can change priority using the ✓ button.{{end}}</p>
 {{end}}

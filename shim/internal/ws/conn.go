@@ -30,6 +30,7 @@ func New(cfg *shimPkg.Config, version string, st *stats.Stats) *Conn {
 	models := &shimModelProvider{cfg: cfg}
 	jobs := &shimJobDispatcher{cfg: cfg, st: st}
 	inner := wsclient.New(cfg.RouterURL, cfg.RouterToken, cfg.MaxConcurrent, version, st, models, jobs, log)
+	inner.SetKind("shim")
 	return &Conn{inner: inner}
 }
 

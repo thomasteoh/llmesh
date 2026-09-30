@@ -176,7 +176,7 @@ func TestResolveModel_ReturnsMatchedTargetTier(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			gotModel, gotTier := resolveModel(c.reqModel, c.models, aliases)
+			gotModel, gotTier := resolveModel(&types.InferenceRequest{Model: c.reqModel}, c.models, aliases)
 			if gotModel != c.wantModel || gotTier != c.wantTier {
 				t.Errorf("got (%q, %d), want (%q, %d)", gotModel, gotTier, c.wantModel, c.wantTier)
 			}
@@ -243,5 +243,22 @@ func TestBetterCandidate_AffinityStillDecidesWithinATier(t *testing.T) {
 	cold := &candidate{client: types.ClientSummary{ID: "cold", MaxConcurrent: 2}, req: req, tier: 0, affinity: false}
 	if !betterCandidate(warm, cold) {
 		t.Error("affinity should win between candidates in the same tier")
+	}
+}
+
+// resolveModel never picks a target the request may not use, even when it is
+// the preferred tier.
+func TestResolveModelHonoursAllowedModels(t *testing.T) {
+	aliases := map[string][]types.AliasTarget{"smart": {{Model: "gpt-4o", Priority: 0}, {Model: "qwen3", Priority: 1}}}
+	client := map[string]bool{"gpt-4o": true, "qwen3": true}
+	req := &types.InferenceRequest{Model: "smart", AllowedModels: []string{"qwen3"}}
+	if m, _ := resolveModel(req, client, aliases); m != "qwen3" {
+		t.Errorf("alias resolved to %q, want qwen3", m)
+	}
+	req = &types.InferenceRequest{Model: "any", AllowedModels: []string{"qwen3"}}
+	for i := 0; i < 20; i++ { // map iteration order varies
+		if m, _ := resolveModel(req, client, nil); m != "qwen3" {
+			t.Fatalf("any resolved to %q, want qwen3", m)
+		}
 	}
 }

@@ -2,6 +2,7 @@ package admin
 
 import (
 	"fmt"
+	"llmesh/router/internal/authz"
 	"net/http"
 	"strconv"
 	"strings"
@@ -69,8 +70,8 @@ func (a *Admin) handleOAuthSettingsUpdate(providerKey string) http.HandlerFunc {
 				return
 			}
 			p.name = oidc.DisplayName()
-			auditTarget += fmt.Sprintf(" issuer=%s roles_claim=%q member_role=%q admin_role=%q provision=%t",
-				oidc.Issuer, oidc.RolesClaim, oidc.MemberRole, oidc.AdminRole, oidc.Provision)
+			auditTarget += fmt.Sprintf(" issuer=%s roles_claim=%q roles=%d provision=%t",
+				oidc.Issuer, oidc.RolesClaim, len(oidc.RoleMap), oidc.Provision)
 		}
 
 		if err := a.state.SetOAuth(providerKey, p.name, cfg); err != nil {
@@ -120,9 +121,46 @@ func (a *Admin) oidcFromForm(r *http.Request, enabling bool) (OIDCConfig, error)
 		AuthMethod:  method,
 		ExtraScopes: r.FormValue("extra_scopes"),
 		RolesClaim:  strings.TrimSpace(r.FormValue("roles_claim")),
-		MemberRole:  strings.TrimSpace(r.FormValue("member_role")),
-		AdminRole:   strings.TrimSpace(r.FormValue("admin_role")),
 		Provision:   r.FormValue("provision") != "",
+		GroupsClaim: strings.TrimSpace(r.FormValue("groups_claim")),
+	}
+	var err error
+	if oc.RoleMap, err = parseMapLines(r.FormValue("role_map")); err != nil {
+		return OIDCConfig{}, fmt.Errorf("role mapping: %w", err)
+	}
+	for provider, role := range oc.RoleMap {
+		if !a.state.roleExists(role) {
+			return OIDCConfig{}, fmt.Errorf("role mapping: %q maps to unknown role %q", provider, role)
+		}
+		// Mapping a role hands it to whoever the provider names, so it takes
+		// what granting the role directly would.
+		if !a.canGrantRole(r, role) {
+			return OIDCConfig{}, fmt.Errorf("role mapping: you cannot map to %q, which carries permissions you do not hold", role)
+		}
+		if role == authz.RoleTeamMaintainer || role == authz.RoleTeamMember {
+			return OIDCConfig{}, fmt.Errorf("role mapping: team roles come from the team mapping, not the role mapping")
+		}
+	}
+	if oc.TeamMap, err = parseMapLines(r.FormValue("team_map")); err != nil {
+		return OIDCConfig{}, fmt.Errorf("team mapping: %w", err)
+	}
+	for group, team := range oc.TeamMap {
+		if _, ok := a.state.LookupTeam(team); !ok {
+			return OIDCConfig{}, fmt.Errorf("team mapping: %q maps to unknown team %q", group, team)
+		}
+	}
+	if oc.AttrMap, err = parseMapLines(r.FormValue("attr_map")); err != nil {
+		return OIDCConfig{}, fmt.Errorf("attribute mapping: %w", err)
+	}
+	for _, attr := range oc.AttrMap {
+		if !attrKeyPattern.MatchString(attr) {
+			return OIDCConfig{}, fmt.Errorf("attribute mapping: %q is not a valid attribute name", attr)
+		}
+	}
+	if v := strings.TrimSpace(r.FormValue("revalidate_minutes")); v != "" {
+		if oc.RevalidateMinutes, err = strconv.Atoi(v); err != nil {
+			return OIDCConfig{}, fmt.Errorf("revalidation interval must be a number of minutes")
+		}
 	}
 	// Checked before discovery, so a policy mistake is reported without a
 	// round trip to the provider.
@@ -225,4 +263,25 @@ func (a *Admin) handleSMTPTest(w http.ResponseWriter, r *http.Request) {
 	}
 	a.state.RecordAudit(u.Username, "settings.auth.smtp.test", to, a.clientIP(r))
 	a.renderSettings(w, r, u, "Test message sent to "+to+".", "")
+}
+
+// parseMapLines reads "left=right" lines (blank lines ignored) into a map.
+func parseMapLines(text string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		if !ok || k == "" || v == "" {
+			return nil, fmt.Errorf("%q is not name=value", line)
+		}
+		out[k] = v
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
 }

@@ -27,7 +27,6 @@ import (
 	"llmesh/router/internal/queue"
 	"llmesh/router/internal/scheduler"
 	"llmesh/router/internal/stats"
-	"llmesh/router/internal/upstream"
 )
 
 // version is set at build time via -ldflags "-X main.version=<tag>".
@@ -277,7 +276,7 @@ func main() {
 
 	sched := scheduler.New(q, h, adminHandler.State(), logring.NewLogger(sink, "scheduler", slog.LevelInfo))
 	sched.SetOptProvider(adminHandler.State())
-	sched.SetIsolationProvider(adminHandler.State())
+	sched.SetPairingPolicy(admin.SchedulerPairing{State: adminHandler.State()})
 	sched.Start()
 	// Wire hub callbacks that wake the scheduler (moved here from scheduler.New since
 	// scheduler now accepts a Dispatcher interface rather than *hub.Hub directly).
@@ -285,15 +284,12 @@ func main() {
 	h.OnRelease = func(req types.InferenceRequest) { q.Push(req); sched.Wake() }
 	h.StartLeaseReaper()
 
-	// Upstream connector: connects this router to orchestrator routers as a client.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	conn := upstream.New(h, q, store, sched, version, logring.NewLogger(sink, "upstream", slog.LevelInfo))
-	if upstreams := adminHandler.State().GetUpstreamRouters(); len(upstreams) > 0 {
-		conn.Reload(ctx, upstreams)
-	}
-	adminHandler.SetUpstreamReloader(func() { conn.Reload(ctx, adminHandler.State().GetUpstreamRouters()) })
-	adminHandler.SetConnectorStatus(conn.Connected)
+
+	// Re-check identity-provider-managed accounts on the interval set in the
+	// portal (off unless configured).
+	go adminHandler.RunOIDCRevalidation(ctx)
 
 	// Persistent time-series usage tracking, flushed to the state DB.
 	usageRec := admin.NewUsageRecorder(adminHandler.State(), logring.NewLogger(sink, "admin", slog.LevelInfo))
@@ -318,6 +314,9 @@ func main() {
 		Modalities:        h,
 		InFlight:          h,
 		Limits:            adminHandler.State(),
+		Access:            adminHandler.State(),
+		ModelAttrs:        []api.ModelAttrSource{h, adminHandler.State()},
+		TrustProxy:        cfg.Server.TrustProxyHeaders,
 		Dedup:             dedup.New(logring.NewLogger(sink, "dedup", slog.LevelInfo)),
 		MaxRequestBytes:   cfg.MaxRequestBytes(),
 		TTFTTimeout:       timeouts.TTFT,
@@ -369,20 +368,9 @@ func main() {
 		}
 		// The hub is keyed by the token hash so plaintext secrets never sit in
 		// the connection registry or in-flight job records.
-		h.ServeWS(w, r, ct.Name, ct.Owner, ct.TokenHash, ct.OwnerSlots)
+		h.ServeWS(w, r, ct.Name, ct.Owner, ct.TokenHash, adminHandler.State().ReservedSlotsFor(ct.TokenHash))
 	})
-	mux.HandleFunc("/health", health.Handler(version, h, q.Len, reqStats, func() []health.UpstreamStatus {
-		upstreamRouters := adminHandler.State().GetUpstreamRouters()
-		upstreams := make([]health.UpstreamStatus, len(upstreamRouters))
-		for i, u := range upstreamRouters {
-			upstreams[i] = health.UpstreamStatus{
-				URL:       u.URL,
-				Name:      u.Name,
-				Connected: conn.Connected(u.URL),
-			}
-		}
-		return upstreams
-	}))
+	mux.HandleFunc("/health", health.Handler(version, h, q.Len, reqStats))
 	mux.HandleFunc("/metrics", metricsHandler(apiHandler, q, h, reqStats, h.Latency))
 	mux.Handle("/portal/", adminHandler)
 	mux.Handle("/portal", adminHandler)

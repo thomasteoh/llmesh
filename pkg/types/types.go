@@ -116,14 +116,31 @@ type InferenceRequest struct {
 	// Empty for plain-text requests. Used to route to capable clients.
 	Modalities []string  `json:"modalities,omitempty"`
 	EnqueuedAt time.Time `json:"enqueued_at"`
-	Attempts   int       `json:"attempts,omitempty"`  // number of times this request has errored and been retried
-	OriginID   string    `json:"origin_id,omitempty"` // request ID assigned by the originating router; set by upstream connector for cross-hop tracing
+	Attempts   int       `json:"attempts,omitempty"` // number of times this request has errored and been retried
 	// RequestedModel is Model as the caller asked for it, which may be an alias
 	// or "any". Model is rewritten to a concrete name at dispatch, so without
 	// this a retry would be pinned to the very model that just failed. Set by
 	// the scheduler immediately before the rewrite; restored by the hub before
 	// a request is released back to the queue so the retry re-resolves.
 	RequestedModel string `json:"requested_model,omitempty"`
+	// AllowedModels, when non-nil, lists the concrete models this request's
+	// caller may use, decided at admission. An alias or "any" only ever
+	// resolves to one of them, so a caller permitted one target of an alias
+	// cannot be dispatched to another. nil means unrestricted.
+	AllowedModels []string `json:"allowed_models,omitempty"`
+}
+
+// ModelAllowed reports whether the request may run on a concrete model.
+func (r *InferenceRequest) ModelAllowed(model string) bool {
+	if r.AllowedModels == nil {
+		return true
+	}
+	for _, m := range r.AllowedModels {
+		if m == model {
+			return true
+		}
+	}
+	return false
 }
 
 // ForWorker returns the request as a worker should receive it: without who
@@ -132,6 +149,7 @@ type InferenceRequest struct {
 func (r InferenceRequest) ForWorker() InferenceRequest {
 	r.Owner = ""
 	r.APIKeyLabel = ""
+	r.AllowedModels = nil
 	return r
 }
 
@@ -197,6 +215,9 @@ type RegisterMsg struct {
 	Models        []ModelInfo `json:"models"`
 	MaxConcurrent int         `json:"max_concurrent"`
 	Version       string      `json:"version,omitempty"`
+	// Kind says what serves the models: "llama.cpp" for llmesh-client, "shim"
+	// for llmesh-shim (typically a paid API). Empty from older workers.
+	Kind string `json:"kind,omitempty"`
 }
 
 // JobMsg is sent by the router to dispatch an inference request to a client.
@@ -371,34 +392,34 @@ type AliasTarget struct {
 	Priority int    `json:"priority"`
 }
 
-// UserIsolation holds a user's request-isolation flags, resolved by the
-// scheduler when deciding whether a request may pair with a client.
-//
-//	SendIsolated    — the user's requests may only run on clients they own.
-//	ReceiveIsolated — the user's clients may only serve the user's own requests.
-//
-// The two directions are independent. A pairing where the request owner equals
-// the client owner is always allowed regardless of either flag.
-type UserIsolation struct {
-	SendIsolated    bool
-	ReceiveIsolated bool
-}
-
 // ClientSummary is a snapshot of an available client used by the scheduler.
 // Defined here (rather than in the hub package) so the scheduler can depend
 // on it via an interface without importing hub.
 type ClientSummary struct {
-	ID                string
-	Owner             string
-	Models            map[string]bool
-	MaxConcurrent     int
-	InFlight          int            // current in-flight job count
+	ID    string
+	Owner string
+	// Token is the hash of the client token the connection authenticated
+	// with; access management looks up the client's sharing setting by it.
+	Token         string
+	Models        map[string]bool
+	MaxConcurrent int
+	InFlight      int // slots taken: in-flight jobs plus LocalBusy
+	// LocalBusy is how many slots the worker reports its local API using —
+	// work for whoever sits at that machine, which share-when-idle yields to.
+	LocalBusy         int
 	ModelContextSizes map[string]int // n_ctx per model; 0 = unknown
 	OwnerSlots        map[string]int // model → slots reserved for owner; 0/unset = fully shared
 	// ModelModalities maps model name → advertised input modalities. A model
 	// with no entry (or an empty list) has unknown capabilities and is never
 	// excluded by the modality check.
 	ModelModalities map[string][]string
+}
+
+// JobRef is who a running job belongs to and which model it runs, for the
+// scheduler's sharing limits.
+type JobRef struct {
+	Owner string
+	Model string
 }
 
 // EstimateTokens returns an approximate token count for a request given an input

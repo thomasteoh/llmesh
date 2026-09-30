@@ -23,12 +23,13 @@
       <a href="/portal/" class="navlink{{if eq .Page "dashboard"}} active{{end}}"><span class="nav-ico">&#9632;</span>Dashboard</a>
       <a href="/portal/api-keys" class="navlink{{if eq .Page "api-keys"}} active{{end}}"><span class="nav-ico">&#9919;</span>API Keys</a>
       <a href="/portal/clients" class="navlink{{if eq .Page "clients"}} active{{end}}"><span class="nav-ico">&#9741;</span>Clients</a>
+      <a href="/portal/teams" class="navlink{{if eq .Page "teams"}} active{{end}}"><span class="nav-ico">&#9775;</span>Teams</a>
       <a href="/portal/settings" class="navlink{{if eq .Page "settings"}} active{{end}}"><span class="nav-ico">&#9881;</span>Settings</a>
       <a href="/portal/help" class="navlink{{if eq .Page "help"}} active{{end}}"><span class="nav-ico">?</span>Help</a>
     </nav>
     <div class="sidebar-foot">
       <div class="sidebar-user">
-        <span class="user-name" title="{{.Username}}">{{.Username}}{{if .IsAdmin}} <span class="badge badge-sm admin">admin</span>{{end}}</span>
+        <span class="user-name" title="{{.Username}}">{{.Username}}{{if .RoleBadge}} <span class="badge badge-sm admin">{{.RoleBadge}}</span>{{end}}</span>
         <span>
           <button class="nav-icon-btn" id="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark mode" aria-label="Toggle light/dark mode">&#9728;</button>
           <button class="nav-icon-btn" onclick="document.getElementById('logout-form').submit()" title="Sign out" aria-label="Sign out">&#10547;</button>

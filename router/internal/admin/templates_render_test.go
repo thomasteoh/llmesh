@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"llmesh/router/internal/authz"
 	"regexp"
 	"strings"
 	"testing"
@@ -21,7 +22,9 @@ func testFuncMap() template.FuncMap {
 			}
 			return s[:n]
 		},
-		"not": func(b bool) bool { return !b },
+		"not":       func(b bool) bool { return !b },
+		"list":      func(items ...string) []string { return items },
+		"hasPrefix": strings.HasPrefix,
 		"dict": func(pairs ...any) (map[string]any, error) {
 			if len(pairs)%2 != 0 {
 				return nil, fmt.Errorf("dict: odd number of arguments")
@@ -92,8 +95,9 @@ func renderStandalonePage(t *testing.T, page string, data any) {
 // base returns the layout-level fields every page needs.
 func base(page string) map[string]any {
 	return map[string]any{
-		"Page": page, "Name": "llmesh", "Username": "alice", "IsAdmin": true,
-		"CSRFToken": "csrf", "RouterVersion": "v1.2.3", "Host": "llm.example.com",
+		"Page": page, "Name": "llmesh", "Username": "alice", "Can": allCaps(true), "RoleBadge": "admin",
+		"CanManageAliases": true,
+		"CSRFToken":        "csrf", "RouterVersion": "v1.2.3", "Host": "llm.example.com",
 		"Flash": "", "Error": "",
 	}
 }
@@ -111,7 +115,11 @@ func TestTemplatesRender(t *testing.T) {
 		d["Users"] = []any{"alice", "bob"}
 		d["Keys"] = []any{map[string]any{
 			"Owner": "alice", "Label": "prod", "KeyHash": "deadbeef", "KeyPrefix": "sk-alice-1a2b…",
-			"Priority": "high", "CreatedAt": now,
+			"Priority": "high", "CreatedAt": now, "ExpiresAt": time.Time{}, "LastUsedAt": now, "Scope": KeyScope{},
+		}, map[string]any{
+			"Owner": "bob", "Label": "ci", "KeyHash": "cafe", "KeyPrefix": "sk-bob-9f8e…",
+			"Priority": "normal", "CreatedAt": now, "ExpiresAt": now.Add(24 * time.Hour), "LastUsedAt": time.Time{},
+			"Scope": KeyScope{Models: []string{"qwen3-*"}, Endpoints: []string{"/v1/messages"}},
 		}}
 		renderPage(t, "api-keys", d)
 	})
@@ -166,7 +174,7 @@ func TestTemplatesRender(t *testing.T) {
 		}}
 		// also exercise the non-admin flat view
 		dFlat := base("clients")
-		dFlat["IsAdmin"] = false
+		dFlat["Can"] = allCaps(false)
 		dFlat["Tokens"] = []any{row, singleRow, routerRow}
 		renderPage(t, "clients", d)
 		renderPage(t, "clients", dFlat)
@@ -205,17 +213,57 @@ func TestTemplatesRender(t *testing.T) {
 		renderPage(t, "dashboard", d)
 	})
 
+	t.Run("teams", func(t *testing.T) {
+		d := base("teams")
+		d["CanCreate"] = true
+		d["Users"] = []string{"alice", "bob"}
+		d["Teams"] = []any{
+			map[string]any{"ID": "research", "Name": "Research", "Description": "ML", "Disabled": false, "ManagedBy": "",
+				"CanManage": true, "IsMember": true, "CanControl": true, "Members": []any{
+					map[string]any{"Username": "alice", "Maintainer": true},
+					map[string]any{"Username": "bob", "Maintainer": false},
+				}},
+			map[string]any{"ID": "ops", "Name": "Ops", "Description": "", "Disabled": true, "ManagedBy": "oidc",
+				"CanManage": false, "IsMember": false, "Members": []any{}},
+		}
+		renderPage(t, "teams", d)
+		d["Teams"] = []any{}
+		d["CanCreate"] = false
+		renderPage(t, "teams", d)
+	})
+
 	t.Run("settings", func(t *testing.T) {
 		d := base("settings")
 		d["Users"] = []any{
-			map[string]any{"Username": "alice", "IsSelf": true, "Role": "admin", "Disabled": false, "ManagedBy": ""},
-			map[string]any{"Username": "bob", "IsSelf": false, "Role": "member", "Disabled": false, "ManagedBy": ""},
-			map[string]any{"Username": "carol", "IsSelf": false, "Role": "admin", "Disabled": true, "ManagedBy": ""},
-			map[string]any{"Username": "dave", "IsSelf": false, "Role": "member", "Disabled": false, "ManagedBy": "oidc"},
+			map[string]any{"Username": "alice", "IsSelf": true, "Role": "admin", "Disabled": false, "ManagedBy": "", "Roles": []string{"owner"}},
+			map[string]any{"Username": "bob", "IsSelf": false, "Role": "member", "Disabled": false, "ManagedBy": "", "Roles": []string{"member", "billing"}},
+			map[string]any{"Username": "carol", "IsSelf": false, "Role": "admin", "Disabled": true, "ManagedBy": "", "Roles": []string{"admin"}},
+			map[string]any{"Username": "dave", "IsSelf": false, "Role": "member", "Disabled": false, "ManagedBy": "oidc", "Roles": []string{}},
 		}
-		d["Upstreams"] = []any{map[string]any{
-			"Name": "orch", "URL": "https://orch.example.com", "Priority": "high", "Connected": true,
-		}}
+		d["Roles"] = []any{
+			map[string]any{"ID": "owner", "Name": "Owner", "Description": "Everything", "Builtin": true, "TeamRole": false, "Permissions": []string{"audit.view"}},
+			map[string]any{"ID": "team-member", "Name": "Team member", "Description": "", "Builtin": true, "TeamRole": true, "Permissions": []string{}},
+			map[string]any{"ID": "billing", "Name": "Billing", "Description": "Pricing", "Builtin": false, "TeamRole": false, "Permissions": []string{"pricing.manage", "usage.view.any"}},
+		}
+		d["PermissionGroups"] = permissionGroups()
+		d["MySessions"] = []any{
+			map[string]any{"IDHash": "h1", "IP": "10.0.0.1", "UserAgent": "Firefox", "CreatedAt": now, "LastSeenAt": now},
+			map[string]any{"IDHash": "h2", "IP": "10.0.0.2", "UserAgent": "", "CreatedAt": now, "LastSeenAt": now},
+		}
+		d["CurrentSession"] = "h1"
+		d["MyTeams"] = []string{"research"}
+		d["Policies"] = []any{map[string]any{"ID": "p1", "Name": "P1", "Effect": "deny", "Actions": "model.use",
+			"Summary": "who: everyone", "Enabled": true, "JSON": `{"id":"p1"}`}}
+		d["PolicyTemplate"] = policyTemplate
+		d["Actions"] = []string{"model.use", "client.use"}
+		d["SimForm"] = SimForm{SubjectKind: "user", Subject: "alice", Action: "model.use", ResType: "model"}
+		d["Sim"] = &SimResult{Current: authz.Decision{By: "no-gpt", Reason: "denied"},
+			WithDraft: &authz.Decision{Allowed: true, By: "draft"}}
+		d["Denials"] = []Denial{{At: now, Subject: "user:bob", Action: "model.use", Resource: "gpt-4o", Reason: "denied by policy"}}
+		d["ModelRules"] = []any{
+			map[string]any{"ID": "models-default", "Name": "Everyone", "Effect": "allow", "Models": []string{"*"}, "Who": "everyone", "Enabled": true, "Advanced": false},
+			map[string]any{"ID": "no-gpt", "Name": "No GPT", "Effect": "deny", "Models": []string{"gpt-*"}, "Who": "teams interns", "Enabled": false, "Advanced": true},
+		}
 		d["Currency"] = "AUD"
 		d["Auth"] = AuthSettings{
 			Providers: []OAuthProviderSettings{{
@@ -234,7 +282,7 @@ func TestTemplatesRender(t *testing.T) {
 				OIDC:        true, OIDCIssuer: "https://acme.zitadel.cloud", OIDCName: "Zitadel",
 				OIDCAuthMethod: "client_secret_basic", OIDCDiscovered: true,
 				OIDCRolesClaim: "urn:zitadel:iam:org:project:roles",
-				OIDCMemberRole: "llmesh-user", OIDCAdminRole: "llmesh-admin", OIDCProvision: true,
+				OIDCProvision:  true,
 			}},
 			SMTPEnabled: true, SMTPHost: "smtp.example.com", SMTPPort: 587,
 			SMTPUsername: "llmesh", SMTPHasPassword: true, SMTPFrom: "llmesh@example.com",
@@ -252,9 +300,27 @@ func TestTemplatesRender(t *testing.T) {
 				"Basis": "estimated", "IsActual": false, "Configured": true, "Live": false},
 		}
 		renderPage(t, "settings", d)
+		d["Sim"] = &SimResult{Replay: &ReplayResult{Window: "24h0m0s", Requests: 10, NewlyDenied: 4,
+			Changes: []ReplayChange{{Owner: "bob", Model: "gpt-4o", Requests: 4, Before: true, By: "draft"}}}}
+		renderPage(t, "settings", d)
+		d["Sim"] = &SimResult{Error: "bad draft"}
+		renderPage(t, "settings", d)
 	})
 
 	t.Run("help", func(t *testing.T) {
 		renderPage(t, "help", base("help"))
 	})
+}
+
+// allCaps returns a capability map with every flag the templates read set to
+// on, as an owner sees it, or off, as a viewer does.
+func allCaps(on bool) map[string]bool {
+	out := map[string]bool{}
+	for _, a := range capabilityActions {
+		out[strings.ReplaceAll(a, ".", "_")] = on
+	}
+	for _, k := range []string{"key_limits_any", "key_create_any", "client_create_any", "job_cancel_any", "policy_simulate"} {
+		out[k] = on
+	}
+	return out
 }

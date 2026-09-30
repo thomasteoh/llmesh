@@ -35,6 +35,7 @@ func New(cfg *clientPkg.Config, version string, st *stats.Stats) *Conn {
 	models := &clientModelProvider{cfg: cfg, breaker: br, backends: map[string]*backendState{}}
 	jobs := &clientJobDispatcher{cfg: cfg, st: st, breaker: br}
 	inner := wsclient.New(cfg.RouterURL, cfg.RouterToken, cfg.MaxConcurrent, version, st, models, jobs, log)
+	inner.SetKind("llama.cpp")
 	// Withdraw a model from the router as soon as it trips, not at the next
 	// health check, so it stops being sent jobs that will fail.
 	br.SetOnChange(inner.Recheck)

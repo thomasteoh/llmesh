@@ -203,7 +203,7 @@ func TestCost_SettingARatePricesExistingHistory(t *testing.T) {
 	s.AddUsageDelta(UsageDelta{Bucket: b, Owner: "alice", KeyLabel: "alice/prod", Model: "qwen",
 		Requests: 1, PromptTokens: 1_000_000, CompletionTokens: 500_000})
 
-	tot, err := s.UsageTotals(b.Add(-time.Hour), b.Add(time.Hour), "")
+	tot, err := s.UsageTotals(b.Add(-time.Hour), b.Add(time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestCost_SettingARatePricesExistingHistory(t *testing.T) {
 	if err := s.SetModelPricing("qwen", 50_000, 150_000, BasisEstimated); err != nil {
 		t.Fatal(err)
 	}
-	tot, err = s.UsageTotals(b.Add(-time.Hour), b.Add(time.Hour), "")
+	tot, err = s.UsageTotals(b.Add(-time.Hour), b.Add(time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +244,7 @@ func TestCost_ChargedAndEstimatedStaySeparate(t *testing.T) {
 	s.AddUsageDelta(UsageDelta{Bucket: b, Owner: "alice", KeyLabel: "alice/prod", Model: "qwen",
 		Requests: 1, PromptTokens: 1_000_000, CompletionTokens: 1_000_000})
 
-	tot, err := s.UsageTotals(b.Add(-time.Hour), b.Add(time.Hour), "")
+	tot, err := s.UsageTotals(b.Add(-time.Hour), b.Add(time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +272,7 @@ func TestCost_GroupingByUserAppliesEachModelsOwnRate(t *testing.T) {
 	s.AddUsageDelta(UsageDelta{Bucket: b, Owner: "bob", KeyLabel: "bob/dev", Model: "qwen",
 		Requests: 1, PromptTokens: 1_000_000})
 
-	rows, err := s.QueryUsage(b.Add(-time.Hour), b.Add(time.Hour), "owner", false, "")
+	rows, err := s.QueryUsage(b.Add(-time.Hour), b.Add(time.Hour), "owner", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +296,7 @@ func TestCost_UnpricedModelStillReportsTokens(t *testing.T) {
 	s.AddUsageDelta(UsageDelta{Bucket: b, Owner: "alice", KeyLabel: "alice/prod", Model: "mystery",
 		Requests: 3, PromptTokens: 300, CompletionTokens: 30})
 
-	rows, err := s.QueryUsage(b.Add(-time.Hour), b.Add(time.Hour), "model", false, "")
+	rows, err := s.QueryUsage(b.Add(-time.Hour), b.Add(time.Hour), "model", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,7 +330,7 @@ func TestCost_SumsBeforeDividingSoSmallRequestsAreNotLost(t *testing.T) {
 			Owner: "alice", KeyLabel: "alice/prod", Model: "cheap",
 			Requests: 1, PromptTokens: 1000})
 	}
-	tot, err := s.UsageTotals(b.Add(-time.Hour), b.Add(200*time.Hour), "")
+	tot, err := s.UsageTotals(b.Add(-time.Hour), b.Add(200*time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +349,7 @@ func TestCost_OwnerFilterScopesCost(t *testing.T) {
 	s.AddUsageDelta(UsageDelta{Bucket: b, Owner: "bob", KeyLabel: "bob/dev", Model: "gpt-4o",
 		Requests: 1, PromptTokens: 3_000_000})
 
-	tot, err := s.UsageTotals(b.Add(-time.Hour), b.Add(time.Hour), "alice")
+	tot, err := s.UsageTotals(b.Add(-time.Hour), b.Add(time.Hour), []string{"alice"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -271,7 +271,7 @@ func TestSchemaUpgradeFromPreIdentityDatabase(t *testing.T) {
 	if !ok {
 		t.Fatal("the existing user did not survive the upgrade")
 	}
-	if u.Role != "admin" || u.PasswordHash != "hash" {
+	if !s.isPrivileged("alice") || u.PasswordHash != "hash" {
 		t.Fatalf("existing fields were mangled: %+v", u)
 	}
 	// Password-only sign-in is exactly what it was, with no identity attached.

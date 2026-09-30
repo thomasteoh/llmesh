@@ -150,12 +150,15 @@ func setupTestStack(t *testing.T) *testStack {
 	t.Cleanup(perfRec.Close)
 
 	sched := scheduler.New(q, h, adminHandler.State(), slog.Default())
+	sched.SetPairingPolicy(admin.SchedulerPairing{State: adminHandler.State()})
 	sched.Start()
 	h.OnAvailable = func() { sched.Wake() }
 	h.OnRelease = func(req types.InferenceRequest) { q.Push(req); sched.Wake() }
 
 	apiHandler = &api.Handler{
 		Keys:        adminHandler.State(),
+		Access:      adminHandler.State(),
+		ModelAttrs:  []api.ModelAttrSource{h, adminHandler.State()},
 		Models:      h,
 		Aliases:     adminHandler.State(),
 		Stats:       reqStats,
@@ -182,11 +185,9 @@ func setupTestStack(t *testing.T) *testStack {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		h.ServeWS(w, r, ct.Name, ct.Owner, token, ct.OwnerSlots)
+		h.ServeWS(w, r, ct.Name, ct.Owner, ct.TokenHash, st.ReservedSlotsFor(ct.TokenHash))
 	})
-	mux.HandleFunc("/health", health.Handler("e2e", h, q.Len, reqStats, func() []health.UpstreamStatus {
-		return nil
-	}))
+	mux.HandleFunc("/health", health.Handler("e2e", h, q.Len, reqStats))
 
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
@@ -1239,8 +1240,8 @@ func TestE2E_ModelSlotsOwnerReservation(t *testing.T) {
 	st.AddClientToken(admin.ClientToken{
 		Name: "reserving", Owner: "testuser",
 		TokenHash: admin.HashSecret(ownerToken), TokenPrefix: admin.SecretPrefix(ownerToken),
-		OwnerSlots: map[string]int{"reserved-model": 4},
 	})
+	st.SetClientReservedSlots(admin.HashSecret(ownerToken), "reserved-model", 4)
 
 	models := []types.ModelInfo{
 		{Name: "reserved-model", ContextSize: 4096},

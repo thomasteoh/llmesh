@@ -68,6 +68,9 @@ type oauthIdentity struct {
 	// for naming an account it creates. Neither is stored.
 	Username string
 	Claims   map[string]json.RawMessage
+	// RefreshToken is the provider's refresh token, when it issued one. Kept
+	// only for provider-managed accounts that are revalidated.
+	RefreshToken string
 }
 
 // oauthProvider describes one federated sign-in provider.
@@ -115,6 +118,11 @@ func (a *Admin) providerFor(key string) (oauthProvider, bool) {
 		p.name = c.DisplayName()
 		if c.ExtraScopes != "" {
 			p.scope += " " + c.ExtraScopes
+		}
+		// Revalidation needs a refresh token, which most providers (Zitadel
+		// included) only issue when asked for offline access.
+		if c.RevalidateMinutes > 0 && !strings.Contains(" "+p.scope+" ", " offline_access ") {
+			p.scope += " offline_access"
 		}
 		p.authorizeURL = c.AuthorizeURL
 		p.tokenURL = c.TokenURL
@@ -486,6 +494,7 @@ func (a *Admin) exchangeOAuthCode(ctx context.Context, p oauthProvider, cfg OAut
 	}
 	var tok struct {
 		AccessToken      string `json:"access_token"`
+		RefreshToken     string `json:"refresh_token"`
 		Error            string `json:"error"`
 		ErrorDescription string `json:"error_description"`
 	}
@@ -498,7 +507,9 @@ func (a *Admin) exchangeOAuthCode(ctx context.Context, p oauthProvider, cfg OAut
 	if tok.AccessToken == "" {
 		return oauthIdentity{}, fmt.Errorf("%s returned no access token", p.key)
 	}
-	return a.fetchOAuthIdentity(ctx, p, tok.AccessToken)
+	ident, err := a.fetchOAuthIdentity(ctx, p, tok.AccessToken)
+	ident.RefreshToken = tok.RefreshToken
+	return ident, err
 }
 
 func (a *Admin) fetchOAuthIdentity(ctx context.Context, p oauthProvider, accessToken string) (oauthIdentity, error) {

@@ -9,27 +9,28 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
+	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"llmesh/pkg/types"
+	"llmesh/router/internal/authz"
 	_ "modernc.org/sqlite"
 )
 
 type User struct {
 	Username     string `json:"username"`
 	PasswordHash string `json:"password_hash"`
-	Role         string `json:"role"` // "admin" | "member"
-	Disabled     bool   `json:"disabled"`
-	CSRFToken    string `json:"csrf_token,omitempty"` // SHA-256 hash of current valid CSRF token
-	// SendIsolation restricts this user's requests to clients they own.
-	// ReceiveIsolation restricts this user's clients to serving only the user's
-	// own requests. Both default off; see types.UserIsolation.
-	SendIsolation    bool `json:"send_isolation,omitempty"`
-	ReceiveIsolation bool `json:"receive_isolation,omitempty"`
+	// Role is the router-wide role a new account starts with ("admin" or
+	// "member"), read by AddUser and the state.json import only. Roles live
+	// in role bindings; this field is not loaded back and changing it does
+	// nothing.
+	Role      string `json:"role"`
+	Disabled  bool   `json:"disabled"`
+	CSRFToken string `json:"csrf_token,omitempty"` // SHA-256 hash of current valid CSRF token
 
 	// Email is the address this user signs in with when email sign-in is
 	// configured. It is only accepted as an identity once EmailVerified is set,
@@ -78,6 +79,45 @@ type APIKey struct {
 	Priority      string // "high" | "normal" | "low"
 	MaxConcurrent int    // 0 = unlimited
 	CreatedAt     time.Time
+	// ExpiresAt, when set, is when the key stops working.
+	ExpiresAt  time.Time
+	LastUsedAt time.Time // zero until first use; updated at most once a minute
+	CreatedBy  string    // who issued it, when not the owner
+	// Scope narrows what the key may do below its owner's permissions.
+	Scope KeyScope
+}
+
+// KeyScope restricts an API key. Empty fields restrict nothing. A scope can
+// only narrow the owner's permissions: a model the owner may not use stays
+// forbidden whatever the scope lists.
+type KeyScope struct {
+	// Models are globs over concrete model names ("qwen3-*").
+	Models []string `json:"models,omitempty"`
+	// Endpoints are request paths ("/v1/chat/completions").
+	Endpoints []string `json:"endpoints,omitempty"`
+}
+
+// Empty reports whether the scope restricts nothing.
+func (k KeyScope) Empty() bool { return len(k.Models) == 0 && len(k.Endpoints) == 0 }
+
+// apiKeyColumns and scanAPIKey read a key the same way everywhere.
+const apiKeyColumns = `key_hash, key_prefix, label, owner, priority, max_concurrent, created_at,
+	expires_at, last_used_at, created_by, scope`
+
+func scanAPIKey(sc rowScanner) (APIKey, error) {
+	var k APIKey
+	var created, expires, used, scope string
+	if err := sc.Scan(&k.KeyHash, &k.KeyPrefix, &k.Label, &k.Owner, &k.Priority, &k.MaxConcurrent,
+		&created, &expires, &used, &k.CreatedBy, &scope); err != nil {
+		return APIKey{}, err
+	}
+	if scope != "" {
+		_ = json.Unmarshal([]byte(scope), &k.Scope)
+	}
+	k.CreatedAt, _ = time.Parse(time.RFC3339, created)
+	k.ExpiresAt, _ = time.Parse(time.RFC3339, expires)
+	k.LastUsedAt, _ = time.Parse(time.RFC3339, used)
+	return k, nil
 }
 
 // ClientToken is a stored worker token, hashed at rest like APIKey.
@@ -87,7 +127,23 @@ type ClientToken struct {
 	TokenHash   string // SHA-256 hex of the token
 	TokenPrefix string // display prefix, e.g. "ct-alice-1a2b…"
 	CreatedAt   time.Time
-	OwnerSlots  map[string]int // model → slots reserved for owner; 0/unset = fully shared
+	LastUsedAt  time.Time // last connection; updated at most once a minute
+	CreatedBy   string    // who issued it, when not the owner
+}
+
+// owner_slots is not read: reserved slots live in the sharing setting, and
+// the column is kept only as migrateSharing's input from older databases.
+const clientTokenColumns = `token_hash, token_prefix, name, owner, created_at, last_used_at, created_by`
+
+func scanClientToken(sc rowScanner) (ClientToken, error) {
+	var t ClientToken
+	var created, used string
+	if err := sc.Scan(&t.TokenHash, &t.TokenPrefix, &t.Name, &t.Owner, &created, &used, &t.CreatedBy); err != nil {
+		return ClientToken{}, err
+	}
+	t.CreatedAt, _ = time.Parse(time.RFC3339, created)
+	t.LastUsedAt, _ = time.Parse(time.RFC3339, used)
+	return t, nil
 }
 
 // HashSecret returns the hex SHA-256 of an API key or client token, the form
@@ -106,15 +162,6 @@ func SecretPrefix(s string) string {
 		return s[:8] + "…"
 	}
 	return "****"
-}
-
-// UpstreamRouter configures an upstream (orchestrator) router that this router
-// connects to as a client.
-type UpstreamRouter struct {
-	Name     string `json:"name"`
-	URL      string `json:"url"`      // base URL, e.g. "https://orchestrator.example.com"
-	Token    string `json:"token"`    // client token issued on the upstream router
-	Priority string `json:"priority"` // "high" | "normal" | "low"; default "normal"
 }
 
 // legacyAPIKey / legacyClientToken mirror the plaintext shapes found in old
@@ -138,21 +185,19 @@ type legacyClientToken struct {
 
 // stateData is kept only for migrating legacy state.json files on first startup.
 type stateData struct {
-	Users           []User              `json:"users"`
-	APIKeys         []legacyAPIKey      `json:"api_keys"`
-	ClientTokens    []legacyClientToken `json:"client_tokens"`
-	ModelAliases    map[string][]string `json:"model_aliases,omitempty"`
-	UpstreamRouters []UpstreamRouter    `json:"upstream_routers,omitempty"`
+	Users        []User              `json:"users"`
+	APIKeys      []legacyAPIKey      `json:"api_keys"`
+	ClientTokens []legacyClientToken `json:"client_tokens"`
+	ModelAliases map[string][]string `json:"model_aliases,omitempty"`
 }
 
 // UnmarshalJSON handles migration from the old map[string]string format.
 func (sd *stateData) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		Users           []User              `json:"users"`
-		APIKeys         []legacyAPIKey      `json:"api_keys"`
-		ClientTokens    []legacyClientToken `json:"client_tokens"`
-		ModelAliases    json.RawMessage     `json:"model_aliases,omitempty"`
-		UpstreamRouters []UpstreamRouter    `json:"upstream_routers,omitempty"`
+		Users        []User              `json:"users"`
+		APIKeys      []legacyAPIKey      `json:"api_keys"`
+		ClientTokens []legacyClientToken `json:"client_tokens"`
+		ModelAliases json.RawMessage     `json:"model_aliases,omitempty"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -160,7 +205,6 @@ func (sd *stateData) UnmarshalJSON(data []byte) error {
 	sd.Users = raw.Users
 	sd.APIKeys = raw.APIKeys
 	sd.ClientTokens = raw.ClientTokens
-	sd.UpstreamRouters = raw.UpstreamRouters
 	if len(raw.ModelAliases) > 0 {
 		var newFmt map[string][]string
 		if err := json.Unmarshal(raw.ModelAliases, &newFmt); err == nil {
@@ -198,10 +242,17 @@ type State struct {
 	// nil) on any settings mutation rather than queried each call.
 	optCache atomic.Pointer[types.RequestOptimization]
 
-	// isoCache holds the per-user isolation flags (only users with a flag set).
-	// Read by the scheduler each drain and invalidated (store nil) on any user
-	// mutation, mirroring optCache.
-	isoCache atomic.Pointer[map[string]types.UserIsolation]
+	// authzEngine is the compiled access model; see access_store.go.
+	authzEngine atomic.Pointer[authz.Engine]
+	// pairingCache holds the scheduler's pairing inputs; see sharing_store.go.
+	pairingCacheHolder
+	// denials keeps recent refused accesses for the Policies tab.
+	denials denialLog
+
+	// lastTouch throttles last_used_at writes for keys and tokens to one per
+	// credential per minute, so recording use does not turn every inference
+	// request into a database write.
+	lastTouch sync.Map
 }
 
 // dbPath converts a .json path to a .db path so that tests using .json paths
@@ -240,10 +291,34 @@ func LoadState(path string) (*State, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate secrets to hashed storage: %w", err)
 	}
+	// After migrateSecretColumns, which rebuilds api_keys and client_tokens
+	// on old databases and would drop columns added before it.
+	if err := createAccessSchema(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	s := &State{db: db}
 	if err := s.maybeMigrateJSON(path, dbfile); err != nil {
 		db.Close()
 		return nil, err
+	}
+	if err := s.migrateAccess(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate access model: %w", err)
+	}
+	if err := s.pruneRetiredActions(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("prune retired permissions: %w", err)
+	}
+	// Fail closed: a router that cannot compile its access policies must not
+	// start and serve without them.
+	if err := s.ReloadAuthz(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := s.migrateSharing(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate capacity sharing: %w", err)
 	}
 	return s, nil
 }
@@ -292,12 +367,6 @@ func createSchema(db *sql.DB) error {
 			model    TEXT NOT NULL,
 			priority INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY (alias, model)
-		);
-		CREATE TABLE IF NOT EXISTS upstream_routers (
-			url      TEXT PRIMARY KEY,
-			name     TEXT NOT NULL DEFAULT '',
-			token    TEXT NOT NULL DEFAULT '',
-			priority TEXT NOT NULL DEFAULT 'normal'
 		);
 		CREATE TABLE IF NOT EXISTS settings (
 			key   TEXT PRIMARY KEY,
@@ -358,14 +427,13 @@ func createSchema(db *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	// Non-destructive migration: add priority column for existing databases.
-	// SQLite returns an error if the column already exists; ignore it.
-	_, _ = db.Exec(`ALTER TABLE upstream_routers ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'`)
+	dropUpstreamRouters(db)
 	// Alias preference tiers. Defaulting to 0 puts every pre-existing target in
 	// the same tier, which is exactly the load-spreading behaviour they had
 	// before preference existed — upgrading changes no routing decision.
 	_, _ = db.Exec(`ALTER TABLE model_aliases ADD COLUMN priority INTEGER NOT NULL DEFAULT 0`)
-	// Non-destructive migration: per-user request-isolation flags.
+	// Per-user request-isolation flags, read once by migrateSharing, which
+	// turns them into policies; nothing reads them after that.
 	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN send_isolation INTEGER NOT NULL DEFAULT 0`)
 	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN receive_isolation INTEGER NOT NULL DEFAULT 0`)
 	// Non-destructive migration: federated sign-in identities. Both default
@@ -646,14 +714,6 @@ func (s *State) maybeMigrateJSON(jsonPath, dbfile string) error {
 			}
 		}
 	}
-	for _, r := range sd.UpstreamRouters {
-		if _, err := tx.Exec(
-			`INSERT OR IGNORE INTO upstream_routers (url, name, token) VALUES (?, ?, ?)`,
-			r.URL, r.Name, r.Token,
-		); err != nil {
-			return err
-		}
-	}
 	return tx.Commit()
 }
 
@@ -685,8 +745,8 @@ func (s *State) NeedsSetup() bool {
 // userColumns is the column list every user read selects, in the order
 // scanUser expects. Keeping the two together means adding a column touches one
 // pair of definitions rather than each of the three queries that read a user.
-const userColumns = `username, password_hash, role, disabled, csrf_token,
-	send_isolation, receive_isolation, email, email_verified,
+const userColumns = `username, password_hash, disabled, csrf_token,
+	email, email_verified,
 	github_user_id, github_login, google_user_id, google_email,
 	oidc_subject, oidc_label, managed_by`
 
@@ -695,17 +755,15 @@ type rowScanner interface{ Scan(dest ...any) error }
 
 func scanUser(sc rowScanner) (User, error) {
 	var u User
-	var disabled, sendIso, recvIso, emailVerified int
-	err := sc.Scan(&u.Username, &u.PasswordHash, &u.Role, &disabled, &u.CSRFToken,
-		&sendIso, &recvIso, &u.Email, &emailVerified,
+	var disabled, emailVerified int
+	err := sc.Scan(&u.Username, &u.PasswordHash, &disabled, &u.CSRFToken,
+		&u.Email, &emailVerified,
 		&u.GitHubUserID, &u.GitHubLogin, &u.GoogleUserID, &u.GoogleEmail,
 		&u.OIDCSubject, &u.OIDCLabel, &u.ManagedBy)
 	if err != nil {
 		return User{}, err
 	}
 	u.Disabled = disabled != 0
-	u.SendIsolation = sendIso != 0
-	u.ReceiveIsolation = recvIso != 0
 	u.EmailVerified = emailVerified != 0
 	return u, nil
 }
@@ -761,6 +819,9 @@ func (s *State) LookupUserByVerifiedEmail(email string) (User, bool) {
 }
 
 func (s *State) AddUser(u User) error {
+	if err := ValidUsername(u.Username); err != nil {
+		return err
+	}
 	_, err := s.db.Exec(
 		`INSERT INTO users (username, password_hash, role, disabled, csrf_token) VALUES (?, ?, ?, ?, ?)`,
 		u.Username, u.PasswordHash, u.Role, boolInt(u.Disabled), u.CSRFToken,
@@ -771,7 +832,7 @@ func (s *State) AddUser(u User) error {
 		}
 		return err
 	}
-	return nil
+	return s.bindInitialRole(u.Username, u.Role)
 }
 
 // ProvisionOIDCUser creates an account for an OIDC identity seen for the first
@@ -798,6 +859,9 @@ func (s *State) ProvisionOIDCUser(base, role string, ident oauthIdentity) (User,
 			username, role, token, ident.ID, ident.Label, providerOIDC,
 		)
 		if err == nil {
+			if err := s.bindInitialRole(username, role); err != nil {
+				return User{}, err
+			}
 			u, _ := s.LookupUser(username)
 			return u, nil
 		}
@@ -819,6 +883,9 @@ func (s *State) ProvisionOIDCUser(base, role string, ident oauthIdentity) (User,
 // users exist yet. This closes the first-run race where two concurrent setup
 // requests both pass NeedsSetup() and each create an admin.
 func (s *State) AddFirstAdmin(u User) error {
+	if err := ValidUsername(u.Username); err != nil {
+		return err
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -837,7 +904,14 @@ func (s *State) AddFirstAdmin(u User) error {
 	); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO role_bindings (principal, role, team) VALUES (?, ?, '')`,
+		userPrincipal(u.Username), authz.RoleOwner); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return s.bumpAuthz()
 }
 
 func (s *State) UpdateUser(username string, fn func(*User)) error {
@@ -845,6 +919,7 @@ func (s *State) UpdateUser(username string, fn func(*User)) error {
 	if !ok {
 		return fmt.Errorf("user not found: %s", username)
 	}
+	before := u
 	fn(&u)
 	u.Email = NormalizeEmail(u.Email)
 	if u.Email == "" {
@@ -853,20 +928,31 @@ func (s *State) UpdateUser(username string, fn func(*User)) error {
 		u.EmailVerified = false
 	}
 	_, err := s.db.Exec(
-		`UPDATE users SET password_hash = ?, role = ?, disabled = ?, csrf_token = ?,
-		 send_isolation = ?, receive_isolation = ?, email = ?, email_verified = ?,
+		`UPDATE users SET password_hash = ?, disabled = ?, csrf_token = ?,
+		 email = ?, email_verified = ?,
 		 github_user_id = ?, github_login = ?, google_user_id = ?, google_email = ?,
 		 oidc_subject = ?, oidc_label = ?, managed_by = ?
 		 WHERE username = ?`,
-		u.PasswordHash, u.Role, boolInt(u.Disabled), u.CSRFToken,
-		boolInt(u.SendIsolation), boolInt(u.ReceiveIsolation), u.Email, boolInt(u.EmailVerified),
+		u.PasswordHash, boolInt(u.Disabled), u.CSRFToken,
+		u.Email, boolInt(u.EmailVerified),
 		u.GitHubUserID, u.GitHubLogin, u.GoogleUserID, u.GoogleEmail,
 		u.OIDCSubject, u.OIDCLabel, u.ManagedBy, username,
 	)
 	if err != nil {
 		return identityConflictError(err)
 	}
-	s.isoCache.Store(nil) // isolation flags may have changed; rebuild on next read
+	s.invalidateAccess()
+	// Re-enabling clears whatever disabled the account.
+	if !u.Disabled && before.Disabled {
+		_, _ = s.db.Exec(`UPDATE users SET disabled_by = '' WHERE username = ?`, username)
+	}
+	// A disabled account is already refused on every request; ending its
+	// sessions as well means re-enabling it later does not revive them.
+	if u.Disabled && !before.Disabled {
+		if err := s.RevokeSessions(username, ""); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -905,62 +991,6 @@ func (s *State) Users() []User {
 	return out
 }
 
-// SetUserIsolation sets a user's two request-isolation flags.
-func (s *State) SetUserIsolation(username string, send, receive bool) error {
-	return s.UpdateUser(username, func(u *User) {
-		u.SendIsolation = send
-		u.ReceiveIsolation = receive
-	})
-}
-
-// IsolationMap returns the isolation flags for every user that has at least one
-// flag set, keyed by username. Users with no isolation appear absent (the zero
-// UserIsolation is the correct default for them). The result is cached and
-// rebuilt only after a user mutation, since the scheduler reads it every drain.
-func (s *State) IsolationMap() map[string]types.UserIsolation {
-	if cached := s.isoCache.Load(); cached != nil {
-		return *cached
-	}
-	m := make(map[string]types.UserIsolation)
-	rows, err := s.db.Query(`SELECT username, send_isolation, receive_isolation FROM users WHERE send_isolation = 1 OR receive_isolation = 1`)
-	if err != nil {
-		return m
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var name string
-		var send, recv int
-		if err := rows.Scan(&name, &send, &recv); err == nil {
-			m[name] = types.UserIsolation{SendIsolated: send != 0, ReceiveIsolated: recv != 0}
-		}
-	}
-	s.isoCache.Store(&m)
-	return m
-}
-
-func (s *State) ActiveAdminCount() int {
-	var count int
-	s.db.QueryRow(`SELECT COUNT(*) FROM users WHERE role = 'admin' AND disabled = 0`).Scan(&count)
-	return count
-}
-
-func (s *State) DemoteUser(actor, target string) error {
-	if actor == target {
-		return fmt.Errorf("cannot demote yourself")
-	}
-	if s.ActiveAdminCount() <= 1 {
-		return fmt.Errorf("cannot demote: at least one active admin must remain")
-	}
-	res, err := s.db.Exec(`UPDATE users SET role = 'member' WHERE username = ?`, target)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("user not found: %s", target)
-	}
-	return nil
-}
-
 // DeleteUser permanently removes a disabled user and the credentials they own.
 // Deletion is restricted to disabled users so an active account cannot be
 // removed out from under a live session; the account must be disabled first.
@@ -978,12 +1008,8 @@ func (s *State) DeleteUser(actor, target string) error {
 	if !u.Disabled {
 		return fmt.Errorf("only disabled users can be deleted; disable %q first", target)
 	}
-	if u.Role == "admin" {
-		var admins int
-		s.db.QueryRow(`SELECT COUNT(*) FROM users WHERE role = 'admin'`).Scan(&admins)
-		if admins <= 1 {
-			return fmt.Errorf("cannot delete the last admin account")
-		}
+	if s.isPrivileged(target) && s.otherActivePrivileged(target) == 0 {
+		return fmt.Errorf("cannot delete the last admin account")
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -996,6 +1022,15 @@ func (s *State) DeleteUser(actor, target string) error {
 	if _, err := tx.Exec(`DELETE FROM client_tokens WHERE owner = ?`, target); err != nil {
 		return err
 	}
+	for _, q := range []string{
+		`DELETE FROM team_members WHERE username = ?`,
+		`DELETE FROM role_bindings WHERE principal = 'user:' || ?`,
+		`DELETE FROM sessions WHERE username = ?`,
+	} {
+		if _, err := tx.Exec(q, target); err != nil {
+			return err
+		}
+	}
 	res, err := tx.Exec(`DELETE FROM users WHERE username = ?`, target)
 	if err != nil {
 		return err
@@ -1003,7 +1038,14 @@ func (s *State) DeleteUser(actor, target string) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("user not found: %s", target)
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// Their isolation policies would otherwise outlive them.
+	if err := s.syncIsolationPolicies(target, false, false); err != nil {
+		return err
+	}
+	return s.bumpAuthz()
 }
 
 // --- API Keys ---
@@ -1016,16 +1058,10 @@ func (s *State) LookupAPIKey(key string) (APIKey, bool) {
 // LookupAPIKeyByHash finds a key record by its stored hash — the identifier
 // the portal uses in forms, since the plaintext is never available again.
 func (s *State) LookupAPIKeyByHash(hash string) (APIKey, bool) {
-	var k APIKey
-	var createdAt string
-	err := s.db.QueryRow(
-		`SELECT key_hash, key_prefix, label, owner, priority, max_concurrent, created_at FROM api_keys WHERE key_hash = ?`,
-		hash,
-	).Scan(&k.KeyHash, &k.KeyPrefix, &k.Label, &k.Owner, &k.Priority, &k.MaxConcurrent, &createdAt)
+	k, err := scanAPIKey(s.db.QueryRow(`SELECT `+apiKeyColumns+` FROM api_keys WHERE key_hash = ?`, hash))
 	if err != nil {
 		return APIKey{}, false
 	}
-	k.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
 	return k, true
 }
 
@@ -1035,9 +1071,9 @@ func (s *State) APIKeysFor(owner string, isAdmin bool) []APIKey {
 		err  error
 	)
 	if isAdmin {
-		rows, err = s.db.Query(`SELECT key_hash, key_prefix, label, owner, priority, max_concurrent, created_at FROM api_keys ORDER BY owner, label`)
+		rows, err = s.db.Query(`SELECT ` + apiKeyColumns + ` FROM api_keys ORDER BY owner, label`)
 	} else {
-		rows, err = s.db.Query(`SELECT key_hash, key_prefix, label, owner, priority, max_concurrent, created_at FROM api_keys WHERE owner = ? ORDER BY label`, owner)
+		rows, err = s.db.Query(`SELECT `+apiKeyColumns+` FROM api_keys WHERE owner = ? ORDER BY label`, owner)
 	}
 	if err != nil {
 		return nil
@@ -1045,10 +1081,7 @@ func (s *State) APIKeysFor(owner string, isAdmin bool) []APIKey {
 	defer rows.Close()
 	var out []APIKey
 	for rows.Next() {
-		var k APIKey
-		var createdAt string
-		if err := rows.Scan(&k.KeyHash, &k.KeyPrefix, &k.Label, &k.Owner, &k.Priority, &k.MaxConcurrent, &createdAt); err == nil {
-			k.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		if k, err := scanAPIKey(rows); err == nil {
 			out = append(out, k)
 		}
 	}
@@ -1057,8 +1090,10 @@ func (s *State) APIKeysFor(owner string, isAdmin bool) []APIKey {
 
 func (s *State) AddAPIKey(k APIKey) error {
 	_, err := s.db.Exec(
-		`INSERT INTO api_keys (key_hash, key_prefix, label, owner, priority, max_concurrent, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO api_keys (key_hash, key_prefix, label, owner, priority, max_concurrent, created_at, expires_at, created_by, scope)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		k.KeyHash, k.KeyPrefix, k.Label, k.Owner, k.Priority, k.MaxConcurrent, k.CreatedAt.Format(time.RFC3339),
+		timeString(k.ExpiresAt), k.CreatedBy, scopeString(k.Scope),
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
@@ -1140,14 +1175,44 @@ func (s *State) APIKeyCount() int {
 // access, and a key that outlived it would leave the user able to spend the
 // router's capacity with nothing in the portal showing why. A key with no
 // owning user row (a legacy key from before accounts existed) is unaffected.
+//
+// Every check goes through PrincipalActive, the same liveness test sessions
+// and client tokens use, and a key past its expiry is refused.
 func (s *State) ValidAPIKey(key string) bool {
-	var one int
-	err := s.db.QueryRow(
-		`SELECT 1 FROM api_keys k LEFT JOIN users u ON u.username = k.owner
-		 WHERE k.key_hash = ? AND COALESCE(u.disabled, 0) = 0`,
-		HashSecret(key),
-	).Scan(&one)
-	return err == nil
+	hash := HashSecret(key)
+	var owner, expires string
+	if err := s.db.QueryRow(`SELECT owner, expires_at FROM api_keys WHERE key_hash = ?`, hash).
+		Scan(&owner, &expires); err != nil {
+		return false
+	}
+	if expired(expires) || !s.PrincipalActive(ownerPrincipal(owner)) {
+		return false
+	}
+	s.touch("api_keys", "key_hash", hash)
+	return true
+}
+
+// expired reports whether an RFC 3339 expiry has passed. Empty means never.
+func expired(at string) bool {
+	if at == "" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, at)
+	// An unreadable expiry is treated as passed: it can only come from a bad
+	// write, and failing closed costs a reissued key, not a leak.
+	return err != nil || !time.Now().Before(t)
+}
+
+// touch records that a credential was used, at most once a minute per
+// credential.
+func (s *State) touch(table, column, hash string) {
+	now := time.Now()
+	k := table + "\x00" + hash
+	if prev, ok := s.lastTouch.Load(k); ok && now.Sub(prev.(time.Time)) < time.Minute {
+		return
+	}
+	s.lastTouch.Store(k, now)
+	_, _ = s.db.Exec(`UPDATE `+table+` SET last_used_at = ? WHERE `+column+` = ?`, now.UTC().Format(time.RFC3339), hash)
 }
 
 func (s *State) PriorityFor(key string) types.Priority {
@@ -1192,26 +1257,20 @@ func (s *State) LookupActiveClientToken(token string) (ClientToken, bool) {
 	if !ok {
 		return ClientToken{}, false
 	}
-	if u, found := s.LookupUser(ct.Owner); found && u.Disabled {
+	if !s.PrincipalActive(ownerPrincipal(ct.Owner)) {
 		return ClientToken{}, false
 	}
+	s.touch("client_tokens", "token_hash", ct.TokenHash)
 	return ct, true
 }
 
 // LookupClientTokenByHash finds a token record by its stored hash — the
 // identifier used by portal forms and by the hub's connection registry.
 func (s *State) LookupClientTokenByHash(hash string) (ClientToken, bool) {
-	var t ClientToken
-	var createdAt, ownerSlotsJSON string
-	err := s.db.QueryRow(
-		`SELECT token_hash, token_prefix, name, owner, created_at, owner_slots FROM client_tokens WHERE token_hash = ?`,
-		hash,
-	).Scan(&t.TokenHash, &t.TokenPrefix, &t.Name, &t.Owner, &createdAt, &ownerSlotsJSON)
+	t, err := scanClientToken(s.db.QueryRow(`SELECT `+clientTokenColumns+` FROM client_tokens WHERE token_hash = ?`, hash))
 	if err != nil {
 		return ClientToken{}, false
 	}
-	t.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
-	json.Unmarshal([]byte(ownerSlotsJSON), &t.OwnerSlots)
 	return t, true
 }
 
@@ -1221,9 +1280,9 @@ func (s *State) ClientTokensFor(owner string, isAdmin bool) []ClientToken {
 		err  error
 	)
 	if isAdmin {
-		rows, err = s.db.Query(`SELECT token_hash, token_prefix, name, owner, created_at, owner_slots FROM client_tokens ORDER BY owner, name`)
+		rows, err = s.db.Query(`SELECT ` + clientTokenColumns + ` FROM client_tokens ORDER BY owner, name`)
 	} else {
-		rows, err = s.db.Query(`SELECT token_hash, token_prefix, name, owner, created_at, owner_slots FROM client_tokens WHERE owner = ? ORDER BY name`, owner)
+		rows, err = s.db.Query(`SELECT `+clientTokenColumns+` FROM client_tokens WHERE owner = ? ORDER BY name`, owner)
 	}
 	if err != nil {
 		return nil
@@ -1231,11 +1290,7 @@ func (s *State) ClientTokensFor(owner string, isAdmin bool) []ClientToken {
 	defer rows.Close()
 	var out []ClientToken
 	for rows.Next() {
-		var t ClientToken
-		var createdAt, ownerSlotsJSON string
-		if err := rows.Scan(&t.TokenHash, &t.TokenPrefix, &t.Name, &t.Owner, &createdAt, &ownerSlotsJSON); err == nil {
-			t.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
-			json.Unmarshal([]byte(ownerSlotsJSON), &t.OwnerSlots)
+		if t, err := scanClientToken(rows); err == nil {
 			out = append(out, t)
 		}
 	}
@@ -1244,8 +1299,8 @@ func (s *State) ClientTokensFor(owner string, isAdmin bool) []ClientToken {
 
 func (s *State) AddClientToken(t ClientToken) error {
 	_, err := s.db.Exec(
-		`INSERT INTO client_tokens (token_hash, token_prefix, name, owner, created_at, owner_slots) VALUES (?, ?, ?, ?, ?, ?)`,
-		t.TokenHash, t.TokenPrefix, t.Name, t.Owner, t.CreatedAt.Format(time.RFC3339), marshalOwnerSlots(t.OwnerSlots),
+		`INSERT INTO client_tokens (token_hash, token_prefix, name, owner, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?)`,
+		t.TokenHash, t.TokenPrefix, t.Name, t.Owner, t.CreatedAt.Format(time.RFC3339), t.CreatedBy,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
@@ -1276,23 +1331,51 @@ func (s *State) RevokeClientToken(owner, tokenHash string, isAdmin bool) error {
 	return nil
 }
 
-// SetClientTokenOwnerSlots updates the per-model owner-slot reservation for a
-// token identified by its hash.
-func (s *State) SetClientTokenOwnerSlots(owner, tokenHash, model string, slots int, isAdmin bool) error {
-	t, ok := s.LookupClientTokenByHash(tokenHash)
-	if !ok || (!isAdmin && t.Owner != owner) {
-		return fmt.Errorf("token not found")
+// SetClientReservedSlots sets how many of a client's slots are held back
+// for its owner side on one model ("*" for every model not listed); 0 removes
+// the reservation. The rest of the sharing setting is kept.
+func (s *State) SetClientReservedSlots(tokenHash, model string, slots int) error {
+	if model == "any" {
+		model = "*"
 	}
-	if slots <= 0 {
-		delete(t.OwnerSlots, model)
+	sh := authz.Sharing{Mode: authz.ShareOpen}
+	if cur := s.ClientSharing(tokenHash); cur != nil {
+		sh = *cur
+	}
+	reserved := make(map[string]int, len(sh.ReservedSlots)+1)
+	for m, n := range sh.ReservedSlots {
+		reserved[m] = n
+	}
+	if slots > 0 {
+		reserved[model] = slots
 	} else {
-		if t.OwnerSlots == nil {
-			t.OwnerSlots = make(map[string]int)
-		}
-		t.OwnerSlots[model] = slots
+		delete(reserved, model)
 	}
-	_, err := s.db.Exec(`UPDATE client_tokens SET owner_slots = ? WHERE token_hash = ?`, marshalOwnerSlots(t.OwnerSlots), tokenHash)
-	return err
+	sh.ReservedSlots = nil
+	if len(reserved) > 0 {
+		sh.ReservedSlots = reserved
+	}
+	return s.SetClientSharing(tokenHash, sh)
+}
+
+// reservedFromOwnerSlots converts pre-v2 owner slots to reserved slots:
+// "any" (which reserved slots for "any" requests) becomes "*", every model's
+// default, which can only hold back more.
+func reservedFromOwnerSlots(slots map[string]int) map[string]int {
+	out := map[string]int{}
+	for m, n := range slots {
+		if n <= 0 {
+			continue
+		}
+		if m == "any" {
+			m = "*"
+		}
+		out[m] = n
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func (s *State) ClientTokenCount() int {
@@ -1301,66 +1384,30 @@ func (s *State) ClientTokenCount() int {
 	return count
 }
 
-// --- Upstream Routers ---
-
-func (s *State) GetUpstreamRouters() []UpstreamRouter {
-	rows, err := s.db.Query(`SELECT url, name, token, COALESCE(priority, 'normal') FROM upstream_routers ORDER BY url`)
+// dropUpstreamRouters removes the table of upstream routers, from when a
+// router could join another as a client. Federation was removed once access
+// management could share capacity inside one router; the table held each
+// upstream's client token in plaintext, so it goes rather than lingering.
+// The URLs are logged so an admin knows which tokens to revoke upstream.
+func dropUpstreamRouters(db *sql.DB) {
+	rows, err := db.Query(`SELECT url FROM upstream_routers`)
 	if err != nil {
-		return nil
+		return // no table: a new database, or already dropped
 	}
-	defer rows.Close()
-	var out []UpstreamRouter
+	var urls []string
 	for rows.Next() {
-		var r UpstreamRouter
-		if err := rows.Scan(&r.URL, &r.Name, &r.Token, &r.Priority); err == nil {
-			out = append(out, r)
+		var u string
+		if rows.Scan(&u) == nil {
+			urls = append(urls, u)
 		}
 	}
-	return out
+	rows.Close()
+	if len(urls) > 0 {
+		slog.Warn("admin: upstream routers are no longer supported; their configuration was removed. Revoke their client tokens on the upstream routers.",
+			"urls", strings.Join(urls, ", "))
+	}
+	_, _ = db.Exec(`DROP TABLE upstream_routers`)
 }
-
-func (s *State) AddUpstreamRouter(r UpstreamRouter) error {
-	if r.URL == "" || r.Token == "" {
-		return fmt.Errorf("url and token are required")
-	}
-	parsed, err := url.ParseRequestURI(r.URL)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return fmt.Errorf("url must start with http:// or https://")
-	}
-	r.URL = strings.ToLower(strings.TrimRight(r.URL, "/"))
-	switch r.Priority {
-	case "", "normal":
-		r.Priority = "normal"
-	case "high", "low":
-		// valid
-	default:
-		return fmt.Errorf("priority must be one of: high, normal, low")
-	}
-	_, err = s.db.Exec(
-		`INSERT INTO upstream_routers (url, name, token, priority) VALUES (?, ?, ?, ?)`,
-		r.URL, r.Name, r.Token, r.Priority,
-	)
-	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE") {
-			return fmt.Errorf("upstream %q is already configured", r.URL)
-		}
-		return err
-	}
-	return nil
-}
-
-func (s *State) RemoveUpstreamRouter(rawURL string) error {
-	res, err := s.db.Exec(`DELETE FROM upstream_routers WHERE url = ?`, rawURL)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("upstream %q not found", rawURL)
-	}
-	return nil
-}
-
-// --- Token generation ---
 
 func genRandom(n int) (string, error) {
 	b := make([]byte, n)
@@ -1673,4 +1720,20 @@ func (s *State) SetPortalHost(host string) error {
 		portalHostKey, host,
 	)
 	return err
+}
+
+// timeString formats a time for storage, with the zero time as empty.
+func timeString(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
+func scopeString(k KeyScope) string {
+	if k.Empty() {
+		return ""
+	}
+	b, _ := json.Marshal(k)
+	return string(b)
 }

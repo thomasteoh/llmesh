@@ -53,8 +53,6 @@ func (s *orderSpy) UntrackJob(clientID, requestID string) bool {
 	return !s.untrackLost
 }
 
-func (s *orderSpy) NonOwnerInFlight(clientID, owner, model string) int { return 0 }
-
 func orderSpyFixture(sendOK bool) (*Scheduler, *queue.Queue, *orderSpy) {
 	spy := &orderSpy{
 		client: types.ClientSummary{

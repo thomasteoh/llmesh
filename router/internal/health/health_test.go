@@ -169,7 +169,6 @@ func TestBuild_ListsOnlyServedModels(t *testing.T) {
 func TestBuild_PreservesTheOriginalDocument(t *testing.T) {
 	in := baseInputs()
 	in.clients, in.queueDepth, in.activeJobs = 3, 7, 2
-	in.upstreams = []UpstreamStatus{{URL: "https://up", Name: "up", Connected: true}}
 
 	raw, err := json.Marshal(build(in))
 	if err != nil {

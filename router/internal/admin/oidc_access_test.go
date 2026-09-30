@@ -47,27 +47,29 @@ func TestClaimRoles(t *testing.T) {
 	}
 }
 
-func TestRoleFor(t *testing.T) {
-	policy := OIDCConfig{RolesClaim: "roles", MemberRole: "user", AdminRole: "admin"}
+func TestRolesFor(t *testing.T) {
+	policy := OIDCConfig{RolesClaim: "roles",
+		RoleMap: map[string]string{"user": "member", "admin": "admin", "ops": "operator", "audit": "auditor"}}
 	cases := []struct {
 		doc         string
-		wantRole    string
+		want        string
 		wantAllowed bool
 	}{
-		{`{"roles":["admin","user"]}`, "admin", true},
+		{`{"roles":["admin","user"]}`, "admin,member", true},
 		{`{"roles":["user"]}`, "member", true},
+		{`{"roles":["ops","audit"]}`, "auditor,operator", true},
 		{`{"roles":["other"]}`, "", false},
 		{`{}`, "", false},
 	}
 	for _, tc := range cases {
-		role, ok := policy.roleFor(rawClaims(t, tc.doc))
-		if role != tc.wantRole || ok != tc.wantAllowed {
-			t.Errorf("%s: got (%q, %v), want (%q, %v)", tc.doc, role, ok, tc.wantRole, tc.wantAllowed)
+		roles, ok := policy.rolesFor(rawClaims(t, tc.doc))
+		if strings.Join(roles, ",") != tc.want || ok != tc.wantAllowed {
+			t.Errorf("%s: got (%v, %v), want (%q, %v)", tc.doc, roles, ok, tc.want, tc.wantAllowed)
 		}
 	}
 	// With the policy off the provider has no say.
-	if role, ok := (OIDCConfig{}).roleFor(rawClaims(t, `{}`)); role != "" || !ok {
-		t.Errorf("policy off: got (%q, %v)", role, ok)
+	if roles, ok := (OIDCConfig{}).rolesFor(rawClaims(t, `{}`)); roles != nil || !ok {
+		t.Errorf("policy off: got (%v, %v)", roles, ok)
 	}
 }
 
@@ -78,7 +80,7 @@ func TestValidateAccess(t *testing.T) {
 	if err := (OIDCConfig{Provision: true}).validateAccess(); err == nil {
 		t.Error("provisioning without a role requirement was accepted")
 	}
-	if err := (OIDCConfig{RolesClaim: "roles", MemberRole: "u", Provision: true}).validateAccess(); err != nil {
+	if err := (OIDCConfig{RolesClaim: "roles", RoleMap: map[string]string{"u": "member"}, Provision: true}).validateAccess(); err != nil {
 		t.Errorf("a valid policy was refused: %v", err)
 	}
 }
@@ -123,8 +125,7 @@ func oidcSignIn(t *testing.T, a *Admin) *httptest.ResponseRecorder {
 
 var zitadelPolicy = OIDCConfig{
 	RolesClaim: "urn:zitadel:iam:org:project:roles",
-	MemberRole: "llmesh-user",
-	AdminRole:  "llmesh-admin",
+	RoleMap:    map[string]string{"llmesh-user": "member", "llmesh-admin": "admin"},
 	Provision:  true,
 }
 
@@ -152,7 +153,7 @@ func TestOIDCProvisionsManagedAccount(t *testing.T) {
 	if !ok {
 		t.Fatal("no account was created")
 	}
-	if u.Role != "admin" || u.ManagedBy != providerOIDC || u.OIDCSubject != oidcSubjectID(testOIDCIssuer, "s1") {
+	if !a.state.isPrivileged("alice") || u.ManagedBy != providerOIDC || u.OIDCSubject != oidcSubjectID(testOIDCIssuer, "s1") {
 		t.Fatalf("created account is %+v", u)
 	}
 	if u.PasswordHash != "" {
@@ -205,20 +206,20 @@ func TestOIDCManagedRoleFollowsProvider(t *testing.T) {
 	a, f := oidcPolicyAdmin(t, zitadelDoc("s1", "alice", "llmesh-user"), zitadelPolicy)
 	addTestUser(t, a, "root", "admin")
 	oidcSignIn(t, a)
-	if u, _ := a.state.LookupUser("alice"); u.Role != "member" {
-		t.Fatalf("expected member, got %s", u.Role)
+	if a.state.isPrivileged("alice") {
+		t.Fatalf("expected member, got %v", a.globalRoles("alice"))
 	}
 
 	f.account.doc = zitadelDoc("s1", "alice", "llmesh-user", "llmesh-admin")
 	oidcSignIn(t, a)
-	if u, _ := a.state.LookupUser("alice"); u.Role != "admin" {
-		t.Fatalf("promotion at the provider did not apply: %s", u.Role)
+	if !a.state.isPrivileged("alice") {
+		t.Fatalf("promotion at the provider did not apply: %v", a.globalRoles("alice"))
 	}
 
 	f.account.doc = zitadelDoc("s1", "alice", "llmesh-user")
 	oidcSignIn(t, a)
-	if u, _ := a.state.LookupUser("alice"); u.Role != "member" {
-		t.Fatalf("demotion at the provider did not apply: %s", u.Role)
+	if a.state.isPrivileged("alice") {
+		t.Fatalf("demotion at the provider did not apply: %v", a.globalRoles("alice"))
 	}
 }
 
@@ -229,7 +230,7 @@ func TestOIDCNeverDemotesLastAdmin(t *testing.T) {
 	if rr := oidcSignIn(t, a); rr.Code != http.StatusFound {
 		t.Fatalf("sign-in failed: %d", rr.Code)
 	}
-	if u, _ := a.state.LookupUser("alice"); u.Role != "admin" {
+	if !a.state.isPrivileged("alice") {
 		t.Fatal("the last active admin was demoted by the provider")
 	}
 }
@@ -242,7 +243,7 @@ func TestOIDCLeavesLocalAccountRoleAlone(t *testing.T) {
 	if rr := oidcSignIn(t, a); rr.Code != http.StatusFound {
 		t.Fatalf("sign-in failed: %d", rr.Code)
 	}
-	if u, _ := a.state.LookupUser("root"); u.Role != "admin" || u.ManagedBy != "" {
+	if u, _ := a.state.LookupUser("root"); !a.state.isPrivileged("root") || u.ManagedBy != "" {
 		t.Fatalf("a local account's role was changed by the provider: %+v", u)
 	}
 }
@@ -271,11 +272,11 @@ func TestManagedAccountPortalRules(t *testing.T) {
 	addTestUser(t, a, "root", "admin")
 	oidcSignIn(t, a)
 
-	rr := postAs(t, a, "root", "/portal/settings/users/promote", url.Values{"username": {"alice"}}, a.handleUserPromote)
+	rr := postAs(t, a, "root", "/portal/settings/users/roles/add", url.Values{"username": {"alice"}, "role": {"admin"}}, a.handleUserRoleAdd)
 	if !strings.Contains(rr.Body.String(), "managed by single sign-on") {
 		t.Fatalf("promoting a managed account was not refused:\n%s", rr.Body.String())
 	}
-	if u, _ := a.state.LookupUser("alice"); u.Role != "member" {
+	if a.state.isPrivileged("alice") {
 		t.Fatal("a managed account's role was changed in the portal")
 	}
 
@@ -291,8 +292,8 @@ func TestManagedAccountPortalRules(t *testing.T) {
 	if u.ManagedBy != "" || u.PasswordHash == "" {
 		t.Fatalf("take-over did not release the account: %+v", u)
 	}
-	rr = postAs(t, a, "root", "/portal/settings/users/promote", url.Values{"username": {"alice"}}, a.handleUserPromote)
-	if u, _ := a.state.LookupUser("alice"); u.Role != "admin" {
+	rr = postAs(t, a, "root", "/portal/settings/users/roles/add", url.Values{"username": {"alice"}, "role": {"admin"}}, a.handleUserRoleAdd)
+	if !a.state.isPrivileged("alice") {
 		t.Fatalf("a released account's role could not be changed: %s", rr.Body.String())
 	}
 }
@@ -317,18 +318,43 @@ func TestOIDCSettingsAccessPolicy(t *testing.T) {
 	}
 
 	form.Set("roles_claim", "urn:zitadel:iam:org:project:roles")
-	form.Set("member_role", "llmesh-user")
+	form.Set("role_map", "llmesh-user=member")
 	form.Set("extra_scopes", "  urn:zitadel:iam:org:projects:roles  ")
 	rr = postAs(t, a, "admin", path, form, a.handleOAuthSettingsUpdate(providerOIDC))
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "sign-in is on") {
 		t.Fatalf("a valid policy was refused:\n%s", rr.Body.String())
 	}
 	got := a.state.OIDC()
-	if !got.Provision || got.MemberRole != "llmesh-user" || got.ExtraScopes != "urn:zitadel:iam:org:projects:roles" {
+	if !got.Provision || got.RoleMap["llmesh-user"] != "member" || got.ExtraScopes != "urn:zitadel:iam:org:projects:roles" {
 		t.Fatalf("stored policy is %+v", got)
 	}
 	p, _ := a.providerFor(providerOIDC)
 	if p.scope != "openid email profile urn:zitadel:iam:org:projects:roles" {
 		t.Fatalf("scope is %q", p.scope)
+	}
+}
+
+// The member and admin role settings from before the role map become role
+// map entries when read, and are cleared by the next save.
+func TestLegacyOIDCRolesFoldIntoRoleMap(t *testing.T) {
+	s := newTestState(t)
+	if err := s.putSettings(map[string]string{
+		oidcRolesClaimKey: "roles", oidcMemberRoleKey: "staff", oidcAdminRoleKey: "boss",
+		oidcRoleMapKey: `{"boss":"operator"}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := s.OIDC().RoleMap
+	if got["staff"] != "member" || got["boss"] != "operator" || len(got) != 2 {
+		t.Fatalf("role map = %v; want staff=member and the explicit boss=operator kept", got)
+	}
+	if err := s.SetOIDC(s.OIDC()); err != nil {
+		t.Fatal(err)
+	}
+	if v := s.settings(oidcMemberRoleKey, oidcAdminRoleKey); v[oidcMemberRoleKey] != "" || v[oidcAdminRoleKey] != "" {
+		t.Errorf("legacy role settings survived a save: %v", v)
+	}
+	if got := s.OIDC().RoleMap; got["staff"] != "member" || got["boss"] != "operator" {
+		t.Errorf("role map after save = %v", got)
 	}
 }

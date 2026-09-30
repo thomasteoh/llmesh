@@ -3,6 +3,7 @@ package admin
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 )
@@ -127,7 +128,7 @@ const usageFrom = ` FROM usage_hourly u LEFT JOIN model_pricing p ON p.model = u
 // groupBy ("model", "owner", or "key") per bucket. daily=true aggregates the
 // hourly buckets into days (bucket format YYYY-MM-DD); otherwise buckets are
 // RFC3339 hours. If owner is non-empty, only that owner's usage is included.
-func (s *State) QueryUsage(since, until time.Time, groupBy string, daily bool, owner string) ([]UsageRow, error) {
+func (s *State) QueryUsage(since, until time.Time, groupBy string, daily bool, owners []string) ([]UsageRow, error) {
 	// Columns are qualified because the pricing join puts a second `model` in scope.
 	var nameCol string
 	switch groupBy {
@@ -147,10 +148,7 @@ func (s *State) QueryUsage(since, until time.Time, groupBy string, daily bool, o
 	q := `SELECT ` + bucketExpr + ` AS b, ` + nameCol + `, SUM(u.requests), SUM(u.prompt_tokens), SUM(u.completion_tokens)` +
 		costSelect + usageFrom + ` WHERE u.bucket >= ? AND u.bucket < ?`
 	args := []any{since.UTC().Format(time.RFC3339), until.UTC().Format(time.RFC3339)}
-	if owner != "" {
-		q += ` AND u.owner = ?`
-		args = append(args, owner)
-	}
+	q, args = ownerClause(q, args, "u.owner", owners)
 	q += ` GROUP BY b, ` + nameCol + ` ORDER BY b, ` + nameCol
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
@@ -181,7 +179,7 @@ type UsageTotalsResult struct {
 
 // UsageTotals sums usage between since and until for one owner ("" = all),
 // including cost under the rates currently in force.
-func (s *State) UsageTotals(since, until time.Time, owner string) (UsageTotalsResult, error) {
+func (s *State) UsageTotals(since, until time.Time, owners []string) (UsageTotalsResult, error) {
 	q := `SELECT COALESCE(SUM(u.requests),0), COALESCE(SUM(u.prompt_tokens),0), COALESCE(SUM(u.completion_tokens),0),
 		COALESCE(SUM(CASE WHEN p.basis = 'actual'
 			THEN u.prompt_tokens * COALESCE(p.input_ppm, 0) + u.completion_tokens * COALESCE(p.output_ppm, 0)
@@ -193,10 +191,7 @@ func (s *State) UsageTotals(since, until time.Time, owner string) (UsageTotalsRe
 			THEN u.requests ELSE 0 END), 0)` +
 		usageFrom + ` WHERE u.bucket >= ? AND u.bucket < ?`
 	args := []any{since.UTC().Format(time.RFC3339), until.UTC().Format(time.RFC3339)}
-	if owner != "" {
-		q += ` AND u.owner = ?`
-		args = append(args, owner)
-	}
+	q, args = ownerClause(q, args, "u.owner", owners)
 	var t UsageTotalsResult
 	err := s.db.QueryRow(q, args...).Scan(&t.Requests, &t.PromptTokens, &t.CompletionTokens,
 		&t.ActualCostMicro, &t.EstimatedCostMicro, &t.UnpricedRequests)
@@ -318,4 +313,21 @@ func (r *UsageRecorder) Flush() {
 func (r *UsageRecorder) Close() {
 	r.stopOnce.Do(func() { close(r.stop) })
 	<-r.done
+}
+
+// ownerClause narrows a usage or perf query to a set of owners. nil means
+// every owner; an empty non-nil set matches nothing, so a viewer entitled to
+// no one's data sees none rather than everyone's.
+func ownerClause(q string, args []any, col string, owners []string) (string, []any) {
+	if owners == nil {
+		return q, args
+	}
+	if len(owners) == 0 {
+		return q + " AND 0", args
+	}
+	q += " AND " + col + " IN (?" + strings.Repeat(", ?", len(owners)-1) + ")"
+	for _, o := range owners {
+		args = append(args, o)
+	}
+	return q, args
 }

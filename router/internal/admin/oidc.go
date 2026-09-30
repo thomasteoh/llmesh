@@ -7,7 +7,10 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+
+	"llmesh/router/internal/authz"
 )
 
 // A generic OpenID Connect provider, for a self-hosted or organisational
@@ -29,9 +32,16 @@ const (
 	oidcUserInfoURLKey  = "auth.oidc.userinfo_url"
 	oidcScopesKey       = "auth.oidc.extra_scopes"
 	oidcRolesClaimKey   = "auth.oidc.roles_claim"
-	oidcMemberRoleKey   = "auth.oidc.member_role"
-	oidcAdminRoleKey    = "auth.oidc.admin_role"
-	oidcProvisionKey    = "auth.oidc.provision"
+	// The member and admin role settings predate the role map. They are
+	// folded into it when read and cleared on the next save.
+	oidcMemberRoleKey  = "auth.oidc.member_role"
+	oidcAdminRoleKey   = "auth.oidc.admin_role"
+	oidcProvisionKey   = "auth.oidc.provision"
+	oidcRoleMapKey     = "auth.oidc.role_map"
+	oidcGroupsClaimKey = "auth.oidc.groups_claim"
+	oidcTeamMapKey     = "auth.oidc.team_map"
+	oidcAttrMapKey     = "auth.oidc.attr_map"
+	oidcRevalidateKey  = "auth.oidc.revalidate_minutes"
 )
 
 // defaultOIDCName is what the login button says until an admin names the
@@ -71,11 +81,24 @@ type OIDCConfig struct {
 	ExtraScopes string
 	// The access policy; see oidc_access.go. RolesClaim empty turns it off.
 	RolesClaim string
-	MemberRole string
-	AdminRole  string
 	// Provision creates an account for a permitted identity seen for the
 	// first time, instead of refusing it as unlinked.
 	Provision bool
+
+	// RoleMap maps provider role values (from RolesClaim) to llmesh role ids.
+	// A sign-in holding none of them is refused.
+	RoleMap map[string]string
+	// GroupsClaim names the claim holding the user's groups, and TeamMap
+	// maps a group to a team id. Only teams named in TeamMap are managed.
+	GroupsClaim string
+	TeamMap     map[string]string
+	// AttrMap maps a claim name to the attribute name policies see as
+	// subject.attrs.<name>.
+	AttrMap map[string]string
+	// RevalidateMinutes, when positive, re-checks managed accounts with the
+	// provider this often using their refresh token, and disables those the
+	// provider no longer vouches for. 0 turns it off.
+	RevalidateMinutes int
 }
 
 // Discovered reports whether the endpoints a sign-in needs are known.
@@ -95,23 +118,39 @@ func (c OIDCConfig) DisplayName() string {
 func (s *State) OIDC() OIDCConfig {
 	v := s.settings(oidcIssuerKey, oidcNameKey, oidcAuthMethodKey,
 		oidcAuthorizeURLKey, oidcTokenURLKey, oidcUserInfoURLKey,
-		oidcScopesKey, oidcRolesClaimKey, oidcMemberRoleKey, oidcAdminRoleKey, oidcProvisionKey)
+		oidcScopesKey, oidcRolesClaimKey, oidcMemberRoleKey, oidcAdminRoleKey, oidcProvisionKey,
+		oidcRoleMapKey, oidcGroupsClaimKey, oidcTeamMapKey, oidcAttrMapKey, oidcRevalidateKey)
 	method := v[oidcAuthMethodKey]
 	if !oidcAuthMethods[method] {
 		method = oidcAuthBasic
 	}
+	revalidate, _ := strconv.Atoi(v[oidcRevalidateKey])
+	roleMap := jsonMap(v[oidcRoleMapKey])
+	for key, role := range map[string]string{oidcMemberRoleKey: authz.RoleMember, oidcAdminRoleKey: authz.RoleAdmin} {
+		if provider := strings.TrimSpace(v[key]); provider != "" {
+			if roleMap == nil {
+				roleMap = map[string]string{}
+			}
+			if _, set := roleMap[provider]; !set {
+				roleMap[provider] = role
+			}
+		}
+	}
 	return OIDCConfig{
-		Issuer:       v[oidcIssuerKey],
-		Name:         v[oidcNameKey],
-		AuthMethod:   method,
-		AuthorizeURL: v[oidcAuthorizeURLKey],
-		TokenURL:     v[oidcTokenURLKey],
-		UserInfoURL:  v[oidcUserInfoURLKey],
-		ExtraScopes:  v[oidcScopesKey],
-		RolesClaim:   v[oidcRolesClaimKey],
-		MemberRole:   v[oidcMemberRoleKey],
-		AdminRole:    v[oidcAdminRoleKey],
-		Provision:    v[oidcProvisionKey] == "1",
+		RoleMap:           roleMap,
+		GroupsClaim:       v[oidcGroupsClaimKey],
+		TeamMap:           jsonMap(v[oidcTeamMapKey]),
+		AttrMap:           jsonMap(v[oidcAttrMapKey]),
+		RevalidateMinutes: revalidate,
+		Issuer:            v[oidcIssuerKey],
+		Name:              v[oidcNameKey],
+		AuthMethod:        method,
+		AuthorizeURL:      v[oidcAuthorizeURLKey],
+		TokenURL:          v[oidcTokenURLKey],
+		UserInfoURL:       v[oidcUserInfoURLKey],
+		ExtraScopes:       v[oidcScopesKey],
+		RolesClaim:        v[oidcRolesClaimKey],
+		Provision:         v[oidcProvisionKey] == "1",
 	}
 }
 
@@ -127,16 +166,25 @@ func (s *State) SetOIDC(c OIDCConfig) error {
 	}
 	c.ExtraScopes = strings.Join(strings.Fields(c.ExtraScopes), " ")
 	c.RolesClaim = strings.TrimSpace(c.RolesClaim)
-	c.MemberRole = strings.TrimSpace(c.MemberRole)
-	c.AdminRole = strings.TrimSpace(c.AdminRole)
 	if err := c.validateAccess(); err != nil {
 		return err
 	}
+	if c.RevalidateMinutes < 0 {
+		return fmt.Errorf("the revalidation interval cannot be negative")
+	}
+	if c.RevalidateMinutes > 0 && c.RevalidateMinutes < 5 {
+		return fmt.Errorf("revalidate at most every 5 minutes, to spare the provider")
+	}
 	return s.putSettings(map[string]string{
+		oidcRoleMapKey:      mapJSON(c.RoleMap),
+		oidcGroupsClaimKey:  strings.TrimSpace(c.GroupsClaim),
+		oidcTeamMapKey:      mapJSON(c.TeamMap),
+		oidcAttrMapKey:      mapJSON(c.AttrMap),
+		oidcRevalidateKey:   strconv.Itoa(c.RevalidateMinutes),
 		oidcScopesKey:       c.ExtraScopes,
 		oidcRolesClaimKey:   c.RolesClaim,
-		oidcMemberRoleKey:   c.MemberRole,
-		oidcAdminRoleKey:    c.AdminRole,
+		oidcMemberRoleKey:   "",
+		oidcAdminRoleKey:    "",
 		oidcProvisionKey:    boolSetting(c.Provision),
 		oidcIssuerKey:       c.Issuer,
 		oidcNameKey:         strings.TrimSpace(c.Name),
@@ -296,4 +344,21 @@ func oidcIdentity(body []byte) (oauthIdentity, error) {
 func claimIsTrue(raw json.RawMessage) bool {
 	s := strings.TrimSpace(string(raw))
 	return s == "true" || s == `"true"`
+}
+
+func jsonMap(raw string) map[string]string {
+	if raw == "" {
+		return nil
+	}
+	var m map[string]string
+	_ = json.Unmarshal([]byte(raw), &m)
+	return m
+}
+
+func mapJSON(m map[string]string) string {
+	if len(m) == 0 {
+		return ""
+	}
+	b, _ := json.Marshal(m)
+	return string(b)
 }

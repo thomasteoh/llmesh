@@ -16,7 +16,7 @@ import (
 // so they are the ones worth pinning to the real types.
 func TestTemplatesRenderAgainstRealStructs(t *testing.T) {
 	bp := basePage{
-		Page: "clients", Username: "alice", IsAdmin: true, CSRFToken: "csrf",
+		Page: "clients", Username: "alice", Can: allCaps(true), RoleBadge: "admin", CSRFToken: "csrf",
 		RouterVersion: "v1.2.3", Name: "llmesh", Host: "llm.example.com",
 	}
 	now := time.Now()
@@ -49,7 +49,10 @@ func TestTemplatesRenderAgainstRealStructs(t *testing.T) {
 			Perf: &ClientPerfRow{
 				Requests: 42, GenTPS: "38.4 tok/s", AvgTTFT: "412 ms", WindowDesc: "24h", Est: true,
 			},
+			SharingMode: "idle", SharingWith: "team:research, user:bob", PerRequesterMax: 2,
+			ReservedDefault: 1, CanShare: true,
 		}
+		row.Owner = "team:research"
 		// An offline token whose only model rows come from a slot limit and past
 		// traffic exercises the not-served branch and the single-connection
 		// layout, where the "Served by" column is suppressed.
@@ -60,7 +63,7 @@ func TestTemplatesRenderAgainstRealStructs(t *testing.T) {
 		}
 		router := ClientTokenRow{
 			Status: "connected", StatusClass: "connected", StatusLabel: "● connected",
-			IsRouter: true, CSRFToken: "csrf",
+			IsRouter: true, CSRFToken: "csrf", SharingMode: "private",
 		}
 		tokens := []ClientTokenRow{row, offline, router}
 
@@ -73,7 +76,7 @@ func TestTemplatesRenderAgainstRealStructs(t *testing.T) {
 		renderPage(t, "clients", adminPage)
 
 		memberBase := bp
-		memberBase.IsAdmin = false
+		memberBase.Can, memberBase.RoleBadge = allCaps(false), ""
 		renderPage(t, "clients", ClientTokensPage{basePage: memberBase, Tokens: tokens})
 	})
 
@@ -88,11 +91,10 @@ func TestTemplatesRenderAgainstRealStructs(t *testing.T) {
 			{User: User{Username: "bob", Role: "member", Disabled: true}},
 		}
 		base := SettingsPage{
-			basePage:  sb,
-			Users:     users,
-			Upstreams: []UpstreamRouterRow{{UpstreamRouter: UpstreamRouter{Name: "orch", URL: "https://orch.example.com", Priority: "high"}, Connected: true}},
-			Currency:  "AUD",
-			Pricing:   []ModelPricingRow{{Model: "llama3", InputRate: "1", OutputRate: "2", Basis: "estimated", Live: true, Configured: true}},
+			basePage: sb,
+			Users:    users,
+			Currency: "AUD",
+			Pricing:  []ModelPricingRow{{Model: "llama3", InputRate: "1", OutputRate: "2", Basis: "estimated", Live: true, Configured: true}},
 		}
 
 		// One provider card per real provider, so adding a provider puts it
@@ -156,7 +158,7 @@ func TestTemplatesRenderAgainstRealStructs(t *testing.T) {
 			t.Run(name, func(t *testing.T) { renderPage(t, "settings", page) })
 
 			member := page
-			member.IsAdmin = false
+			member.Can, member.RoleBadge = allCaps(false), ""
 			t.Run(name+"/member", func(t *testing.T) { renderPage(t, "settings", member) })
 		}
 	})

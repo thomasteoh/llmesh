@@ -17,7 +17,7 @@ func TestUsage_AddDeltaUpsert(t *testing.T) {
 	if err := s.AddUsageDelta(d); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := s.QueryUsage(bucket.Add(-time.Hour), bucket.Add(time.Hour), "model", false, "")
+	rows, err := s.QueryUsage(bucket.Add(-time.Hour), bucket.Add(time.Hour), "model", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestUsage_QueryGroupingAndOwnerFilter(t *testing.T) {
 	s.AddUsageDelta(UsageDelta{Bucket: b.Add(time.Hour), Owner: "alice", KeyLabel: "alice/prod", Model: "qwen", Requests: 4, PromptTokens: 40, CompletionTokens: 4})
 
 	// Group by model over both hours: llama has combined counts.
-	rows, err := s.QueryUsage(b, b.Add(2*time.Hour), "model", false, "")
+	rows, err := s.QueryUsage(b, b.Add(2*time.Hour), "model", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestUsage_QueryGroupingAndOwnerFilter(t *testing.T) {
 	}
 
 	// Owner filter: alice only.
-	rows, err = s.QueryUsage(b, b.Add(2*time.Hour), "owner", false, "alice")
+	rows, err = s.QueryUsage(b, b.Add(2*time.Hour), "owner", false, []string{"alice"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestUsage_QueryGroupingAndOwnerFilter(t *testing.T) {
 	}
 
 	// Daily aggregation folds both hours into one day bucket.
-	rows, err = s.QueryUsage(b, b.Add(2*time.Hour), "owner", true, "alice")
+	rows, err = s.QueryUsage(b, b.Add(2*time.Hour), "owner", true, []string{"alice"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestUsage_Prune(t *testing.T) {
 	if err := s.PruneUsageBefore(time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
 	}
-	tot, err := s.UsageTotals(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC), "")
+	tot, err := s.UsageTotals(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestUsageRecorder_FlushOnClose(t *testing.T) {
 	rec.Close()
 
 	now := time.Now().UTC()
-	tot, err := s.UsageTotals(now.Add(-2*time.Hour), now.Add(time.Hour), "alice")
+	tot, err := s.UsageTotals(now.Add(-2*time.Hour), now.Add(time.Hour), []string{"alice"})
 	if err != nil {
 		t.Fatal(err)
 	}

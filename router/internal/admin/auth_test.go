@@ -24,7 +24,7 @@ func newTestAdmin(t *testing.T) *Admin {
 	}
 	a := &Admin{
 		state:      state,
-		sessions:   newSessionStore(),
+		sessions:   newSessionStore(state),
 		authTokens: newAuthTokenStore(),
 		log:        logring.NewLogger(nil, "admin-test", slog.LevelError),
 		// A real (empty) hub, because the settings page asks it which models
@@ -56,8 +56,8 @@ func TestHandleSetup_POST(t *testing.T) {
 	if !ok {
 		t.Fatal("user not created")
 	}
-	if u.Role != "admin" {
-		t.Fatalf("want admin role, got %s", u.Role)
+	if !a.state.IsOwner("admin") {
+		t.Fatalf("the first account is not an owner: %v", a.globalRoles("admin"))
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte("secret123")); err != nil {
 		t.Fatalf("password not hashed correctly: %v", err)
@@ -65,7 +65,7 @@ func TestHandleSetup_POST(t *testing.T) {
 }
 
 func TestSessionStore(t *testing.T) {
-	ss := newSessionStore()
+	ss := newSessionStore(newTestState(t))
 	id := ss.create("alice")
 	if id == "" {
 		t.Fatal("empty session id")
@@ -139,13 +139,13 @@ func TestHandleLogout_MethodNotAllowed(t *testing.T) {
 	}
 }
 
-func TestRequireAdmin_Forbidden(t *testing.T) {
+func TestRequirePerm_Forbidden(t *testing.T) {
 	a := newTestAdmin(t)
 	hash, _ := bcrypt.GenerateFromPassword([]byte("pw"), bcrypt.MinCost)
 	a.state.AddUser(User{Username: "carol", PasswordHash: string(hash), Role: "member"})
 	sid := a.sessions.create("carol")
 
-	protected := a.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+	protected := a.requirePerm("settings.manage", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
 	})
 	req := httptest.NewRequest("GET", "/admin/settings", nil)
