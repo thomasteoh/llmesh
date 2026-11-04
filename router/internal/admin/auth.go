@@ -155,11 +155,24 @@ func (a *Admin) renderLoginWithEmail(w http.ResponseWriter, r *http.Request, not
 // GitHub callback produce exactly the session a password does — no path gets a
 // longer-lived cookie or skips the CSRF token by being written separately.
 func (a *Admin) startSession(w http.ResponseWriter, r *http.Request, username string) {
+	a.startSessionWithCSRF(w, r, username, "")
+}
+
+// startSessionWithCSRF mints a portal session and, when csrf is empty, a fresh
+// CSRF token for it. The session id and token are returned so a token-based
+// login can hand them to a client that needs to post to a CSRF-protected
+// endpoint; pass a non-empty csrf to reuse one (e.g. when refreshing it).
+func (a *Admin) startSessionWithCSRF(w http.ResponseWriter, r *http.Request, username, csrf string) (string, string) {
 	sid := a.sessions.createWithMeta(username, a.clientIP(r), r.UserAgent())
 	// Generate a fresh CSRF token and store it in the session (not in state —
 	// session-scoped tokens let concurrent tabs operate independently).
-	if csrfToken, err := generateCSRFToken(); err == nil {
-		a.sessions.setCSRF(sid, csrfToken)
+	if csrf == "" {
+		if t, err := generateCSRFToken(); err == nil {
+			csrf = t
+		}
+	}
+	if csrf != "" {
+		a.sessions.setCSRF(sid, csrf)
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
@@ -170,6 +183,7 @@ func (a *Admin) startSession(w http.ResponseWriter, r *http.Request, username st
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(sessionTTL.Seconds()),
 	})
+	return sid, csrf
 }
 
 func (a *Admin) handleLogin(w http.ResponseWriter, r *http.Request) {

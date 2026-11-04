@@ -252,6 +252,11 @@ func (a *Admin) registerRoutes() {
 	// One set of routes per federated provider, registered from the same list
 	// the login and settings pages render from, so a provider cannot appear in
 	// the UI without the routes behind it existing.
+	//
+	// Token sign-in: a machine user authenticates with a provider access token
+	// (client_credentials) rather than a browser authorization-code flow. It is
+	// registered unconditionally and refuses when OIDC is not configured.
+	mux.HandleFunc("/portal/api/token-login", a.requireRateLimit(a.postOnly(a.handleTokenLogin), 20))
 	for _, key := range oauthProviderOrder {
 		mux.HandleFunc(oauthStartPath(key), a.requireRateLimit(a.handleOAuthLogin(key), 10))
 		mux.HandleFunc(oauthCallbackPath(key), a.requireRateLimit(a.handleOAuthCallback(key), 10))
